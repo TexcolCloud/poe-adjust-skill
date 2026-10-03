@@ -31,6 +31,7 @@ def args(**kwargs):
 
 def intent_for(root):
     return {"confirmed": True, "goal": "离线测试：保留盾牌并验证两种改装流程", "league": "国服测试赛季", "mode": "both",
+            "game_version": "3.29", "version_source": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml", "version_checked_at": "2026-10-04",
             "budget": {"amount": 20, "currency": "divine"}, "target_level": 86,
             "allow_main_skill_change": True, "allow_ascendancy_change": True, "keep_slots": ["Weapon 2"],
             "scenario": {"enemyLevel": 83}, "baseline_main_group": 1,
@@ -113,12 +114,39 @@ class DocumentTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
                 poe.validate_intent(intent, self.root)
 
-    def test_socket_colours_links_and_white_sockets(self):
-        self.assertFalse(poe.socket_groups_fit(["RGGG"], ["RRGG"]))
-        self.assertTrue(poe.socket_groups_fit(["RGGG"], ["RWGG"]))
-        self.assertFalse(poe.socket_groups_fit(["RRR", "RRR"], ["RRRR", "RR"]))
-        self.assertTrue(poe.socket_groups_fit(["RGB", "R"], ["RR", "RGB"]))
-        self.assertTrue(poe.socket_groups_fit(["W", "RR"], ["BRR"]))
+    def test_329_socket_layout_ignores_colour_but_rejects_missing_links(self):
+        result = {"equipped": [{"slot": "Boots", "id": 1}],
+                  "gems": [{"group": 1, "index": i, "color": "G", "enabled": True, "support": i > 1} for i in range(1, 5)]}
+        self.assertEqual(poe.socket_layout_issues(self.root, result), [])
+        self.root.find("Items/Item").text = "Rarity: NORMAL\nIron Greaves\nSockets: W-W W-W"
+        self.assertTrue(any("连线不匹配" in error for error in poe.socket_layout_issues(self.root, result)))
+        result["gems"].append({"group": 1, "index": 5})
+        self.assertTrue(any("数量不足" in error for error in poe.socket_layout_issues(self.root, result)))
+
+    def test_shared_link_groups_cannot_hide_support_effects(self):
+        changed = bx.apply_plan(self.root, {"mode": "rebuild", "summary": "two groups", "operations": {"replace_skills": [
+            {"slot": "Boots", "gems": [{"skill_id": "ShieldCrush"}, {"skill_id": "SupportLifetap"}]},
+            {"slot": "Boots", "gems": [{"skill_id": "Determination"}]}]}})
+        result = {"equipped": [{"slot": "Boots", "id": 1}], "gems": [
+            {"group": 1, "index": 1}, {"group": 1, "index": 2, "enabled": True, "support": True}, {"group": 2, "index": 1}]}
+        self.assertTrue(any("共享物理连线" in error for error in poe.socket_layout_issues(changed, result)))
+        bx.groups(changed)[0].set("enabled", "false")
+        poe.release_inactive_sockets(changed)
+        self.assertEqual(bx.groups(changed)[0].get("slot"), "")
+        self.assertEqual(poe.socket_layout_issues(changed, result), [])
+
+    def test_season_and_engine_version_mismatch_cannot_be_certified(self):
+        intent = intent_for(self.root)
+        intent["league"] = "国服 S29"
+        with self.assertRaisesRegex(ValueError, "S30 对应 3.29"):
+            poe.validate_intent(intent, self.root)
+        with self.assertRaisesRegex(ValueError, "机制/宝石数据"):
+            engine.validate_game_version("3.28", "历史赛季", "3.29")
+        del intent["game_version"]
+        with self.assertRaisesRegex(ValueError, "game_version"):
+            poe.validate_intent(intent, self.root)
+        intent["league"], intent["game_version"] = "国服 S30", "3.29"
+        self.assertEqual(poe.validate_intent(intent, self.root)["game_version"], "3.29")
 
     def test_readiness_blocks_forgotten_ascendancy_and_temporary_defence(self):
         result = {"level": 86, "points": 108, "ascendancy_points": 6,
@@ -167,6 +195,7 @@ class DocumentTests(unittest.TestCase):
 
 def route_fixture():
     return {"name": "离线开荒路线测试", "confirmed": True, "goal": "验证分阶段推荐的限制", "league": "测试赛季", "class_id": 4,
+            "game_version": "3.29",
             "ascendancy": "Champion", "trade_mode": "ssf", "budget": {"amount": 0, "currency": "divine"}, "version_status": "unverified",
             "sources": [{"id": "gem", "title": "测试来源", "url": "https://example.org/gem", "checked_at": "2026-10-04", "version": "测试数据"}],
             "stages": [{"name": "测试阶段", "level": level, "main_skill_id": "ShieldCrush", "links": 1,
@@ -358,13 +387,25 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("命中吸取", report)
         self.assertIn("仅作诊断参考", report)
 
-    def test_10_recoloured_support_requires_matching_equipment(self):
+    def test_10_native_329_mismatched_colours_are_legal_and_quality_changes(self):
         plan = copy.deepcopy(self.refine)
-        plan["operations"]["gems"] = [{"group": 1, "index": 1, "skill_id": "SupportManaLeech", "level": 20}]
-        outcome = self.evaluate_plan(plan, "wrong-colour")
-        self.assertEqual(outcome["status"], "invalid")
-        self.assertTrue(any("Boots 插槽颜色" in error for error in outcome["errors"]))
-        with self.assertRaises(ValueError): poe.export(args(run=str(self.run_dir), name="wrong-colour"))
+        item_set = bx.active_set(self.original, "Items", "ItemSet", "activeItemSet")
+        item_id = int(next(slot for slot in item_set.findall("Slot") if slot.get("name") == "Boots").get("itemId"))
+        item = next(item for item in self.original.findall("Items/Item") if int(item.get("id")) == item_id)
+        import re
+        text = re.sub(r"^Sockets:.*$", "Sockets: W-W-W-W", bx.text_item(item), flags=re.M)
+        plan["operations"]["items"] = [{"id": item_id, "text": text}]
+        outcome = self.evaluate_plan(plan, "white-sockets")
+        self.assertEqual(outcome["status"], "validated", outcome["errors"])
+        saved = poe.read_json(self.run_dir / "candidates/white-sockets/evaluation.json")["result"]
+        self.assertEqual(saved["data_version"], "3.29")
+        self.assertEqual(saved["matching_socket_quality_bonus"], 10)
+        for gem in saved["gems"]:
+            if gem["slot"] == "Boots": self.assertEqual(gem["socket_quality_bonus"], 0)
+        standard = engine.calculate(self.pob, bx.serialise(bx.apply_plan(poe.prepared(self.original, self.intent), self.refine)))
+        self.assertTrue(any(gem["socket_quality_bonus"] == 10 for gem in standard["gems"] if gem["slot"] == "Boots"))
+        determination = next(gem for gem in saved["gems"] if gem.get("id") == "Determination")
+        self.assertEqual(determination["name_cn"], "坚定")
 
     def test_11_ascendancy_nodes_are_searchable_and_allocatable(self):
         entries = engine.calculate(self.pob, bx.serialise(self.original), catalog="nodes", query="Champion", limit=100)["catalog"]

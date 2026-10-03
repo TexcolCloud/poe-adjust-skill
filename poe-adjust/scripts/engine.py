@@ -6,15 +6,17 @@ separate interpreter or package manager is required on the recipient's PC.
 from __future__ import annotations
 
 import ctypes
+import csv
 import json
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-SUPPORTED_VERSIONS = {"2.67.2"}
+SUPPORTED_VERSIONS = {"2.67.2": "3.29"}
 SCRIPTS = Path(__file__).resolve().parent
 
 
@@ -80,7 +82,19 @@ def check(root: Path) -> dict:
         machine = struct.unpack("<H", stream.read(2))[0]
     if machine != 0x8664 or struct.calcsize("P") != 8:
         raise EngineError("需要 64 位 Python 与 64 位 PoECharm。优先使用 TeleAgent 自带的 Python。")
-    return {"pob_path": str(root), "engine_version": current, "python": sys.version.split()[0], "writes_to_installation": False}
+    return {"pob_path": str(root), "engine_version": current, "data_version": SUPPORTED_VERSIONS[current], "python": sys.version.split()[0], "writes_to_installation": False}
+
+
+def validate_game_version(game_version, league, data_version=None):
+    """The installed gem/mechanics data is not selected by the XML's tree version."""
+    if not isinstance(game_version, str) or not re.fullmatch(r"3\.\d+", game_version):
+        raise EngineError("请联网确认目标赛季的 game_version（如 3.29），不能从 S29 或 XML 的 treeVersion 推断。")
+    season = re.search(r"\bS\s*(\d+)\b", league, re.I)
+    # Tencent's S30 announcement explicitly identifies 3.29.0. S29 is its predecessor.
+    if season and ((int(season[1]) == 30 and game_version != "3.29") or (int(season[1]) < 30 and game_version == "3.29")):
+        raise EngineError("赛季与游戏版本不对应：国服 S30 对应 3.29，S29 不能按 3.29 交付。请澄清是历史赛季、永久区还是旧文件用于当前赛季；不要擅自更改用户目标。")
+    if data_version is not None and game_version != data_version:
+        raise EngineError(f"目标游戏版本 {game_version} 与本机机制/宝石数据 {data_version} 不一致。仅切换旧天赋树不能还原旧版规则，需要维护者提供经过验证的对应引擎。")
 
 
 def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None) -> dict:
@@ -105,6 +119,20 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EngineError("计算引擎没有返回有效结果：" + process.stdout.decode("utf-8", errors="replace")[-1000:]) from exc
     result["engine_version"] = version(root)
+    translations = root.parent / "Data/Translate/zh-rCN/Items_Gems.txt.csv"
+    names = {}
+    if translations.is_file():
+        with translations.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
+            names = {row[0]: row[1] for row in csv.reader(stream) if len(row) >= 2}
+    entries = result.get("gems", []) + result.get("catalog", [])
+    for query_result in result.get("catalog_batch", []):
+        entries += query_result["entries"]
+    for entry in entries:
+        if entry.get("name") in names:
+            entry["name_cn"] = names[entry["name"]]
+            entry["display_name"] = f"{entry['name_cn']}（{entry['name']}）"
+    if result.get("main_skill_name") in names:
+        result["main_skill_name_cn"] = names[result["main_skill_name"]]
     return result
 
 

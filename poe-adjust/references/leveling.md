@@ -30,6 +30,7 @@ python '<技能目录>/scripts/poe.py' route --invoked --file '<route.json>' --o
 |---|---|
 | confirmed | 用户已明确方向，true |
 | name / goal / league | 中文标题、目标、用户确认的国服赛季 |
+| game_version | 本路线依据的机制版本（如 3.29）；必须与本机数据匹配，国服 S30 对应 3.29，不能从 S29 编号推断 |
 | class_id / ascendancy | 职业 ID 与预定升华；0 贵族、1 野蛮人、2 游侠、3 女巫、4 决斗者、5 圣堂武僧、6 暗影刺客 |
 | trade_mode | ssf 或 trade |
 | budget | amount/currency，初始可投入通货 |
@@ -68,5 +69,7 @@ skills 每项必须填写：
 role 为 main/support/utility，每段恰有一个 main，并与 main_skill_id 一致。level 是本段目标宝石等级，不是角色等级；不会自动下调超出需求的宝石。获取方式 acquisition 为 quest/vendor/drop/trade/lab/owned。trade 在自力模式下拒绝；随机、迷宫、交易或特殊宝石须提供 fallback_skill_id，普通替代必须在该阶段可用。fallback 是主路线卡住时的过渡技能；仍须在说明核对替代辅助和武器类型，不能随便塞一个低级技能。
 
 宝石可以沿用前一段的获取来源；source_note 写“上一阶段已取得并继续练级”。拿到技能不等于已经练到推荐等级。所有国服价格无证据时保持未知，不用预算 0 推导一切免费。
+
+catalog 与 HTML 优先采用本机 Items_Gems 中文名称，并保留英文便于核对。3.29 普通孔色不限制宝石插入，匹配色提供品质加成；开荒缺资源时先满足连线和基础防御，不能把旧版强制改色流程当作必要花费。
 
 需要具体阶段 XML 时，取得可信同版本模板并按真实/明确目标装备建立配装候选，走 intent/evaluate/export；不能只写几颗宝石就宣称完成伤害、生存和续航验证。用户推进后可以上传新的角色 XML，继续计算下一步。

@@ -7,7 +7,6 @@ import csv
 from collections import Counter
 from datetime import datetime, timezone
 import html
-from itertools import combinations
 import json
 import math
 from pathlib import Path
@@ -19,7 +18,7 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -90,11 +89,15 @@ def begin(args):
 
 
 def validate_intent(value, original):
-    allowed = {"confirmed", "goal", "league", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "notes", "calculation_mode", "resource_mode"}
+    allowed = {"confirmed", "goal", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "notes", "calculation_mode", "resource_mode"}
     bx.require(not (set(value) - allowed), "意图包含未知字段：" + ", ".join(sorted(set(value) - allowed)))
     bx.require(value.get("confirmed") is True, "先向用户归纳并明确目标；confirmed 必须对应用户已表达的意图。")
     for field in ("goal", "league"):
         bx.require(isinstance(value.get(field), str) and value[field].strip(), f"需要已确认的 {field}。")
+    engine.validate_game_version(value.get("game_version"), value["league"])
+    bx.require(isinstance(value.get("version_source"), str) and value["version_source"].startswith(("https://", "http://")), "version_source 需要实际支持国服赛季与版本对应关系的网页 URL。")
+    bx.require(isinstance(value.get("version_checked_at"), str), "version_checked_at 需要实际查阅日期。")
+    datetime.fromisoformat(value["version_checked_at"].replace("Z", "+00:00"))
     bx.require(value.get("mode") in {"refine", "rebuild", "both"}, "mode 应为 refine/rebuild/both。")
     budget = value.get("budget")
     bx.require(isinstance(budget, dict) and set(budget) <= {"amount", "currency"}, "budget 需要 amount 与 currency。")
@@ -128,6 +131,7 @@ def validate_intent(value, original):
 def set_intent(args):
     run, state = read_run(args.run)
     intent = validate_intent(read_json(args.file), bx.read_document(run / "original.xml"))
+    engine.validate_game_version(intent["game_version"], intent["league"], engine.check(engine.resolve_root(state["pob_path"]))["data_version"])
     state["intent"] = intent
     state["intent_hash"] = bx.digest(json.dumps(intent, ensure_ascii=False, sort_keys=True))
     state["phase"] = "designing"
@@ -155,26 +159,55 @@ def active_gems(result):
     return [gem for gem in result["gems"] if gem.get("enabled") and gem.get("group_enabled") and active_slot(gem.get("slot", ""), result)]
 
 
-def socket_groups_fit(groups, links):
-    """Place each skill group inside one physical link; white sockets/gems are wildcards."""
-    if not groups:
-        return True
-    group, *remaining_groups = groups
-    for link_index, link in enumerate(links):
-        for chosen in combinations(range(len(link)), len(group)):
-            colours = [link[i] for i in chosen]
-            missing = sum(max(group.count(c) - colours.count(c), 0) for c in "RGB")
-            if missing > colours.count("W"):
-                continue
-            remaining_links = list(links)
-            remaining_links[link_index] = [c for i, c in enumerate(link) if i not in chosen]
-            if socket_groups_fit(remaining_groups, remaining_links):
-                return True
-    return False
+def release_inactive_sockets(document):
+    """Keep alternate groups but do not let them shift active native socket quality."""
+    for group in bx.groups(document):
+        if group.get("enabled", "true") == "false":
+            group.set("slot", "")
+
+
+def socket_layout_issues(document, result):
+    """Mirror PoB 3.29's sequential socket assignment; colours grant quality only."""
+    errors = []
+    equipped = {item["slot"]: item for item in result["equipped"]}
+    texts = {int(item.get("id")): bx.text_item(item) for item in document.findall("Items/Item")}
+    offsets, used_links = {}, {}
+    for index, group in enumerate(bx.groups(document), 1):
+        slot = group.get("slot", "")
+        gems = [gem for gem in result["gems"] if gem["group"] == index]
+        offset = offsets.get(slot, 0)
+        offsets[slot] = offset + len(gems)
+        if group.get("source") or group.get("enabled", "true") == "false" or not active_slot(slot, result) or not gems:
+            continue
+        item = equipped.get(slot)
+        if not item:
+            errors.append(f"第 {index} 组需要关联实际装备插槽；当前 {slot or '未指定'} 没有装备。")
+            continue
+        match = re.search(r"^Sockets:\s*(.+)$", texts.get(item["id"], ""), re.M)
+        links = [re.findall(r"[RGBWAD]", text) for text in match[1].split()] if match else []
+        physical = [(link_index, colour) for link_index, colours in enumerate(links) for colour in colours]
+        assigned = physical[offset:offset + len(gems)]
+        if len(assigned) != len(gems):
+            errors.append(f"{slot} 插槽数量不足：第 {index} 组按原生顺序占用第 {offset+1}–{offset+len(gems)} 孔，装备只有 {len(physical)} 孔。移除不用的组或调整装备/技能位置。")
+            continue
+        if any(colour in "AD" for _, colour in assigned):
+            errors.append(f"{slot} 第 {index} 组占用了深渊/特殊插槽，不能视为普通宝石孔。")
+        if len({link for link, _ in assigned}) > 1:
+            errors.append(f"{slot} 连线不匹配：第 {index} 组跨越未相连的插槽；按装备孔位顺序拆分或重新连接，不能仅在 PoB 中写作一组。")
+        has_support = any(gem.get("support") and gem.get("enabled") for gem in gems)
+        for link in {link for link, _ in assigned}:
+            previous = used_links.get((slot, link))
+            if previous and (previous[1] or has_support):
+                errors.append(f"{slot} 第 {previous[0]} 与第 {index} 组共享物理连线且含辅助；请合并为同一技能组，确保辅助、保留及消耗按真实连接计算。")
+            used_links[(slot, link)] = (index, has_support)
+    return errors
 
 
 def mechanical_issues(document, result, intent):
     errors, warnings = [], list(result.get("warnings", []))
+    engine.validate_game_version(intent.get("game_version"), intent["league"], result.get("data_version"))
+    if result["tree_version"] != result["data_version"].replace(".", "_"):
+        errors.append("天赋版本与当前机制/宝石数据版本不同；当前适配仅接受对应标准天赋树，不能把旧树或特殊模式树当作当前普通赛季。")
     stats = result["stats"]
     config_keys = set(result["config_keys"])
     for entry in bx.active_config(document).findall("Input"):
@@ -207,28 +240,7 @@ def mechanical_issues(document, result, intent):
                 errors.append(f"{name} 装备的 {req} 需求未满足。")
         if item.get("unparsed"):
             warnings.append(f"{name} 存在引擎未完整解析的词缀：" + "；".join(item["unparsed"]))
-    # PoB lets a user create a socket group independently from physical sockets.
-    item_texts = {int(item.get("id")): bx.text_item(item) for item in document.findall("Items/Item")}
-    slotted_groups = {}
-    for group_index, group in enumerate(bx.groups(document), 1):
-        slot = group.get("slot", "")
-        if group.get("source") or group.get("enabled", "true") == "false" or not slot or not active_slot(slot, result): continue
-        gems = group.findall("Gem")
-        if not gems: continue
-        item = equipped.get(slot)
-        if not item:
-            if group.get("enabled", "true") == "true": errors.append(f"技能组的 {slot} 没有装备。")
-            continue
-        colours = [gem.get("color", "W") for gem in result["gems"] if gem["group"] == group_index]
-        slotted_groups.setdefault(slot, []).append(colours)
-    for slot, groups in slotted_groups.items():
-        item = equipped[slot]
-        match = re.search(r"^Sockets:\s*(.+)$", item_texts.get(item["id"], ""), re.M)
-        links = [re.findall(r"[RGBW]", text) for text in match.group(1).split()] if match else []
-        if item.get("socket_colours_always_match"):
-            links = [["W"] * len(link) for link in links]
-        if not socket_groups_fit(sorted(groups, key=len, reverse=True), links):
-            errors.append(f"{slot} 插槽颜色、数量或连线不匹配：技能组 {' / '.join(''.join(g) for g in groups)}；装备 {' / '.join(''.join(g) for g in links)}。如需改色/连线，请在候选装备文本和成本中同时体现。")
+    errors.extend(socket_layout_issues(document, result))
     for key, threshold in intent["minimum_stats"].items():
         if key not in stats or stats[key] < threshold:
             errors.append(f"{METRICS[key]} 为 {stats.get(key,'未知')}，低于约定的 {threshold}。")
@@ -421,7 +433,7 @@ def compare(before, after, comparable=True):
 def semantics(result):
     return {"class": result["class"], "ascendancy": result["ascendancy"], "level": result["level"], "tree_version": result["tree_version"],
             "nodes": result["nodes"], "main_skill": result["main_skill"], "main_group": result["main_group"],
-            "gems": [{key: gem.get(key) for key in ("group", "index", "id", "level", "quality", "enabled", "group_enabled", "slot")} for gem in result["gems"]],
+            "gems": [{key: gem.get(key) for key in ("group", "index", "id", "level", "quality", "enabled", "group_enabled", "slot", "matches_socket", "socket_quality_bonus")} for gem in result["gems"]],
             "equipped": [{key: item.get(key) for key in ("slot", "id", "name", "base", "active")} for item in result["equipped"]]}
 
 
@@ -460,6 +472,7 @@ def evaluate(args):
         source = bx.read_document(path if path.is_absolute() else plan_path.parent / path)
     # Apply shared scenario first; candidate-specific conditions then require evidence.
     document = bx.apply_plan(prepared(source, intent), plan)
+    release_inactive_sockets(document)
     result = engine.calculate(root, bx.serialise(document))
     errors, warnings = mechanical_issues(document, result, intent)
     errors.extend(check_constraints(original, document, baseline, result, intent, plan))
@@ -515,6 +528,12 @@ def report_html(state, outcome):
     rows = []
     for key, metric in outcome["comparison"].items():
         rows.append(f"<tr><th>{esc(METRICS[key])}</th><td>{metric['before']:,.2f}</td><td>{metric['after']:,.2f}</td><td>{metric['delta']:+,.2f}</td></tr>")
+    skill_rows = []
+    for gem in outcome["result"]["gems"]:
+        if not gem.get("group_enabled") or gem.get("source") or not active_slot(gem.get("slot", ""), outcome["result"]):
+            continue
+        state_label = "启用" if gem.get("enabled") else "未启用（仍占孔）"
+        skill_rows.append(f"<tr><td>{esc(gem.get('slot', ''))} · 第 {gem['group']} 组 / 第 {gem['index']} 个</td><td>{esc(gem.get('display_name',gem.get('name',gem.get('id'))))}</td><td>{gem.get('level',1)} 级 / {gem.get('quality',0)} 品质</td><td>+{gem.get('socket_quality_bonus',0)} 品质</td><td>{state_label}</td></tr>")
     sources = []
     for source in plan.get("sources", []):
         url = source.get("url", "")
@@ -548,9 +567,10 @@ def report_html(state, outcome):
         baseline_note = '<p class="note">原始方案存在下列诊断提示；有资源不足等问题时，其面板仅作诊断参考，不能视为游戏内可持续达到的表现。</p>' + listing(outcome["baseline_warnings"])
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>POE 配装说明</title>
 <style>body{{font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif;background:#f5f4f0;color:#1f2933;max-width:1040px;margin:32px auto;padding:0 24px}}header,section{{background:white;border:1px solid #dddcd6;border-radius:12px;padding:24px;margin:18px 0}}h1{{font-size:30px;margin:0}}h2{{font-size:21px;color:#235b53}}small{{color:#58666c}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:right;padding:9px;border-bottom:1px solid #e5e7eb}}th:first-child{{text-align:left}}pre{{white-space:pre-wrap;word-break:break-word;font-size:13px}}a{{color:#17695e}}.note{{background:#fff8df;padding:14px;border-radius:8px}}@media print{{body{{margin:0}}section{{break-inside:avoid}}}}</style>
-<header><small>POE 配装助手 · {esc(outcome['evaluated_at'])} · PoB {esc(outcome['engine_version'])}</small><h1>{esc(outcome['name'])}</h1><p>{esc(plan['summary'])}</p><p>计算与 XML 回读已通过。预算状态：{esc(labels[b['status']])}。</p></header>
+<header><small>POE 配装助手 · {esc(outcome['evaluated_at'])} · PoB {esc(outcome['engine_version'])} · 游戏数据 {esc(outcome['result']['data_version'])}</small><h1>{esc(outcome['name'])}</h1><p>{esc(plan['summary'])}</p><p>计算与 XML 回读已通过。预算状态：{esc(labels[b['status']])}。<a href="{esc(intent['version_source'])}">赛季版本依据</a>（{esc(intent['version_checked_at'])} 查阅）</p></header>
 <section><h2>你的目标</h2><p>{esc(intent['goal'])}</p><p>{esc(intent['league'])} · 目标等级 {intent['target_level']} · 预算 {esc(intent['budget']['amount'])} {esc(intent['budget']['currency'])}</p><p>{esc(intent['notes'])}</p></section>
 <section><h2>前后对比</h2><p>原角色：{esc(state.get('baseline_label','用户导入角色'))}；候选：{esc(outcome['result']['main_skill_name'])}。总 DPS 只汇总勾选计入的技能，不能代替实际刷图速度。</p>{baseline_note}<table><thead><tr><th>指标</th><th>原方案</th><th>新方案</th><th>变化</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
+<section><h2>技能与插槽安排</h2><p>按下列顺序镶嵌，连线以 XML 中装备为准。3.29 允许宝石插入不同颜色的普通孔；颜色匹配时有品质加成。表内品质加成为本机按孔位计算的部分，其他装备或辅助的品质影响以 PoECharm 最终面板为准。</p><table><tr><th>位置与顺序</th><th>宝石</th><th>基础等级 / 品质</th><th>匹配孔色加成</th><th>状态</th></tr>{''.join(skill_rows)}</table></section>
 <section><h2>购买与准备</h2><p>已列成本：{b['low']:g}–{b['high']:g} {esc(b['currency'])}。待核实项目未计入这个范围；原 XML 也不代表游戏仓库盘点。</p><h3>程序从前后 XML 检测到的物品准备</h3>{listing(materials)}<h3>采购、制作和其他步骤</h3>{listing(shopping)}<h2>切换顺序</h2>{listing(plan.get('migration_steps',[]))}</section>
 <section><h2>计算条件与待核实项</h2><p>{esc(condition_summary)}</p><p>共同场景：<code>{esc(scenario)}</code></p>{listing(resources)}{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
 <section><h2>资料依据</h2><ul>{''.join(sources)}</ul><details><summary>具体改动及条件依据</summary><pre>{esc(changes)}</pre><pre>{esc(condition_notes)}</pre></details></section>
@@ -599,22 +619,22 @@ def catalog(args):
             bx.require(isinstance(query.get("query", ""), str) and type(query.get("limit", 20)) is int and 1 <= query.get("limit", 20) <= 100, "查询文字或 limit 无效。")
         document = bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
         result = engine.calculate(root, document, queries=queries)
-        return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "queries": result["catalog_batch"]}
+        return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"], "queries": result["catalog_batch"]}
     bx.require(args.kind, "catalog 需要 --kind 或 --batch。")
     if args.kind == "translations":
         entries = []
         folder = root.parent / "Data" / "Translate" / "zh-rCN"
         bx.require(folder.is_dir(), "该安装目录没有 PoECharm 简体中文翻译数据。")
-        for path in folder.glob("*.csv"):
+        for path in sorted(folder.glob("*.csv"), key=lambda path: (path.name != "Items_Gems.txt.csv", path.name)):
             with path.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
                 for row in csv.reader(stream):
                     if len(row) >= 2 and any(args.query.casefold() in cell.casefold() for cell in row[:2]):
-                        entries.append({"english": row[0], "chinese": row[1]})
+                        entries.append({"english": row[0], "chinese": row[1], "source": path.name, "preferred_gem_name": path.name == "Items_Gems.txt.csv"})
                         if len(entries) >= args.limit: return {"entries": entries, "truncated": True}
         return {"entries": entries, "truncated": False}
     document = bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
     result = engine.calculate(root, document, catalog=args.kind, query=args.query, limit=args.limit)
-    return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "total": result.get("catalog_total"), "entries": result.get("catalog", [])}
+    return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"], "total": result.get("catalog_total"), "entries": result.get("catalog", [])}
 
 
 def parser():
@@ -681,7 +701,7 @@ def main(argv=None):
             ids = routes.gem_ids(route)
             calculation = engine.calculate(engine.resolve_root(args.pob), queries=[{"kind": "gems", "query": "id:" + skill_id, "limit": 2} for skill_id in ids])
             gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] for entry in query["entries"]}
-            checked, warnings = routes.validate(route, gems)
+            checked, warnings = routes.validate(route, gems, calculation["data_version"])
             output = Path(args.out).resolve()
             bx.require(output != Path(args.file).resolve(), "路线说明不能覆盖输入 JSON。")
             bx.require(output.suffix.lower() == ".html", "--out 请指定 HTML 文件。")

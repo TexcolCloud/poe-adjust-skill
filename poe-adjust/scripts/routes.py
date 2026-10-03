@@ -7,6 +7,7 @@ import html
 import math
 
 import buildxml as bx
+import engine
 
 
 ACQUISITIONS = {"quest": "任务奖励", "vendor": "任务解锁商店", "drop": "随机掉落", "trade": "玩家交易", "lab": "迷宫获取", "owned": "确认已有"}
@@ -27,12 +28,13 @@ def gem_ids(route):
     return sorted(result)
 
 
-def validate(route, gems):
-    allowed = {"name", "confirmed", "goal", "league", "class_id", "ascendancy", "trade_mode", "budget", "version_status", "version_source", "scope", "stages", "sources", "risks", "notes"}
+def validate(route, gems, data_version=None):
+    allowed = {"name", "confirmed", "goal", "league", "game_version", "class_id", "ascendancy", "trade_mode", "budget", "version_status", "version_source", "scope", "stages", "sources", "risks", "notes"}
     bx.require(not (set(route) - allowed), "路线包含未知字段：" + ", ".join(sorted(set(route) - allowed)))
     bx.require(route.get("confirmed") is True, "先完成开荒目标的多轮澄清，再保存 confirmed=true。")
     for key in ("name", "goal", "league", "ascendancy"):
         bx.require(isinstance(route.get(key), str) and route[key].strip(), "路线需要 " + key)
+    engine.validate_game_version(route.get("game_version"), route["league"], data_version)
     bx.require(type(route.get("class_id")) is int and route["class_id"] in bx.CLASSES, "class_id 不是 PoE1 职业。")
     bx.require(route.get("trade_mode") in {"ssf", "trade"}, "trade_mode 应为 ssf 或 trade。")
     bx.require(route.get("scope", "maps") in {"maps", "campaign", "partial"}, "scope 应为 maps/campaign/partial。")
@@ -99,9 +101,9 @@ def validate(route, gems):
             if uncertain:
                 bx.require(fallback and fallback["skill_id"] != entry["skill_id"] and not fallback.get("special_variant") and not fallback.get("vaal") and fallback["min_level"] <= stage["level"], label + "随机/交易/特殊宝石需给出可到等级的普通宝石 fallback_skill_id：" + entry["name"])
                 warnings.append(label + "的 " + entry["name"] + " 取决于获取条件；拿不到则使用 " + fallback["name"] + "，并复查辅助和属性需求。")
-            skill["name"] = entry["name"]
+            skill["name"] = entry.get("display_name", entry["name"])
             skill["minimum_character_level"] = requirements[skill["level"]]
-            skill["fallback_name"] = fallback["name"] if fallback else None
+            skill["fallback_name"] = fallback.get("display_name", fallback["name"]) if fallback else None
         items = stage.get("required_items", [])
         bx.require(isinstance(items, list), label + "required_items 应为数组。")
         for item in items:

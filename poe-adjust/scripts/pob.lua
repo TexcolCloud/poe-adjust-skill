@@ -41,6 +41,8 @@ result.level = build.characterLevel
 result.class = build.spec.curClassName
 result.ascendancy = build.spec.curAscendClassName
 result.tree_version = build.spec.treeVersion
+result.data_version = latestTreeVersion:gsub("_", ".")
+result.matching_socket_quality_bonus = data.misc.MatchingSocketQualityBonus or 0
 result.main_group = build.mainSocketGroup
 result.main_skill = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.id
 result.main_skill_name = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.name
@@ -59,6 +61,9 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
     table.insert(result.gems, {group = groupIndex, index = gemIndex, id = gem.skillId, name = gem.nameSpec,
       enabled = gem.enabled, group_enabled = group.enabled, slot = group.slot, source = group.source, level = gem.level, quality = gem.quality,
       color = grantedEffect and ({"R", "G", "B", "W"})[grantedEffect.color] or "W",
+      support = grantedEffect and grantedEffect.support or false,
+      matches_socket = gem.matchesSocket or false,
+      socket_quality_bonus = gem.matchesSocket and result.matching_socket_quality_bonus or 0,
       recognised = gem.gemData ~= nil or gem.grantedEffect ~= nil,
       req_level = gem.reqLevel, req_str = gem.reqStr, req_dex = gem.reqDex, req_int = gem.reqInt})
   end

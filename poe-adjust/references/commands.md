@@ -52,7 +52,10 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 {
   "confirmed": true,
   "goal": "当前等级刷图更稳定，尽量少按键",
-  "league": "国服 S29（由用户确认）",
+  "league": "国服 S30（由用户确认）",
+  "game_version": "3.29",
+  "version_source": "实际查阅并支持赛季对应关系的网页 URL",
+  "version_checked_at": "实际查阅的 ISO 日期",
   "mode": "both",
   "budget": {"amount": 20, "currency": "divine"},
   "target_level": 86,
@@ -73,6 +76,8 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 ```
 
 示例数值不是默认事实，按对话填写。`target_level`、`baseline_main_group`、`quest_passive_points`、`ascendancy_points` 均须明确填写，脚本不默认满任务或满升华。用户未回答时先分轮询问。`mode` 为 refine/rebuild/both。预算 amount/currency 必填，金额是本次可投入预算；自力模式可写 0 并将确认已有的物品记为 owned。没有预算时先问。
+
+`game_version` 为已联网核实的游戏主版本（如 3.29），不是 PoB 2.67.2、XML targetVersion=3_0 或国服赛季编号。`version_source` 为实际网页 URL，`version_checked_at` 为查阅日期。国服 [S30 官方公告](https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml) 明确说明 3.29.0；本机机制/宝石数据版本为 3.29。S29 文件名不证明目标赛季，若用户也说 S29，必须先澄清是否永久区/旧文件用于当前赛季。旧树并不切换技能与计算规则。本包暂不支持历史版本实算。
 
 `keep_slots` 锁定该插槽原物品的完整文本，而非只锁物品名字。`keep_skill_ids` 要求候选中该技能启用。未明确允许时三个 allow 字段保持 false。`baseline_main_group` 从 inspection 的 `skill_groups[].index` 选择；先确定用户真正使用的主技能。
 
@@ -126,6 +131,8 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 正常装备插槽：Weapon 1、Weapon 2、Weapon 1 Swap、Weapon 2 Swap、Helmet、Body Armour、Gloves、Boots、Amulet、Belt、Ring 1、Ring 2、Flask 1–5。珠宝插槽为 `Jewel 节点ID`。
 
 宝石的 `count`、技能组 `group_count` 与层数仅在真实机制支持时设置，解释实际持续数量。克隆物品或换词缀要确认前后缀、基底、物等、势力、腐化和赛季限制。程序不替代完整游戏物品合法性数据库。
+
+3.29 起宝石不受普通插槽颜色限制，匹配红/绿/蓝提供 +10 品质；不应为插入异色宝石强制增加改色成本。`gems[].quality` 是宝石自身品质，不能把插槽加成再加进去。原生计算按同装备各组和组内宝石的先后顺序分配物理孔位，输出 `matches_socket` / `socket_quality_bonus`。程序保留未启用组并清除其 slot，避免其挤占在用组的品质位置。真实不相连的孔必须拆组；同一连线上含辅助的技能不能拆成独立组来漏算保留/消耗。新 XML 与说明包含实际镶嵌顺序。
 
 ### 整体换流派
 
