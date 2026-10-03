@@ -22,6 +22,8 @@ python $entry status --run '<工作区>/配装任务/会话'
 
 `--run` 始终指向同一个会话目录。首次 start 要求目录为空或尚不存在；原始文件和已有诊断放在其他目录也可以。读取诊断时用 `Get-Content -Raw -Encoding UTF8 ... | ConvertFrom-Json`，优先选取 `calculation.stats`、`calculation.warnings` 和相关技能组，不需要逐行读完整个大文件。
 
+start 返回 overview，已含职业、等级、两个版本和技能组，不需要为了首次问询再 inspect。inspection 文件保留原 XML 字段：skill_groups[].gems[].skillId/nameSpec；计算结果则为 calculation.gems[].id/name。不要反复试猜字段名。任务点/升华进度仍由用户确认，不能从缓存的 unallocatedPassives 推断已完成任务数。
+
 分享码：把实际取得的纯 PoB 分享码存成文本，运行 `decode --input '<分享码.txt>' --out '<模板.xml>'`。也可直接将纯分享码文件交给 inspect/start。网页地址和 HTML 不是分享码；用现有联网工具获取其中的真实分享内容，保留来源。
 
 查询：
@@ -35,12 +37,18 @@ python $entry catalog --kind nodes --input '<角色.xml>' --query '12345' --limi
 python $entry catalog --kind nodes --input '<角色.xml>' --query 'Champion' --limit 30
 python $entry catalog --kind uniques --query 'Emperor' --limit 3
 python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
+python $entry catalog --kind classes --query 'Duelist' --limit 1
+python $entry catalog --kind links --query 'ShieldCrush,SupportBrutality,SupportMeleePhysicalDamage' --limit 1
 python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 ```
 
-一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的角色等级需求 `level_requirements`、`min_level`、`special_variant`、`vaal`，开荒时据此核对而非猜等级。
+一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的角色等级需求 `level_requirements`、`min_level`、`special_variant`、`vaal`，开荒时据此核对而非猜等级。
+
+`classes` 返回当前树的职业与升华 ID/英文名，避免错配或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 compatible/incompatible。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
 
 技能返回 `skill_id` 才是操作字段；`id` 可能是游戏物品路径。查询天赋时带输入文件，使用其版本与当前已点天赋。结果按本机引擎计算的所需新增点数排序；`allocated` 表示已点，`reachable` 表示有可分配路线，`points_to_allocate` 是新增点数，`path` 包含到目标需要的节点 ID。将路线与保留节点合并后设置完整 `tree.nodes`，再评估点数和依赖；不要孤立添加远处的大点。`linked` 返回邻接节点，供调整已有路径时查看。查询只返回最多 100 条；细化关键词，不反复截断全库。
+
+局部调整优先 `tree.nodes_add` / `tree.nodes_remove`，由程序保留其他节点，避免手抄整个列表遗漏连接或珠宝节点。nodes_add 要包含 catalog 返回的完整 path；nodes_remove 只接受确实已点的节点。不要与完整 nodes 混用。增量操作不自动修补移除节点造成的断路，evaluate 会拒绝丢失的节点，须按真实连接修复。换升华时也需移除不再适用的原升华节点。
 
 升华节点返回 `ascendancy_name` 和 `is_ascendancy_start`；用升华英文名（如 Champion）可一次查齐该升华节点及原生路径，不能按节点 ID 大小猜测归属。升华起点不消耗点数，分配结果以 evaluate 的 `ascendancy_points` 为准。
 
@@ -122,7 +130,7 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 | replace_skills | 完整替换当前技能方案的技能组数组；其他未启用方案保留。每组包含 slot、enabled、include_in_full_dps、main_active_skill 等组字段，以及 gems 数组；新宝石至少提供 skill_id，默认 1 级 0 品质 |
 | items | 数组：`{"id":20,"text":"Rarity: RARE\n名称\n基底\n..."}`；原 ID 表示替换，新 ID 表示新增。文本必须为 PoB 可识别格式，可保留已有物品的 ID |
 | equip | 数组：`{"slot":"Weapon 2","item_id":20}`；flask 可附 `active:false`；`Jewel 12345` 表示天赋珠宝插槽；0 表示移除 |
-| tree | 对象：nodes 是完整节点 ID 数组；class_id、ascendancy_id、secondary_ascendancy_id 可选；masteries 为 `{"节点ID":效果ID}`。沿用输入天赋版本，不能靠改 treeVersion 强行迁移 |
+| tree | 对象：nodes 完整替换，或 nodes_add/nodes_remove 增量添加/移除；class_id、ascendancy_id、secondary_ascendancy_id 可选；masteries 为 `{"节点ID":效果ID}`。沿用输入天赋版本，不能靠改 treeVersion 强行迁移 |
 | level | 1–100，必须等于用户确认的 target_level |
 | main_group | 当前技能组的 1 起始序号 |
 | weapon_set | 1 或 2 |
@@ -165,7 +173,7 @@ status：
 
 evaluate 会计算原方案与候选、检查约束、输出候选 XML，然后回读重算。`status:invalid` 的 `errors` 必须解决才可 export。warnings 不被隐藏：包含引擎未解析词缀、缺少涂油、预算未知、升级比较等。
 
-已覆盖：解析/重复 ID/悬空装备引用、当前方案选择、丢失天赋、当前等级点数与升华点/无解释的留点、启用技能与装备需求、常态守护/药剂、持续资源或有时限的爆发、自动物品差异、启用技能组的孔色/数量/连线匹配（支持白孔和引擎标记的任意孔色装备）、用户锁定条件、预算上限、回读数据与核心指标一致性。禁用技能组视为备选方案，不占用当前配装的物理插槽。
+已覆盖：解析/重复 ID/悬空装备引用、当前方案选择、丢失天赋、当前等级点数与升华点/无解释的留点、启用技能与装备需求、宝石自身等级/品质上限和无效辅助、常态守护/药剂、持续资源或有时限的爆发、自动物品差异、启用技能组的数量/连线与原生顺序、3.29 孔色品质、用户锁定条件、预算上限、回读数据与核心指标一致性。禁用技能组视为备选方案，不占用当前配装的物理插槽。
 
 仍需 agent 结合证据审查：改色/连线的可行性与成本、插槽顺序对特殊装备的作用、触发循环、药剂覆盖率、条件持续性、特殊机制、所有装备词缀组合的游戏内合法性、国服可获得性和价格、用户目标是否实际改善。不能把“计算通过”写成“全部游戏机制与市场均保证”。
 

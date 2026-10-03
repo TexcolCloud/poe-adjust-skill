@@ -28,7 +28,11 @@ def gem_ids(route):
     return sorted(result)
 
 
-def validate(route, gems, data_version=None):
+def link_query(stage):
+    return ",".join([stage.get("main_skill_id", "")] + [skill.get("skill_id", "") for skill in stage.get("skills", []) if skill.get("role") == "support"])
+
+
+def validate(route, gems, data_version=None, classes=None, compatibility=None):
     allowed = {"name", "confirmed", "goal", "league", "game_version", "class_id", "ascendancy", "trade_mode", "budget", "version_status", "version_source", "scope", "stages", "sources", "risks", "notes"}
     bx.require(not (set(route) - allowed), "路线包含未知字段：" + ", ".join(sorted(set(route) - allowed)))
     bx.require(route.get("confirmed") is True, "先完成开荒目标的多轮澄清，再保存 confirmed=true。")
@@ -36,6 +40,9 @@ def validate(route, gems, data_version=None):
         bx.require(isinstance(route.get(key), str) and route[key].strip(), "路线需要 " + key)
     engine.validate_game_version(route.get("game_version"), route["league"], data_version)
     bx.require(type(route.get("class_id")) is int and route["class_id"] in bx.CLASSES, "class_id 不是 PoE1 职业。")
+    if classes is not None:
+        selected = next((entry for entry in classes if entry["id"] == route["class_id"]), None)
+        bx.require(selected and route["ascendancy"] in {entry["name"] for entry in selected["ascendancies"]}, "升华不属于所选职业或名称无法识别；请从 catalog --kind classes 返回的英文名中选择。")
     bx.require(route.get("trade_mode") in {"ssf", "trade"}, "trade_mode 应为 ssf 或 trade。")
     bx.require(route.get("scope", "maps") in {"maps", "campaign", "partial"}, "scope 应为 maps/campaign/partial。")
     budget = route.get("budget", {})
@@ -81,6 +88,10 @@ def validate(route, gems, data_version=None):
         main = [skill for skill in skills if skill.get("role") == "main"]
         bx.require(len(main) == 1 and main[0].get("skill_id") == stage.get("main_skill_id"), label + "必须指定一个一致的主技能。")
         bx.require(sum(skill.get("role") in {"main", "support"} for skill in skills) <= stage["links"], label + "主技能与辅助数量超过连线数。")
+        if compatibility is not None:
+            checked_links = compatibility.get(link_query(stage))
+            bx.require(checked_links, label + "缺少原生辅助兼容性结果。")
+            bx.require(not checked_links["incompatible"], label + "以下辅助不支持该主技能：" + ", ".join(checked_links["incompatible"]))
         for skill in skills:
             bx.require(set(skill) <= {"skill_id", "level", "quality", "role", "acquisition", "source_id", "source_note", "fallback_skill_id"}, label + "宝石存在未知字段。")
             entry = gems.get(skill.get("skill_id"))

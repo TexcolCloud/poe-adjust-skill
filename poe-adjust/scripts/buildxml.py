@@ -241,8 +241,17 @@ def apply_plan(source, plan):
         active_set(root, "Items", "ItemSet", "activeItemSet").set("useSecondWeaponSet", attr(operations["weapon_set"] == 2))
     if "tree" in operations:
         data = operations["tree"]
-        require(not (set(data) - {"nodes", "class_id", "ascendancy_id", "secondary_ascendancy_id", "masteries"}), "tree 包含未知字段；天赋版本沿用输入文件。")
+        require(not (set(data) - {"nodes", "nodes_add", "nodes_remove", "class_id", "ascendancy_id", "secondary_ascendancy_id", "masteries"}), "tree 包含未知字段；天赋版本沿用输入文件。")
         spec = active_spec(root)
+        require(not ("nodes" in data and ("nodes_add" in data or "nodes_remove" in data)), "tree.nodes 完整替换不能与 nodes_add/nodes_remove 增量调整混用。")
+        if "nodes_add" in data or "nodes_remove" in data:
+            current = {int(n) for n in spec.get("nodes", "").split(",") if n}
+            for key in ("nodes_add", "nodes_remove"):
+                require(isinstance(data.get(key, []), list) and all(type(n) is int and n > 0 for n in data.get(key, [])), key + " 应为正整数节点 ID 数组。")
+            added, removed = set(data.get("nodes_add", [])), set(data.get("nodes_remove", []))
+            require(not (added & removed), "同一个节点不能同时添加和移除。")
+            require(removed <= current, "nodes_remove 包含原方案未分配的节点。")
+            data = {**data, "nodes": sorted((current - removed) | added)}
         if "nodes" in data:
             nodes = data["nodes"]
             require(isinstance(nodes, list) and all(isinstance(n, int) and n > 0 for n in nodes), "nodes 应为天赋节点 ID 数组。")

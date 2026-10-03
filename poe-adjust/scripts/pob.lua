@@ -43,6 +43,16 @@ result.ascendancy = build.spec.curAscendClassName
 result.tree_version = build.spec.treeVersion
 result.data_version = latestTreeVersion:gsub("_", ".")
 result.matching_socket_quality_bonus = data.misc.MatchingSocketQualityBonus or 0
+result.classes = {}
+for id, class in pairs(build.spec.tree.classes) do
+  local ascendancies = {}
+  for ascendancyId, ascendancy in pairs(class.classes) do
+    if ascendancyId > 0 then table.insert(ascendancies, {id = ascendancyId, name = ascendancy.name}) end
+  end
+  table.sort(ascendancies, function(a,b) return a.id < b.id end)
+  table.insert(result.classes, {id = id, name = class.name, ascendancies = ascendancies})
+end
+table.sort(result.classes, function(a,b) return a.id < b.id end)
 result.main_group = build.mainSocketGroup
 result.main_skill = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.id
 result.main_skill_name = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.name
@@ -58,10 +68,17 @@ table.sort(result.nodes)
 for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
   for gemIndex, gem in ipairs(group.gemList) do
     local grantedEffect = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
+    local supported = {}
+    for activeGem, _ in pairs(gem.supportEffect and gem.supportEffect.isSupporting or {}) do
+      table.insert(supported, activeGem.skillId or activeGem.nameSpec)
+    end
+    table.sort(supported)
     table.insert(result.gems, {group = groupIndex, index = gemIndex, id = gem.skillId, name = gem.nameSpec,
       enabled = gem.enabled, group_enabled = group.enabled, slot = group.slot, source = group.source, level = gem.level, quality = gem.quality,
+      max_base_level = gem.gemData and ((gem.gemData.naturalMaxLevel or 20) + 1),
       color = grantedEffect and ({"R", "G", "B", "W"})[grantedEffect.color] or "W",
       support = grantedEffect and grantedEffect.support or false,
+      supports_skills = supported, support_applied = #supported > 0,
       matches_socket = gem.matchesSocket or false,
       socket_quality_bonus = gem.matchesSocket and result.matching_socket_quality_bonus or 0,
       recognised = gem.gemData ~= nil or gem.grantedEffect ~= nil,
@@ -110,6 +127,31 @@ local function queryCatalog(kind, query, limit)
           from_item = skill.fromItem or false, support = skill.support or false,
           constant_stats = skill.constantStats, stat_ids = skill.stats})
       end
+    end
+  elseif kind == "links" then
+    local ids = {}
+    for id in string.gmatch(query or "", "[^,%s]+") do table.insert(ids, id) end
+    assert(#ids >= 1 and #ids <= 6, "links query needs main skill ID and up to five supports")
+    local main = assert(data.skills[ids[1]], "Unknown main skill: " .. ids[1])
+    assert(not main.support, "Main skill must be active")
+    local supports = {}
+    for i = 2, #ids do
+      local skill = assert(data.skills[ids[i]], "Unknown support: " .. ids[i])
+      assert(skill.support, "Expected support gem: " .. ids[i])
+      table.insert(supports, {grantedEffect = skill})
+    end
+    local active = build.calcsTab.calcs.createActiveSkill({grantedEffect = main, gemData = data.gems[data.gemForSkill[ids[1]]]}, supports, build.calcsTab.mainEnv.player)
+    local compatible, incompatible = {}, {}
+    for _, support in ipairs(supports) do
+      local found = false
+      for _, effect in ipairs(active.effectList) do if effect == support then found = true end end
+      table.insert(found and compatible or incompatible, support.grantedEffect.id)
+    end
+    table.insert(entries, {id = query, skill_id = ids[1], compatible = compatible, incompatible = incompatible,
+      scope = "Native skill-type compatibility only; excludes actual equipment, trigger level/cooldown, resources and damage conversion."})
+  elseif kind == "classes" then
+    for _, class in ipairs(result.classes) do
+      if matches(class.name) or tostring(class.id) == q then table.insert(entries, class) end
     end
   elseif kind == "nodes" then
     for id, node in pairs(build.spec.nodes) do

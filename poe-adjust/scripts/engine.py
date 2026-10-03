@@ -89,9 +89,14 @@ def validate_game_version(game_version, league, data_version=None):
     """The installed gem/mechanics data is not selected by the XML's tree version."""
     if not isinstance(game_version, str) or not re.fullmatch(r"3\.\d+", game_version):
         raise EngineError("请联网确认目标赛季的 game_version（如 3.29），不能从 S29 或 XML 的 treeVersion 推断。")
-    season = re.search(r"\bS\s*(\d+)\b", league, re.I)
+    season = re.search(r"(?<![A-Za-z0-9])S\s*(\d+)(?!\d)|第\s*(\d+)\s*赛季", league, re.I)
+    season_number = int(next(group for group in season.groups() if group)) if season else None
+    if "沙海幻境" in league:
+        season_number = 29
+    elif "永火之咒" in league:
+        season_number = 30
     # Tencent's S30 announcement explicitly identifies 3.29.0. S29 is its predecessor.
-    if season and ((int(season[1]) == 30 and game_version != "3.29") or (int(season[1]) < 30 and game_version == "3.29")):
+    if season_number is not None and ((season_number == 30 and game_version != "3.29") or (season_number < 30 and game_version == "3.29")):
         raise EngineError("赛季与游戏版本不对应：国服 S30 对应 3.29，S29 不能按 3.29 交付。请澄清是历史赛季、永久区还是旧文件用于当前赛季；不要擅自更改用户目标。")
     if data_version is not None and game_version != data_version:
         raise EngineError(f"目标游戏版本 {game_version} 与本机机制/宝石数据 {data_version} 不一致。仅切换旧天赋树不能还原旧版规则，需要维护者提供经过验证的对应引擎。")

@@ -18,7 +18,7 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -84,8 +84,16 @@ def begin(args):
     state = {"schema_version": 1, "skill_version": VERSION, "invoked": True, "created_at": now(), "phase": "clarifying",
              "source_path": str(source), "input_sha256": bx.digest(source.read_bytes()), "original_sha256": bx.digest(original), **info}
     write_json(run / "run.json", state)
-    write_json(run / "inspection.json", bx.summary(document))
-    return {"run": str(run), "phase": "clarifying", "inspection": str(run / "inspection.json"), "next": "结合角色信息逐轮确认目标、预算、改装范围和场景，再用 intent 保存用户已确认的约束。"}
+    inspection = bx.summary(document)
+    write_json(run / "inspection.json", inspection)
+    overview = {"class": inspection["build"].get("className"), "ascendancy": inspection["build"].get("ascendClassName"),
+                "level": inspection["build"].get("level"), "tree_version": inspection["tree"].get("treeVersion"),
+                "data_version": info["data_version"], "skill_groups": [
+                    {"index": group["index"], "slot": group.get("slot"), "enabled": group.get("enabled"),
+                     "gems": [{key: gem.get(key) for key in ("index", "skillId", "nameSpec", "level", "quality")} for gem in group["gems"]]}
+                    for group in inspection["skill_groups"]]}
+    return {"run": str(run), "phase": "clarifying", "inspection": str(run / "inspection.json"), "overview": overview,
+            "next": "先结合以上角色信息逐轮确认目标、赛季版本、预算、改装范围和进度；其余装备原文在 inspection，宝石字段是 skillId/nameSpec。"}
 
 
 def validate_intent(value, original):
@@ -227,6 +235,11 @@ def mechanical_issues(document, result, intent):
     for gem in active_gems(result):
         if not gem.get("recognised"):
             errors.append(f"未知宝石：第 {gem['group']} 组第 {gem['index']} 个。")
+        if gem.get("support") and not gem.get("support_applied"):
+            errors.append(f"第 {gem['group']} 组的 {gem.get('display_name',gem.get('name'))} 未辅助任何启用技能；请核对适用类型、触发等级、重复辅助或将备用宝石移出当前组。")
+        if not gem.get("source") and gem.get("max_base_level"):
+            if gem.get("level", 1) > gem["max_base_level"] or gem.get("quality", 0) > 23:
+                errors.append(f"{gem.get('name')} 的宝石自身等级/品质超出普通练级或腐化上限；装备、辅助及匹配孔色加成由引擎另算，不能预加到 gems.level/quality。")
         for req, available in (("req_level", result["level"]), ("req_str", stats.get("Str", 0)), ("req_dex", stats.get("Dex", 0)), ("req_int", stats.get("Int", 0))):
             if (gem.get(req) or 0) > available:
                 errors.append(f"{gem.get('name',gem.get('id'))} 的 {req} 需求 {gem[req]} 超过 {available:g}。")
@@ -615,7 +628,7 @@ def catalog(args):
         bx.require(isinstance(queries, list) and 1 <= len(queries) <= 30, "batch 的 queries 应包含 1–30 项。")
         for query in queries:
             bx.require(isinstance(query, dict) and set(query) <= {"kind", "query", "limit"}, "批量查询仅接受 kind/query/limit。")
-            bx.require(query.get("kind") in {"gems", "skills", "nodes", "uniques", "config"}, "批量查询不含 translations，请单独查询翻译。")
+            bx.require(query.get("kind") in {"gems", "skills", "nodes", "uniques", "config", "links", "classes"}, "批量查询不含 translations，请单独查询翻译。")
             bx.require(isinstance(query.get("query", ""), str) and type(query.get("limit", 20)) is int and 1 <= query.get("limit", 20) <= 100, "查询文字或 limit 无效。")
         document = bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
         result = engine.calculate(root, document, queries=queries)
@@ -654,7 +667,7 @@ def parser():
             cmd.add_argument("--calculate", action="store_true")
             cmd.add_argument("--out")
         if name == "catalog":
-            cmd.add_argument("--kind", choices=["gems", "skills", "nodes", "uniques", "config", "translations"])
+            cmd.add_argument("--kind", choices=["gems", "skills", "nodes", "uniques", "config", "translations", "links", "classes"])
             cmd.add_argument("--batch")
             cmd.add_argument("--query", default="")
             cmd.add_argument("--input")
@@ -699,9 +712,12 @@ def main(argv=None):
             bx.require(args.invoked, "仅在用户明确调用技能后规划开荒路线。")
             route = read_json(args.file)
             ids = routes.gem_ids(route)
-            calculation = engine.calculate(engine.resolve_root(args.pob), queries=[{"kind": "gems", "query": "id:" + skill_id, "limit": 2} for skill_id in ids])
-            gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] for entry in query["entries"]}
-            checked, warnings = routes.validate(route, gems, calculation["data_version"])
+            queries = [{"kind": "gems", "query": "id:" + skill_id, "limit": 2} for skill_id in ids]
+            queries += [{"kind": "links", "query": routes.link_query(stage), "limit": 1} for stage in route.get("stages", [])]
+            calculation = engine.calculate(engine.resolve_root(args.pob), queries=queries)
+            gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] if query["kind"] == "gems" for entry in query["entries"]}
+            compatibility = {query["query"]: query["entries"][0] for query in calculation["catalog_batch"] if query["kind"] == "links"}
+            checked, warnings = routes.validate(route, gems, calculation["data_version"], calculation["classes"], compatibility)
             output = Path(args.out).resolve()
             bx.require(output != Path(args.file).resolve(), "路线说明不能覆盖输入 JSON。")
             bx.require(output.suffix.lower() == ".html", "--out 请指定 HTML 文件。")

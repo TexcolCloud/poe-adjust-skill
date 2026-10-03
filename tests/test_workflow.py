@@ -137,9 +137,10 @@ class DocumentTests(unittest.TestCase):
 
     def test_season_and_engine_version_mismatch_cannot_be_certified(self):
         intent = intent_for(self.root)
-        intent["league"] = "国服 S29"
-        with self.assertRaisesRegex(ValueError, "S30 对应 3.29"):
-            poe.validate_intent(intent, self.root)
+        for league in ("国服 S29", "国服S29", "第29赛季", "沙海幻境"):
+            intent["league"] = league
+            with self.assertRaisesRegex(ValueError, "S30 对应 3.29"):
+                poe.validate_intent(intent, self.root)
         with self.assertRaisesRegex(ValueError, "机制/宝石数据"):
             engine.validate_game_version("3.28", "历史赛季", "3.29")
         del intent["game_version"]
@@ -147,6 +148,15 @@ class DocumentTests(unittest.TestCase):
             poe.validate_intent(intent, self.root)
         intent["league"], intent["game_version"] = "国服 S30", "3.29"
         self.assertEqual(poe.validate_intent(intent, self.root)["game_version"], "3.29")
+
+    def test_tree_delta_preserves_unrelated_nodes_and_rejects_conflict(self):
+        plan = {"mode": "refine", "summary": "delta", "operations": {"tree": {"nodes_add": [3, 4], "nodes_remove": [2]}}}
+        result = bx.apply_plan(self.root, plan)
+        self.assertEqual(bx.active_spec(result).get("nodes"), "1,3,4")
+        self.assertEqual(bx.active_spec(self.root).get("nodes"), "1,2")
+        for changes in ({"nodes": [1], "nodes_add": [3]}, {"nodes_remove": [9]}, {"nodes_add": [2], "nodes_remove": [2]}):
+            plan["operations"]["tree"] = changes
+            with self.assertRaises(ValueError): bx.apply_plan(self.root, plan)
 
     def test_readiness_blocks_forgotten_ascendancy_and_temporary_defence(self):
         result = {"level": 86, "points": 108, "ascendancy_points": 6,
@@ -214,6 +224,16 @@ class RouteTests(unittest.TestCase):
         self.route["stages"][-1]["skills"][0]["level"] = 20
         with self.assertRaisesRegex(ValueError, "需要角色 70 级"):
             routes.validate(self.route, self.gems)
+
+    def test_route_rejects_wrong_ascendancy_and_incompatible_support(self):
+        classes = [{"id": 4, "ascendancies": [{"name": "Champion"}]}]
+        self.route["ascendancy"] = "Elementalist"
+        with self.assertRaisesRegex(ValueError, "升华不属于"):
+            routes.validate(self.route, self.gems, "3.29", classes)
+        self.route["ascendancy"] = "Champion"
+        links = {"ShieldCrush": {"incompatible": ["SupportGreaterMultipleProjectiles"]}}
+        with self.assertRaisesRegex(ValueError, "以下辅助不支持"):
+            routes.validate(self.route, self.gems, "3.29", classes, links)
 
     def test_ssf_does_not_depend_on_trade_or_random_core_without_fallback(self):
         self.route["stages"][0]["skills"][0]["acquisition"] = "trade"
@@ -437,6 +457,27 @@ class RealEngineTests(unittest.TestCase):
         route["stages"][0]["skills"][0]["skill_id"] = "Sunder"
         with self.assertRaisesRegex(ValueError, "需要角色 12 级"):
             routes.validate(route, gems)
+
+    def test_13_native_support_compatibility_and_route_class_data(self):
+        query = "ShieldCrush,SupportMeleePhysicalDamage,SupportGreaterMultipleProjectiles"
+        result = engine.calculate(self.pob, queries=[{"kind": "links", "query": query, "limit": 1},
+                                                   {"kind": "classes", "query": "Duelist", "limit": 1}])
+        links = result["catalog_batch"][0]["entries"][0]
+        self.assertEqual(links["compatible"], ["SupportMeleePhysicalDamage"])
+        self.assertEqual(links["incompatible"], ["SupportGreaterMultipleProjectiles"])
+        self.assertIn("Champion", [a["name"] for a in result["catalog_batch"][1]["entries"][0]["ascendancies"]])
+        plan = copy.deepcopy(self.rebuild)
+        plan["operations"]["replace_skills"][0]["gems"][1]["skill_id"] = "SupportGreaterMultipleProjectiles"
+        outcome = self.evaluate_plan(plan, "incompatible-support")
+        self.assertEqual(outcome["status"], "invalid")
+        self.assertTrue(any("未辅助任何启用技能" in error for error in outcome["errors"]))
+
+    def test_14_impossible_base_gem_level_and_quality_are_rejected(self):
+        plan = copy.deepcopy(self.refine)
+        plan["operations"]["gems"].append({"group": 1, "index": 3, "level": 30, "quality": 50})
+        outcome = self.evaluate_plan(plan, "impossible-gem")
+        self.assertEqual(outcome["status"], "invalid")
+        self.assertTrue(any("自身等级/品质" in error for error in outcome["errors"]))
 
 
 if __name__ == "__main__": unittest.main()
