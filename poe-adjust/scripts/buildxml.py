@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
-import json
 import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -279,9 +278,3 @@ def preserve_extensions(source, output):
         if output.find(child.tag) is None:
             output.append(copy.deepcopy(child))
     return output
-
-
-def snapshot(root):
-    """A stable digest of user choices; excludes recomputable PlayerStat caches."""
-    document = summary(root)
-    return digest(json.dumps(document, ensure_ascii=False, sort_keys=True))

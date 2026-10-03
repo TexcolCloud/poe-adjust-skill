@@ -9,16 +9,18 @@
 ```powershell
 $entry = '<技能目录>/scripts/poe.py'
 python $entry doctor
-python $entry inspect --input '<角色.xml>' --out '<任务目录>/inspection.json'
-python $entry inspect --input '<角色.xml>' --calculate --out '<任务目录>/diagnosis.json'
-python $entry start --invoked --input '<角色.xml>' --run '<工作区>/配装任务'
-python $entry intent --run '<工作区>/配装任务' --file '<意图.json>'
-python $entry evaluate --run '<工作区>/配装任务' --name proposal-a --plan '<计划.json>'
-python $entry export --run '<工作区>/配装任务' --name proposal-a
-python $entry status --run '<工作区>/配装任务'
+python $entry inspect --input '<角色.xml>'
+python $entry start --invoked --input '<角色.xml>' --run '<工作区>/配装任务/会话'
+python $entry inspect --input '<角色.xml>' --calculate --out '<工作区>/配装任务/会话/diagnosis.json'
+python $entry intent --run '<工作区>/配装任务/会话' --file '<意图.json>'
+python $entry evaluate --run '<工作区>/配装任务/会话' --name proposal-a --plan '<计划.json>'
+python $entry export --run '<工作区>/配装任务/会话' --name proposal-a
+python $entry status --run '<工作区>/配装任务/会话'
 ```
 
 `--pob '<PoECharm 或内部 PoB 文件夹>'` 可放在任何子命令后。会话建立后通常无需重复提供。`inspect` 的结果较大，优先保存到文件并读取相关部分。
+
+`--run` 始终指向同一个会话目录。首次 start 要求目录为空或尚不存在；原始文件和已有诊断放在其他目录也可以。读取诊断时用 `Get-Content -Raw -Encoding UTF8 ... | ConvertFrom-Json`，优先选取 `calculation.stats`、`calculation.warnings` 和相关技能组，不需要逐行读完整个大文件。
 
 分享码：把实际取得的纯 PoB 分享码存成文本，运行 `decode --input '<分享码.txt>' --out '<模板.xml>'`。也可直接将纯分享码文件交给 inspect/start。网页地址和 HTML 不是分享码；用现有联网工具获取其中的真实分享内容，保留来源。
 
@@ -27,13 +29,19 @@ python $entry status --run '<工作区>/配装任务'
 ```powershell
 python $entry catalog --kind translations --query '盾' --limit 12
 python $entry catalog --kind gems --query 'Shield Crush' --limit 10
+python $entry catalog --kind skills --query 'Embrace Madness' --limit 3
 python $entry catalog --kind nodes --input '<角色.xml>' --query 'life' --limit 15
 python $entry catalog --kind nodes --input '<角色.xml>' --query '12345' --limit 1
+python $entry catalog --kind nodes --input '<角色.xml>' --query 'Champion' --limit 30
 python $entry catalog --kind uniques --query 'Emperor' --limit 3
 python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
 ```
 
-技能返回 `skill_id` 才是操作字段；`id` 可能是游戏物品路径。天赋查询返回邻接节点，按可连通路线选点。查询只返回最多 100 条；细化关键词，不反复截断全库。查询天赋时带输入文件，使用其版本。
+技能返回 `skill_id` 才是操作字段；`id` 可能是游戏物品路径。查询天赋时带输入文件，使用其版本与当前已点天赋。结果按本机引擎计算的所需新增点数排序；`allocated` 表示已点，`reachable` 表示有可分配路线，`points_to_allocate` 是新增点数，`path` 包含到目标需要的节点 ID。将路线与保留节点合并后设置完整 `tree.nodes`，再评估点数和依赖；不要孤立添加远处的大点。`linked` 返回邻接节点，供调整已有路径时查看。查询只返回最多 100 条；细化关键词，不反复截断全库。
+
+升华节点返回 `ascendancy_name` 和 `is_ascendancy_start`；用升华英文名（如 Champion）可一次查齐该升华节点及原生路径，不能按节点 ID 大小猜测归属。升华起点不消耗点数，分配结果以 evaluate 的 `ascendancy_points` 为准。
+
+`gems` 用于查找可装配宝石；`skills` 用于读取技能说明，也包括装备赋予的技能（`from_item=true`），不能把这些技能当成可以买到的独立宝石。`config` 同时检索配置键、标签和提示文字，可查实际增益/负面层数的解释。先用这些只读命令及网络资料查机制，通常无需搜索整个安装目录或读取引擎源码。
 
 ## 意图 intent.json
 
@@ -59,7 +67,7 @@ python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
 }
 ```
 
-示例数值不是默认事实，按对话填写。`mode` 为 refine/rebuild/both。预算 amount/currency 必填，金额是本次可投入预算；自力模式可写 0 并将确认已有的物品记为 owned。没有预算时先问。
+示例数值不是默认事实，按对话填写。`target_level`、`baseline_main_group`、`quest_passive_points`、`ascendancy_points` 均须明确填写，脚本不默认满任务或满升华。用户未回答时先分轮询问。`mode` 为 refine/rebuild/both。预算 amount/currency 必填，金额是本次可投入预算；自力模式可写 0 并将确认已有的物品记为 owned。没有预算时先问。
 
 `keep_slots` 锁定该插槽原物品的完整文本，而非只锁物品名字。`keep_skill_ids` 要求候选中该技能启用。未明确允许时三个 allow 字段保持 false。`baseline_main_group` 从 inspection 的 `skill_groups[].index` 选择；先确定用户真正使用的主技能。
 
@@ -77,7 +85,7 @@ python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
     "groups": [{"index": 7, "enabled": false}],
     "main_group": 1
   },
-  "sources": [{"title": "实际查阅的机制资料", "url": "https://www.pathofexile.com/", "version": "填写实际版本", "checked_at": "填写实际查阅时间"}],
+  "sources": [{"title": "实际查阅的机制资料", "url": "<实际支持结论的直接页面 URL>", "version": "填写实际版本", "checked_at": "填写实际查阅时间"}],
   "shopping": [{"description": "需要准备的辅助宝石", "status": "unknown"}],
   "assumptions": ["按用户确认的主技能和战斗场景比较；药剂覆盖率需说明。"],
   "migration_steps": ["先准备并练好替换宝石，再按说明调整技能组。"],
@@ -131,8 +139,8 @@ shopping 每项需要 description、status。status：
 
 evaluate 会计算原方案与候选、检查约束、输出候选 XML，然后回读重算。`status:invalid` 的 `errors` 必须解决才可 export。warnings 不被隐藏：包含引擎未解析词缀、缺少涂油、预算未知、升级比较等。
 
-已覆盖：解析/重复 ID/悬空装备引用、当前方案选择、丢失天赋、当前等级点数与升华点、启用技能与装备需求、资源警告、物理插槽数量及连线容量、用户锁定条件、预算上限、回读数据与核心指标一致性。
+已覆盖：解析/重复 ID/悬空装备引用、当前方案选择、丢失天赋、当前等级点数与升华点、启用技能与装备需求、资源警告、启用技能组的孔色/数量/连线匹配（支持白孔和引擎标记的任意孔色装备）、用户锁定条件、预算上限、回读数据与核心指标一致性。禁用技能组视为备选方案，不占用当前配装的物理插槽。
 
-仍需 agent 结合证据审查：具体孔色与可改色成本、触发循环、药剂覆盖率、条件持续性、特殊机制、所有装备词缀组合的游戏内合法性、国服可获得性和价格、用户目标是否实际改善。不能把“计算通过”写成“全部游戏机制与市场均保证”。
+仍需 agent 结合证据审查：改色/连线的可行性与成本、插槽顺序对特殊装备的作用、触发循环、药剂覆盖率、条件持续性、特殊机制、所有装备词缀组合的游戏内合法性、国服可获得性和价格、用户目标是否实际改善。不能把“计算通过”写成“全部游戏机制与市场均保证”。
 
 export 只接收当前意图下的有效候选；会检查文件摘要并最终复算。输出可直接交付，不把内部 run.json、计划或临时文件作为最终成果。

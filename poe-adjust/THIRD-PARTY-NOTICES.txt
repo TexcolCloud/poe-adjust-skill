@@ -1,6 +1,6 @@
 scripts/headless.lua is derived from Path of Building Community v2.67.2:
 https://github.com/PathOfBuildingCommunity/PathOfBuilding/blob/v2.67.2/src/HeadlessWrapper.lua
-Local modifications disable output and make startup errors non-interactive.
+The surrounding adapter disables output and makes startup errors non-interactive.
 
 Copyright (c) 2016 David Gowor
 

@@ -6,6 +6,7 @@ import copy
 import csv
 from datetime import datetime, timezone
 import html
+from itertools import combinations
 import json
 import math
 from pathlib import Path
@@ -21,6 +22,10 @@ METRICS = {
     "CombinedDPS": "主技能综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
     "LifeRegenRecovery": "生命秒回", "ManaRegenRecovery": "魔力秒回",
+    "EnergyShieldRegenRecovery": "能量护盾秒回", "EnergyShieldRecharge": "能量护盾充能速率（需启动充能）",
+    "LifeLeechGainRate": "生命吸取速率（需持续命中）", "LifeCost": "主技能单次生命消耗",
+    "ManaLeechGainRate": "魔力吸取速率（需持续命中）",
+    "LifePerSecondCost": "主技能每秒生命消耗", "ManaCost": "主技能单次魔力消耗", "ManaPerSecondCost": "主技能每秒魔力消耗",
     "FireResist": "火焰抗性 %", "ColdResist": "冰霜抗性 %", "LightningResist": "闪电抗性 %", "ChaosResist": "混沌抗性 %",
     "Armour": "护甲", "Evasion": "闪避值", "BlockChance": "攻击格挡 %", "SpellBlockChance": "法术格挡 %", "SpellSuppressionChance": "法术压制 %",
     "PhysicalMaximumHitTaken": "物理最大承伤", "FireMaximumHitTaken": "火焰最大承伤", "ColdMaximumHitTaken": "冰霜最大承伤", "LightningMaximumHitTaken": "闪电最大承伤", "ChaosMaximumHitTaken": "混沌最大承伤",
@@ -93,11 +98,12 @@ def validate_intent(value, original):
     bx.require(isinstance(budget, dict) and set(budget) <= {"amount", "currency"}, "budget 需要 amount 与 currency。")
     bx.require(isinstance(budget.get("amount"), (int, float)) and not isinstance(budget["amount"], bool) and math.isfinite(budget["amount"]) and budget["amount"] >= 0, "预算金额应为有限非负数。")
     bx.require(isinstance(budget.get("currency"), str) and budget["currency"], "需要预算通货单位。")
-    defaults = {"target_level": int(original.find("Build").get("level")), "allow_class_change": False,
+    for field in ("target_level", "baseline_main_group", "quest_passive_points", "ascendancy_points"):
+        bx.require(field in value, f"请先确认并填写 {field}，不能套用示例或默认角色进度。")
+    defaults = {"allow_class_change": False,
                 "allow_ascendancy_change": False, "allow_main_skill_change": False,
                 "keep_slots": [], "keep_skill_ids": [], "scenario": {}, "minimum_stats": {},
-                "baseline_main_group": int(original.find("Build").get("mainSocketGroup", "1")),
-                "quest_passive_points": 23, "ascendancy_points": 8, "notes": ""}
+                "notes": ""}
     result = {**defaults, **value}
     for flag in ("allow_class_change", "allow_ascendancy_change", "allow_main_skill_change"):
         bx.require(isinstance(result[flag], bool), f"{flag} 应为布尔值。")
@@ -145,6 +151,24 @@ def active_gems(result):
     return [gem for gem in result["gems"] if gem.get("enabled") and gem.get("group_enabled") and active_slot(gem.get("slot", ""), result)]
 
 
+def socket_groups_fit(groups, links):
+    """Place each skill group inside one physical link; white sockets/gems are wildcards."""
+    if not groups:
+        return True
+    group, *remaining_groups = groups
+    for link_index, link in enumerate(links):
+        for chosen in combinations(range(len(link)), len(group)):
+            colours = [link[i] for i in chosen]
+            missing = sum(max(group.count(c) - colours.count(c), 0) for c in "RGB")
+            if missing > colours.count("W"):
+                continue
+            remaining_links = list(links)
+            remaining_links[link_index] = [c for i, c in enumerate(link) if i not in chosen]
+            if socket_groups_fit(remaining_groups, remaining_links):
+                return True
+    return False
+
+
 def mechanical_issues(document, result, intent):
     errors, warnings = [], list(result.get("warnings", []))
     stats = result["stats"]
@@ -181,29 +205,36 @@ def mechanical_issues(document, result, intent):
             warnings.append(f"{name} 存在引擎未完整解析的词缀：" + "；".join(item["unparsed"]))
     # PoB lets a user create a socket group independently from physical sockets.
     item_texts = {int(item.get("id")): bx.text_item(item) for item in document.findall("Items/Item")}
-    used_sockets = {}
-    for group in bx.groups(document):
+    slotted_groups = {}
+    for group_index, group in enumerate(bx.groups(document), 1):
         slot = group.get("slot", "")
-        if group.get("source") or not slot or not active_slot(slot, result): continue
+        if group.get("source") or group.get("enabled", "true") == "false" or not slot or not active_slot(slot, result): continue
         gems = group.findall("Gem")
         if not gems: continue
         item = equipped.get(slot)
         if not item:
             if group.get("enabled", "true") == "true": errors.append(f"技能组的 {slot} 没有装备。")
             continue
+        colours = [gem.get("color", "W") for gem in result["gems"] if gem["group"] == group_index]
+        slotted_groups.setdefault(slot, []).append(colours)
+    for slot, groups in slotted_groups.items():
+        item = equipped[slot]
         match = re.search(r"^Sockets:\s*(.+)$", item_texts.get(item["id"], ""), re.M)
-        socket_groups = [re.findall(r"[RGBWAD]", text) for text in match.group(1).split()] if match else []
-        capacity = sum(map(len, socket_groups))
-        used_sockets[slot] = used_sockets.get(slot, 0) + len(gems)
-        if len(gems) > max(map(len, socket_groups), default=0):
-            errors.append(f"{slot} 技能组需要 {len(gems)} 连，装备插槽不足。")
-        if used_sockets[slot] > capacity:
-            errors.append(f"{slot} 技能宝石总数超过装备的 {capacity} 个插槽。")
+        links = [re.findall(r"[RGBW]", text) for text in match.group(1).split()] if match else []
+        if item.get("socket_colours_always_match"):
+            links = [["W"] * len(link) for link in links]
+        if not socket_groups_fit(sorted(groups, key=len, reverse=True), links):
+            errors.append(f"{slot} 插槽颜色、数量或连线不匹配：技能组 {' / '.join(''.join(g) for g in groups)}；装备 {' / '.join(''.join(g) for g in links)}。如需改色/连线，请在候选装备文本和成本中同时体现。")
     for key, threshold in intent["minimum_stats"].items():
         if key not in stats or stats[key] < threshold:
             errors.append(f"{METRICS[key]} 为 {stats.get(key,'未知')}，低于约定的 {threshold}。")
     if result["main_skill"] == "DefaultAttack":
         errors.append("主技能退回普通攻击，请确认主技能组及技能可用性。")
+    for resource, label in (("Mana", "魔力"), ("Life", "生命")):
+        cost = stats.get(resource + "PerSecondCost", 0)
+        recovery = stats.get(resource + "RegenRecovery", 0) + stats.get(resource + "LeechGainRate", 0)
+        if cost > recovery + 0.01:
+            warnings.append(f"主技能满速施放每秒消耗{label} {cost:.1f}，高于已计算秒回与吸取之和 {recovery:.1f}；请核实其他恢复来源或限定爆发时长，不能据此宣称可持续。吸取本身还依赖命中。")
     return list(dict.fromkeys(errors)), list(dict.fromkeys(warnings))
 
 
@@ -335,6 +366,7 @@ def evaluate(args):
     outcome = {"skill_version": VERSION, "name": plan.get("name", args.name), "evaluated_at": now(), "engine_version": result["engine_version"],
                "intent_hash": state["intent_hash"], "original_sha256": state["original_sha256"], "xml_sha256": bx.digest(xml),
                "status": "invalid" if errors else "validated", "roundtrip_verified": True,
+               "baseline_warnings": baseline.get("warnings", []),
                "errors": list(dict.fromkeys(errors)), "warnings": list(dict.fromkeys(warnings)), "budget": budget,
                "comparison": compare(baseline, result), "plan": plan, "result": {k: v for k, v in result.items() if k != "xml"}}
     write_json(destination / "evaluation.json", outcome)
@@ -343,6 +375,7 @@ def evaluate(args):
     state["updated_at"] = now()
     write_json(run / "run.json", state)
     return {"candidate": str(destination), "status": outcome["status"], "errors": outcome["errors"], "warnings": outcome["warnings"], "budget": budget,
+            "baseline_warnings": outcome["baseline_warnings"],
             "comparison": outcome["comparison"], "roundtrip_verified": True}
 
 
@@ -357,8 +390,12 @@ def report_html(state, outcome):
     sources = []
     for source in plan.get("sources", []):
         url = source.get("url", "")
+        label = esc(source.get("title", url))
         if url.startswith(("http://", "https://")):
-            sources.append(f'<li><a href="{esc(url)}" rel="noreferrer">{esc(source.get("title",url))}</a> · {esc(source.get("version","版本待核实"))} · {esc(source.get("checked_at",""))}</li>')
+            label = f'<a href="{esc(url)}" rel="noreferrer">{label}</a>'
+        elif url:
+            label += " · " + esc(url)
+        sources.append(f'<li>{label} · {esc(source.get("version","版本待核实"))} · {esc(source.get("checked_at",""))}</li>')
     shopping = []
     labels = {"owned": "已有/无需购买", "verified_cn": "国服价格已查证", "estimate": "估计", "unknown": "待核实"}
     for item in plan.get("shopping", []):
@@ -368,11 +405,14 @@ def report_html(state, outcome):
     scenario = json.dumps(intent["scenario"], ensure_ascii=False)
     changes = json.dumps(plan.get("operations", {}), ensure_ascii=False, indent=2)
     condition_notes = json.dumps(plan.get("config_evidence", {}), ensure_ascii=False, indent=2)
+    baseline_note = ""
+    if outcome.get("baseline_warnings"):
+        baseline_note = '<p class="note">原始方案存在下列诊断提示；有资源不足等问题时，其面板仅作诊断参考，不能视为游戏内可持续达到的表现。</p>' + listing(outcome["baseline_warnings"])
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>POE 配装说明</title>
 <style>body{{font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif;background:#f5f4f0;color:#1f2933;max-width:1040px;margin:32px auto;padding:0 24px}}header,section{{background:white;border:1px solid #dddcd6;border-radius:12px;padding:24px;margin:18px 0}}h1{{font-size:30px;margin:0}}h2{{font-size:21px;color:#235b53}}small{{color:#58666c}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:right;padding:9px;border-bottom:1px solid #e5e7eb}}th:first-child{{text-align:left}}pre{{white-space:pre-wrap;word-break:break-word;font-size:13px}}a{{color:#17695e}}.note{{background:#fff8df;padding:14px;border-radius:8px}}@media print{{body{{margin:0}}section{{break-inside:avoid}}}}</style>
 <header><small>POE 配装助手 · {esc(outcome['evaluated_at'])} · PoB {esc(outcome['engine_version'])}</small><h1>{esc(outcome['name'])}</h1><p>{esc(plan['summary'])}</p><p>计算与 XML 回读已通过。预算状态：{esc(labels[b['status']])}。</p></header>
 <section><h2>你的目标</h2><p>{esc(intent['goal'])}</p><p>{esc(intent['league'])} · 目标等级 {intent['target_level']} · 预算 {esc(intent['budget']['amount'])} {esc(intent['budget']['currency'])}</p><p>{esc(intent['notes'])}</p></section>
-<section><h2>前后对比</h2><p>原角色：{esc(state.get('baseline_label','用户导入角色'))}；候选：{esc(outcome['result']['main_skill_name'])}。总 DPS 只汇总勾选计入的技能，不能代替实际刷图速度。</p><table><thead><tr><th>指标</th><th>原方案</th><th>新方案</th><th>变化</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
+<section><h2>前后对比</h2><p>原角色：{esc(state.get('baseline_label','用户导入角色'))}；候选：{esc(outcome['result']['main_skill_name'])}。总 DPS 只汇总勾选计入的技能，不能代替实际刷图速度。</p>{baseline_note}<table><thead><tr><th>指标</th><th>原方案</th><th>新方案</th><th>变化</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
 <section><h2>购买与准备</h2><p>已列成本：{b['low']:g}–{b['high']:g} {esc(b['currency'])}。待核实项目未计入这个范围。</p>{listing(shopping)}<h2>切换顺序</h2>{listing(plan.get('migration_steps',[]))}</section>
 <section><h2>计算条件与待核实项</h2><p>共同场景：<code>{esc(scenario)}</code></p>{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
 <section><h2>资料依据</h2><ul>{''.join(sources)}</ul><details><summary>具体改动及条件依据</summary><pre>{esc(changes)}</pre><pre>{esc(condition_notes)}</pre></details></section>
@@ -391,6 +431,8 @@ def export(args):
     root = engine.resolve_root(args.pob or state["pob_path"])
     bx.require(engine.version(root) == outcome["engine_version"], "引擎已升级，请重新计算。")
     verification = engine.calculate(root, xml)
+    current_errors, _ = mechanical_issues(bx.parse(xml), verification, state["intent"])
+    bx.require(not current_errors, "最终校验发现问题，请重新 evaluate：" + "；".join(current_errors))
     bx.require(semantics(verification) == semantics(outcome["result"]), "最终复算的角色数据与候选记录不同。")
     for key in METRICS:
         a, b = verification["stats"].get(key), outcome["result"]["stats"].get(key)
@@ -441,7 +483,7 @@ def parser():
             cmd.add_argument("--calculate", action="store_true")
             cmd.add_argument("--out")
         if name == "catalog":
-            cmd.add_argument("--kind", choices=["gems", "nodes", "uniques", "config", "translations"], required=True)
+            cmd.add_argument("--kind", choices=["gems", "skills", "nodes", "uniques", "config", "translations"], required=True)
             cmd.add_argument("--query", default="")
             cmd.add_argument("--input")
             cmd.add_argument("--limit", type=int, default=20)
@@ -454,6 +496,8 @@ def main(argv=None):
         if args.command == "doctor":
             result = {"skill_version": VERSION, **engine.check(engine.resolve_root(args.pob))}
         elif args.command == "inspect":
+            if args.out:
+                bx.require(Path(args.out).resolve() != Path(args.input).resolve(), "检查结果不能覆盖原始角色文件。请为 --out 使用不同文件名。")
             document = bx.read_document(Path(args.input))
             result = bx.summary(document)
             if args.calculate:

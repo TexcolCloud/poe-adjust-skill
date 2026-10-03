@@ -55,8 +55,10 @@ for id, node in pairs(build.spec.allocNodes) do table.insert(result.nodes, id) e
 table.sort(result.nodes)
 for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
   for gemIndex, gem in ipairs(group.gemList) do
+    local grantedEffect = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
     table.insert(result.gems, {group = groupIndex, index = gemIndex, id = gem.skillId, name = gem.nameSpec,
       enabled = gem.enabled, group_enabled = group.enabled, slot = group.slot, source = group.source, level = gem.level, quality = gem.quality,
+      color = grantedEffect and ({"R", "G", "B", "W"})[grantedEffect.color] or "W",
       recognised = gem.gemData ~= nil or gem.grantedEffect ~= nil,
       req_level = gem.reqLevel, req_str = gem.reqStr, req_dex = gem.reqDex, req_int = gem.reqInt})
   end
@@ -72,6 +74,7 @@ for name, slot in pairs(build.itemsTab.slots) do
     end
     table.insert(result.equipped, {slot = name, id = slot.selItemId, name = item.name, base = item.baseName, base_recognised = item.base ~= nil,
       active = slot.active, sockets = item.sockets,
+      socket_colours_always_match = item.sockets and item.sockets.colourAlwaysMatches or false,
       requirements = item.requirements, unparsed = unparsed})
   end
 end
@@ -84,12 +87,24 @@ if request.catalog and request.catalog ~= "" then
     for id, gem in pairs(data.gems) do
       if matches(id) or matches(gem.name) then table.insert(entries, {id = id, name = gem.name, skill_id = gem.grantedEffectId, tags = gem.tags}) end
     end
+  elseif request.catalog == "skills" then
+    for id, skill in pairs(data.skills) do
+      if matches(id) or matches(skill.name) then
+        table.insert(entries, {id = id, name = skill.name, description = skill.description,
+          from_item = skill.fromItem or false, support = skill.support or false,
+          constant_stats = skill.constantStats, stat_ids = skill.stats})
+      end
+    end
   elseif request.catalog == "nodes" then
     for id, node in pairs(build.spec.nodes) do
-      if matches(node.name) or matches(table.concat(node.sd or {}, " ")) or tostring(id) == q then
-        local links = {}
+      if matches(node.name) or matches(node.ascendancyName) or matches(table.concat(node.sd or {}, " ")) or tostring(id) == q then
+        local links, path = {}, {}
         for _, adjacent in pairs(node.linked or {}) do table.insert(links, adjacent.id) end
-        table.insert(entries, {id = id, name = node.name, type = node.type, stats = node.sd, linked = links, mastery_effects = node.masteryEffects})
+        for _, pathNode in ipairs(node.path or {}) do table.insert(path, pathNode.id) end
+        table.sort(links)
+        table.insert(entries, {id = id, name = node.name, type = node.type, stats = node.sd, linked = links, mastery_effects = node.masteryEffects,
+          ascendancy_name = node.ascendancyName or "", is_ascendancy_start = node.isAscendancyStart or false,
+          allocated = node.alloc or false, reachable = node.path ~= nil, points_to_allocate = node.pathDist, path = path})
       end
     end
   elseif request.catalog == "uniques" then
@@ -98,10 +113,19 @@ if request.catalog and request.catalog ~= "" then
     end
   elseif request.catalog == "config" then
     for _, section in ipairs(LoadModule("Modules/ConfigOptions")) do
-      if section.var and matches(section.var) then table.insert(entries, scalarTable(section)) end
+      if section.var and (matches(section.var) or matches(section.label) or matches(type(section.tooltip) == "string" and section.tooltip or "")) then
+        table.insert(entries, scalarTable(section))
+      end
     end
   else error("Unknown catalog") end
-  table.sort(entries, function(a,b) return tostring(a.id or a.raw or a.var) < tostring(b.id or b.raw or b.var) end)
+  table.sort(entries, function(a,b)
+    if request.catalog == "nodes" then
+      local da, db = a.points_to_allocate or 1000, b.points_to_allocate or 1000
+      if da ~= db then return da < db end
+      return a.id < b.id
+    end
+    return tostring(a.id or a.raw or a.var) < tostring(b.id or b.raw or b.var)
+  end)
   result.catalog_total = #entries
   result.catalog = {}
   for i = 1, math.min(#entries, request.limit or 30) do result.catalog[i] = entries[i] end

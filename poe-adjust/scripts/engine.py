@@ -39,6 +39,7 @@ def resolve_root(hint: str | None = None) -> Path:
         if os.name == "nt":
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); "
                  "Get-Process -Name PoeCharm3,'Path of Building' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique"],
                 capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
             )
