@@ -61,6 +61,7 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None):
         source_map[source["id"]] = source
     if route["version_status"] == "verified":
         bx.require(route.get("version_source") in source_map, "版本已核实需要 version_source 指向支持国服版本映射的网页。")
+        engine.validate_game_version(route["game_version"], route["league"], version_source=source_map[route["version_source"]]["url"])
     warnings = []
     if route["version_status"] == "unverified":
         warnings.append("国服赛季与资料版本的对应关系未完全核实；关键改动需以国服公告为准，不能承诺当前赛季强度。")

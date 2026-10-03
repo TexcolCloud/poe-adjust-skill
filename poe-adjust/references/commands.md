@@ -39,10 +39,12 @@ python $entry catalog --kind uniques --query 'Emperor' --limit 3
 python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
 python $entry catalog --kind classes --query 'Duelist' --limit 1
 python $entry catalog --kind links --query 'ShieldCrush,SupportBrutality,SupportMeleePhysicalDamage' --limit 1
+python $entry catalog --kind bases --query 'Two-Toned Boots' --limit 8
+python $entry catalog --kind affixes --query 'Two-Toned Boots (Armour/Energy Shield)|maximum Life' --limit 15
 python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 ```
 
-一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的角色等级需求 `level_requirements`、`min_level`、`special_variant`、`vaal`，开荒时据此核对而非猜等级。
+一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的角色等级需求 `level_requirements`、`min_level`、`special_variant`、`vaal`，开荒时据此核对而非猜等级。
 
 `classes` 返回当前树的职业与升华 ID/英文名，避免错配或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 compatible/incompatible。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
 
@@ -119,7 +121,7 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 
 `mode` 为 refine 或 rebuild。候选名命令参数 `--name` 使用短英文，如 `proposal-a`；面向用户的中文名称放 `name`。失败候选可用同名重新评估；原角色快照不覆盖。
 
-可用普通点或升华点应完成分配。确需留点时，计划加 `"unused_points_reason":{"normal":"具体留点用途","ascendancy":"具体原因"}`，只填实际留点的类型。理由会进入最终说明；不能用通用套话跳过设计。
+可用普通点或升华点应完成分配。本机适配版本全部任务奖励为 23 点，盗贼等额外奖励另由引擎 ExtraPoints 计入；完整奖励不能自行减成 21。确需留点时，计划加 `"unused_points_reason":{"normal":"具体留点用途","ascendancy":"具体原因"}`，只填实际留点的类型。理由会进入最终说明；不能用通用套话跳过设计。
 
 ### operations 可用字段
 
@@ -128,7 +130,7 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 | gems | 数组：group/index 为当前技能组/组内宝石的 1 起始序号；其余可设 skill_id、level、quality、enabled、enable_global1、enable_global2、count、skill_part、skill_stage_count、skill_minion |
 | groups | 数组：index 加 enabled、slot、label、include_in_full_dps、main_active_skill、group_count 中的字段 |
 | replace_skills | 完整替换当前技能方案的技能组数组；其他未启用方案保留。每组包含 slot、enabled、include_in_full_dps、main_active_skill 等组字段，以及 gems 数组；新宝石至少提供 skill_id，默认 1 级 0 品质 |
-| items | 数组：`{"id":20,"text":"Rarity: RARE\n名称\n基底\n..."}`；原 ID 表示替换，新 ID 表示新增。文本必须为 PoB 可识别格式，可保留已有物品的 ID |
+| items | 数组：`{"id":20,"text":"Rarity: RARE\n名称\n基底\n..."}` 或 `{"id":20,"craft":{...}}`；原 ID 替换，新 ID 新增。text 用真实/已核实来源；普通稀有目标优先 craft |
 | equip | 数组：`{"slot":"Weapon 2","item_id":20}`；flask 可附 `active:false`；`Jewel 12345` 表示天赋珠宝插槽；0 表示移除 |
 | tree | 对象：nodes 完整替换，或 nodes_add/nodes_remove 增量添加/移除；class_id、ascendancy_id、secondary_ascendancy_id 可选；masteries 为 `{"节点ID":效果ID}`。沿用输入天赋版本，不能靠改 treeVersion 强行迁移 |
 | level | 1–100，必须等于用户确认的 target_level |
@@ -141,6 +143,24 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 宝石的 `count`、技能组 `group_count` 与层数仅在真实机制支持时设置，解释实际持续数量。克隆物品或换词缀要确认前后缀、基底、物等、势力、腐化和赛季限制。程序不替代完整游戏物品合法性数据库。
 
 3.29 起宝石不受普通插槽颜色限制，匹配红/绿/蓝提供 +10 品质；不应为插入异色宝石强制增加改色成本。`gems[].quality` 是宝石自身品质，不能把插槽加成再加进去。原生计算按同装备各组和组内宝石的先后顺序分配物理孔位，输出 `matches_socket` / `socket_quality_bonus`。程序保留未启用组并清除其 slot，避免其挤占在用组的品质位置。真实不相连的孔必须拆组；同一连线上含辅助的技能不能拆成独立组来漏算保留/消耗。新 XML 与说明包含实际镶嵌顺序。
+
+### 普通稀有目标装
+
+先用 bases 查询完整基底名，再用 affixes 的 `完整基底名|关键词` 查询该基底能自然出现的普通词缀，包含 id、Prefix/Suffix、互斥 group、物等要求与数值范围。多个关键词可以 batch，不猜词缀 ID、层级或获取物等。
+
+把配方直接放进 operations.items，evaluate 会一次生成全部目标装备，再按同一角色流程实算：
+
+```json
+{"id":20,"craft":{
+  "base":"Two-Toned Boots (Armour/Energy Shield)",
+  "ilvl":86,"quality":20,"sockets":"W-W-W-W",
+  "affixes":[{"id":"IncreasedLife8","roll":0.5},{"id":"MovementVelocity5"},{"id":"ChaosResist6"}]
+}}
+```
+
+此例只展示格式，不自动视为已拥有或预算内可得。roll 是范围内位置 0–1，默认中值 0.5，不是实际数值；不要默认全部满值。基底防御和基础隐式按中值生成。quality 仅 0–20，普通孔写 R/G/B/W，用连字符连接、空格断开。程序检查适用基底、物等、相同 group 冲突、最多三前缀/三后缀和基底孔数。物等与当前角色等级不是同一个值。
+
+此配方范围为无势力、未腐化、普通自然词缀的稀有装备，不含精髓、隐匿、工艺台、追忆、异界隐式或特殊珠宝/药剂。需要这些物品时查真实来源并使用 text，不把它们塞进普通配方。生成成功只证明所列数据约束；还需记录获取路径、孔数/连线方式、国服可获得性和费用。crafted_items 会留在评价记录，购物仍按自动物品差异记录 unknown/estimate/verified_cn。
 
 ### 整体换流派
 
@@ -173,7 +193,7 @@ status：
 
 evaluate 会计算原方案与候选、检查约束、输出候选 XML，然后回读重算。`status:invalid` 的 `errors` 必须解决才可 export。warnings 不被隐藏：包含引擎未解析词缀、缺少涂油、预算未知、升级比较等。
 
-已覆盖：解析/重复 ID/悬空装备引用、当前方案选择、丢失天赋、当前等级点数与升华点/无解释的留点、启用技能与装备需求、宝石自身等级/品质上限和无效辅助、常态守护/药剂、持续资源或有时限的爆发、自动物品差异、启用技能组的数量/连线与原生顺序、3.29 孔色品质、用户锁定条件、预算上限、回读数据与核心指标一致性。禁用技能组视为备选方案，不占用当前配装的物理插槽。
+已覆盖：解析/重复 ID/悬空装备引用、引擎静默丢弃的装备、当前方案选择、丢失天赋、当前等级点数与升华点/无解释的留点、启用技能与装备需求、宝石自身等级/品质上限和无效辅助、常态守护/药剂、持续资源或有时限的爆发、自动物品差异、启用技能组的数量/连线与原生顺序、3.29 孔色品质、用户锁定条件、预算上限、回读数据与核心指标一致性。禁用技能组视为备选方案，不占用当前配装的物理插槽。
 
 仍需 agent 结合证据审查：改色/连线的可行性与成本、插槽顺序对特殊装备的作用、触发循环、药剂覆盖率、条件持续性、特殊机制、所有装备词缀组合的游戏内合法性、国服可获得性和价格、用户目标是否实际改善。不能把“计算通过”写成“全部游戏机制与市场均保证”。
 

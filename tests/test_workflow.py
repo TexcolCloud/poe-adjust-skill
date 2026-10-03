@@ -148,6 +148,9 @@ class DocumentTests(unittest.TestCase):
             poe.validate_intent(intent, self.root)
         intent["league"], intent["game_version"] = "国服 S30", "3.29"
         self.assertEqual(poe.validate_intent(intent, self.root)["game_version"], "3.29")
+        intent["version_source"] = engine.VERSION_EVIDENCE["3.28"]["url"]
+        with self.assertRaisesRegex(ValueError, "官方公告实际为 S29 / 3.28"):
+            poe.validate_intent(intent, self.root)
 
     def test_tree_delta_preserves_unrelated_nodes_and_rejects_conflict(self):
         plan = {"mode": "refine", "summary": "delta", "operations": {"tree": {"nodes_add": [3, 4], "nodes_remove": [2]}}}
@@ -157,6 +160,21 @@ class DocumentTests(unittest.TestCase):
         for changes in ({"nodes": [1], "nodes_add": [3]}, {"nodes_remove": [9]}, {"nodes_add": [2], "nodes_remove": [2]}):
             plan["operations"]["tree"] = changes
             with self.assertRaises(ValueError): bx.apply_plan(self.root, plan)
+
+    def test_recipe_rejects_text_injection_or_invalid_roll_before_engine(self):
+        item = {"id": 20, "craft": {"base": "Iron Greaves", "ilvl": 86, "sockets": "W-W-W-W", "affixes": [{"id": "IncreasedLife8", "roll": 2}]}}
+        with self.assertRaisesRegex(ValueError, "roll"):
+            poe.materialize_items({"operations": {"items": [item]}}, None)
+        item["craft"]["affixes"][0]["roll"] = 0.5
+        item["craft"]["sockets"] = "W-W\n+1000 to maximum Life"
+        with self.assertRaisesRegex(ValueError, "sockets"):
+            poe.materialize_items({"operations": {"items": [item]}}, None)
+        item["text"] = "arbitrary text"
+        with self.assertRaisesRegex(ValueError, "混入 text"):
+            poe.materialize_items({"operations": {"items": [item]}}, None)
+        duplicate = {"id": 20, "text": "Rarity: RARE\nTarget\nIron Greaves"}
+        with self.assertRaisesRegex(ValueError, "id 不能重复"):
+            bx.apply_plan(self.root, {"mode": "refine", "summary": "test", "operations": {"items": [duplicate, duplicate]}})
 
     def test_readiness_blocks_forgotten_ascendancy_and_temporary_defence(self):
         result = {"level": 86, "points": 108, "ascendancy_points": 6,
@@ -322,6 +340,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertIsNone(result["comparison"]["CombinedDPS"]["percent"])
         output = poe.export(args(run=str(self.run_dir), name="refine"))
         for path in output["files"]: self.assertTrue(Path(path).is_file())
+        self.assertIn("不提供同条件提升百分比", output["user_summary"])
+        self.assertIn("不能承诺预算内买齐", output["user_summary"])
         self.assertEqual(bx.digest(self.sample.read_bytes()), self.original_hash)
         self.assertEqual(bx.digest((self.pob / "Settings.xml").read_bytes()), self.settings_hash)
         self.assertEqual(bx.digest((self.pob / "Data/ModCache.lua").read_bytes()), self.cache_hash)
@@ -478,6 +498,51 @@ class RealEngineTests(unittest.TestCase):
         outcome = self.evaluate_plan(plan, "impossible-gem")
         self.assertEqual(outcome["status"], "invalid")
         self.assertTrue(any("自身等级/品质" in error for error in outcome["errors"]))
+
+    def test_15_native_rare_recipe_and_invalid_modifier_constraints(self):
+        recipe = {"base": "Two-Toned Boots (Armour/Energy Shield)", "ilvl": 86, "sockets": "W-W-W-W",
+                  "affixes": [{"id": "IncreasedLife8"}, {"id": "MovementVelocity5"}, {"id": "ChaosResist6"}]}
+        item_set = bx.active_set(self.original, "Items", "ItemSet", "activeItemSet")
+        item_id = int(next(slot for slot in item_set.findall("Slot") if slot.get("name") == "Boots").get("itemId"))
+        plan = copy.deepcopy(self.refine)
+        plan["operations"]["items"] = [{"id": item_id, "craft": recipe}]
+        outcome = self.evaluate_plan(plan, "crafted-boots")
+        self.assertEqual(outcome["status"], "validated", outcome["errors"])
+        recorded = poe.read_json(self.run_dir / "candidates/crafted-boots/evaluation.json")
+        raw = recorded["crafted_items"][0]["text"]
+        self.assertIn("+122 to maximum Life", raw)
+        self.assertIn("+33% to Chaos Resistance", raw)
+        self.assertIn("+10% to Fire and Lightning Resistances", raw)
+        self.assertIn("ArmourBasePercentile: 0.5", raw)
+        output = poe.export(args(run=str(self.run_dir), name="crafted-boots"))
+        self.assertIn("词缀依据", Path(output["files"][1]).read_text(encoding="utf-8"))
+        bad = copy.deepcopy(recipe)
+        bad["affixes"].append({"id": "IncreasedLife7"})
+        with self.assertRaisesRegex(ValueError, "Conflicting modifier group"):
+            poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
+        bad = copy.deepcopy(recipe)
+        bad["ilvl"] = 70
+        with self.assertRaisesRegex(ValueError, "level is too low"):
+            poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
+        bad = copy.deepcopy(recipe)
+        bad["sockets"] = "W-W-W-W-W"
+        with self.assertRaisesRegex(ValueError, "Socket count"):
+            poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
+        entries = engine.calculate(self.pob, catalog="affixes", query=recipe["base"] + "|", limit=1000)["catalog"]
+        unique_prefixes = {entry["group"]: entry["id"] for entry in entries if entry["type"] == "Prefix" and entry["required_item_level"] <= 86}
+        self.assertGreaterEqual(len(unique_prefixes), 4)
+        bad = copy.deepcopy(recipe)
+        bad["affixes"] = [{"id": mod} for mod in list(unique_prefixes.values())[:4]]
+        with self.assertRaisesRegex(ValueError, "Too many Prefix"):
+            poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
+
+    def test_16_missing_equipment_is_rejected_even_without_socketed_skills(self):
+        plan = copy.deepcopy(self.refine)
+        plan["operations"]["items"] = [{"id": 100, "text": "Rarity: RARE\nInvented Belt\nNonexistent Test Base\nImplicits: 0\n+100 to maximum Life"}]
+        plan["operations"]["equip"].append({"slot": "Belt", "item_id": 100})
+        outcome = self.evaluate_plan(plan, "missing-belt")
+        self.assertEqual(outcome["status"], "invalid")
+        self.assertTrue(any("Belt 的装备 100 未被引擎装入" in error for error in outcome["errors"]), outcome["errors"])
 
 
 if __name__ == "__main__": unittest.main()

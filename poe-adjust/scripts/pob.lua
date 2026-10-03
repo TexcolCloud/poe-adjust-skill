@@ -101,6 +101,55 @@ for name, slot in pairs(build.itemsTab.slots) do
   end
 end
 table.sort(result.equipped, function(a, b) return a.slot < b.slot end)
+local function ordinaryRare(baseName)
+  local base = assert(data.itemBases[baseName], "Unknown base; query catalog bases first: " .. tostring(baseName))
+  assert(base.type ~= "Jewel" and base.type ~= "Flask" and base.type ~= "Graft" and base.type ~= "Tincture", "Recipe supports ordinary rare equipment only")
+  return new("Item", "Rarity: RARE\nPOE Target\n" .. baseName .. "\nCrafted: true")
+end
+if request.crafts then
+  result.crafted_items = {}
+  for _, spec in ipairs(request.crafts) do
+    local item = ordinaryRare(spec.base)
+    assert(spec.ilvl >= (item.base.req.level or 1), "Item level is below base requirement: " .. spec.base)
+    item.itemLevel = spec.ilvl
+    item.quality = spec.quality or 20
+    local header = {"Rarity: RARE", "POE Target", spec.base, "Crafted: true", "Item Level: " .. spec.ilvl, "Quality: " .. item.quality}
+    for _, defence in ipairs({"Armour", "Evasion", "EnergyShield", "Ward"}) do
+      if item.base.armour and item.base.armour[defence .. "BaseMin"] then table.insert(header, defence .. "BasePercentile: 0.5") end
+    end
+    if item.base.socketLimit then
+      assert(spec.sockets and #spec.sockets > 0, "Recipe requires explicit sockets for this base")
+      local count = 0
+      for _ in spec.sockets:gmatch("[RGBW]") do count = count + 1 end
+      assert(count <= item.base.socketLimit, "Socket count exceeds base limit")
+      table.insert(header, "Sockets: " .. spec.sockets)
+    else
+      assert(not spec.sockets or spec.sockets == "", "This ordinary base has no gem sockets")
+    end
+    local seen, counts, audit = {}, {Prefix = 0, Suffix = 0}, {}
+    for _, affix in ipairs(spec.affixes) do
+      local mod = assert(data.itemMods.Explicit[affix.id], "Not an ordinary explicit modifier: " .. affix.id)
+      assert(mod.type == "Prefix" or mod.type == "Suffix", "Recipe accepts prefixes and suffixes only")
+      assert(item:GetModSpawnWeight(mod) > 0, "Modifier cannot naturally roll on base: " .. affix.id)
+      assert(mod.level <= spec.ilvl, "Item level is too low for modifier: " .. affix.id)
+      assert(not seen[mod.group], "Conflicting modifier group: " .. mod.group)
+      seen[mod.group] = true
+      counts[mod.type] = counts[mod.type] + 1
+      assert(counts[mod.type] <= 3, "Too many " .. mod.type .. " modifiers")
+      local roll = affix.roll or 0.5
+      table.insert(header, mod.type .. ": {range:" .. roll .. "}" .. affix.id)
+      table.insert(audit, {id = affix.id, type = mod.type, group = mod.group, required_item_level = mod.level, roll = roll})
+    end
+    local implicits = {}
+    for line in (item.base.implicit or ""):gmatch("[^\n]+") do table.insert(implicits, itemLib.applyRange(line, 0.5)) end
+    table.insert(header, "Implicits: " .. #implicits)
+    for _, line in ipairs(implicits) do table.insert(header, line) end
+    item = new("Item", table.concat(header, "\n"))
+    item:Craft()
+    table.insert(result.crafted_items, {id = spec.id, text = item:BuildRaw(), base = spec.base, affixes = audit,
+      scope = "Ordinary uninfluenced modifier pool, item level, exclusive groups and 3 prefixes/3 suffixes only. Availability, crafting process and prices are not verified."})
+  end
+end
 local function queryCatalog(kind, query, limit)
   local entries = {}
   local q = string.lower(query or "")
@@ -152,6 +201,24 @@ local function queryCatalog(kind, query, limit)
   elseif kind == "classes" then
     for _, class in ipairs(result.classes) do
       if matches(class.name) or tostring(class.id) == q then table.insert(entries, class) end
+    end
+  elseif kind == "bases" then
+    for name, base in pairs(data.itemBases) do
+      if matches(name) or matches(base.type) then
+        table.insert(entries, {id = name, name = name, type = base.type, sub_type = base.subType,
+          requirements = base.req, sockets = base.socketLimit or 0, implicit = base.implicit, tags = base.tags})
+      end
+    end
+  elseif kind == "affixes" then
+    local baseName, filter = (query or ""):match("^([^|]+)|?(.*)$")
+    local item = ordinaryRare(baseName)
+    q = string.lower(filter or "")
+    for id, mod in pairs(data.itemMods.Explicit) do
+      if (mod.type == "Prefix" or mod.type == "Suffix") and item:GetModSpawnWeight(mod) > 0 and (matches(id) or matches(table.concat(mod, " "))) then
+        local lines = {}
+        for _, line in ipairs(mod) do table.insert(lines, line) end
+        table.insert(entries, {id = id, type = mod.type, affix = mod.affix, group = mod.group, required_item_level = mod.level, lines = lines})
+      end
     end
   elseif kind == "nodes" then
     for id, node in pairs(build.spec.nodes) do

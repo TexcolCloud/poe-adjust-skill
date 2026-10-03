@@ -17,6 +17,10 @@ import sys
 import xml.etree.ElementTree as ET
 
 SUPPORTED_VERSIONS = {"2.67.2": "3.29"}
+VERSION_EVIDENCE = {
+    "3.28": {"season": "S29", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22602/m14525/202603/982863.shtml"},
+    "3.29": {"season": "S30", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml"},
+}
 SCRIPTS = Path(__file__).resolve().parent
 
 
@@ -82,10 +86,12 @@ def check(root: Path) -> dict:
         machine = struct.unpack("<H", stream.read(2))[0]
     if machine != 0x8664 or struct.calcsize("P") != 8:
         raise EngineError("需要 64 位 Python 与 64 位 PoECharm。优先使用 TeleAgent 自带的 Python。")
-    return {"pob_path": str(root), "engine_version": current, "data_version": SUPPORTED_VERSIONS[current], "python": sys.version.split()[0], "writes_to_installation": False}
+    data_version = SUPPORTED_VERSIONS[current]
+    return {"pob_path": str(root), "engine_version": current, "data_version": data_version,
+            "version_evidence": VERSION_EVIDENCE[data_version], "python": sys.version.split()[0], "writes_to_installation": False}
 
 
-def validate_game_version(game_version, league, data_version=None):
+def validate_game_version(game_version, league, data_version=None, version_source=None):
     """The installed gem/mechanics data is not selected by the XML's tree version."""
     if not isinstance(game_version, str) or not re.fullmatch(r"3\.\d+", game_version):
         raise EngineError("请联网确认目标赛季的 game_version（如 3.29），不能从 S29 或 XML 的 treeVersion 推断。")
@@ -100,13 +106,18 @@ def validate_game_version(game_version, league, data_version=None):
         raise EngineError("赛季与游戏版本不对应：国服 S30 对应 3.29，S29 不能按 3.29 交付。请澄清是历史赛季、永久区还是旧文件用于当前赛季；不要擅自更改用户目标。")
     if data_version is not None and game_version != data_version:
         raise EngineError(f"目标游戏版本 {game_version} 与本机机制/宝石数据 {data_version} 不一致。仅切换旧天赋树不能还原旧版规则，需要维护者提供经过验证的对应引擎。")
+    for documented_version, evidence in VERSION_EVIDENCE.items():
+        if isinstance(version_source, str) and version_source.split("?")[0].split("#")[0] == evidence["url"] and documented_version != game_version:
+            raise EngineError(f"引用的官方公告实际为 {evidence['season']} / {documented_version}，不能作为 {game_version} 的版本依据。请打开 doctor/start 返回的 version_evidence.url 核对正文。")
 
 
-def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None) -> dict:
+def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None) -> dict:
     check(root)
     request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit}
     if queries is not None:
         request["queries"] = queries
+    if crafts is not None:
+        request["crafts"] = crafts
     try:
         process = subprocess.run(
             [sys.executable, str(SCRIPTS / "engine.py"), "--worker"],

@@ -18,7 +18,7 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -88,7 +88,7 @@ def begin(args):
     write_json(run / "inspection.json", inspection)
     overview = {"class": inspection["build"].get("className"), "ascendancy": inspection["build"].get("ascendClassName"),
                 "level": inspection["build"].get("level"), "tree_version": inspection["tree"].get("treeVersion"),
-                "data_version": info["data_version"], "skill_groups": [
+                "data_version": info["data_version"], "version_evidence": info["version_evidence"], "skill_groups": [
                     {"index": group["index"], "slot": group.get("slot"), "enabled": group.get("enabled"),
                      "gems": [{key: gem.get(key) for key in ("index", "skillId", "nameSpec", "level", "quality")} for gem in group["gems"]]}
                     for group in inspection["skill_groups"]]}
@@ -102,7 +102,7 @@ def validate_intent(value, original):
     bx.require(value.get("confirmed") is True, "先向用户归纳并明确目标；confirmed 必须对应用户已表达的意图。")
     for field in ("goal", "league"):
         bx.require(isinstance(value.get(field), str) and value[field].strip(), f"需要已确认的 {field}。")
-    engine.validate_game_version(value.get("game_version"), value["league"])
+    engine.validate_game_version(value.get("game_version"), value["league"], version_source=value.get("version_source"))
     bx.require(isinstance(value.get("version_source"), str) and value["version_source"].startswith(("https://", "http://")), "version_source 需要实际支持国服赛季与版本对应关系的网页 URL。")
     bx.require(isinstance(value.get("version_checked_at"), str), "version_checked_at 需要实际查阅日期。")
     datetime.fromisoformat(value["version_checked_at"].replace("Z", "+00:00"))
@@ -213,7 +213,7 @@ def socket_layout_issues(document, result):
 
 def mechanical_issues(document, result, intent):
     errors, warnings = [], list(result.get("warnings", []))
-    engine.validate_game_version(intent.get("game_version"), intent["league"], result.get("data_version"))
+    engine.validate_game_version(intent.get("game_version"), intent["league"], result.get("data_version"), intent.get("version_source"))
     if result["tree_version"] != result["data_version"].replace(".", "_"):
         errors.append("天赋版本与当前机制/宝石数据版本不同；当前适配仅接受对应标准天赋树，不能把旧树或特殊模式树当作当前普通赛季。")
     stats = result["stats"]
@@ -244,6 +244,13 @@ def mechanical_issues(document, result, intent):
             if (gem.get(req) or 0) > available:
                 errors.append(f"{gem.get('name',gem.get('id'))} 的 {req} 需求 {gem[req]} 超过 {available:g}。")
     equipped = {item["slot"]: item for item in result["equipped"]}
+    expected_equipment = [(slot.get("name", ""), int(slot.get("itemId", "0")))
+                          for slot in bx.active_set(document, "Items", "ItemSet", "activeItemSet").findall("Slot")]
+    expected_equipment += [("Jewel " + slot.get("nodeId"), int(slot.get("itemId", "0")))
+                           for slot in bx.active_spec(document).findall("Sockets/Socket") if int(slot.get("nodeId", "0")) in requested_nodes]
+    for name, item_id in expected_equipment:
+        if item_id and active_slot(name, result) and equipped.get(name, {}).get("id") != item_id:
+            errors.append(f"{name} 的装备 {item_id} 未被引擎装入；请核对基底名称、物品类型和插槽，不能把被静默移除的装备当作已生效。可用 catalog bases 查询合法基底。")
     for name, item in equipped.items():
         if not active_slot(name, result): continue
         if not item.get("base_recognised"):
@@ -462,6 +469,37 @@ def roundtrip(root, result, document):
     return xml
 
 
+def materialize_items(plan, root):
+    """Translate optional ordinary rare recipes using the installed modifier pool."""
+    recipes = []
+    for item in plan.get("operations", {}).get("items", []):
+        if "craft" not in item:
+            continue
+        bx.require(set(item) == {"id", "craft"} and type(item["id"]) is int and item["id"] > 0, "配方物品只接受 id 与 craft，不能混入 text。")
+        spec = item["craft"]
+        bx.require(isinstance(spec, dict) and set(spec) <= {"base", "ilvl", "quality", "sockets", "affixes"}, "craft 仅接受 base/ilvl/quality/sockets/affixes。")
+        bx.require(isinstance(spec.get("base"), str) and spec["base"].strip(), "craft.base 使用 catalog bases 返回的完整基底名。")
+        bx.require(type(spec.get("ilvl")) is int and 1 <= spec["ilvl"] <= 100, "craft.ilvl 应为 1–100 物品等级。")
+        bx.require(type(spec.get("quality", 20)) is int and 0 <= spec.get("quality", 20) <= 20, "普通配方品质只接受 0–20；特殊加工需另有真实依据。")
+        sockets = spec.get("sockets", "")
+        bx.require(isinstance(sockets, str) and (not sockets or re.fullmatch(r"[RGBW](?:[- ][RGBW])*", sockets)), "craft.sockets 只接受普通孔，例如 W-W-W-W 或 R-R G-G。")
+        affixes = spec.get("affixes")
+        bx.require(isinstance(affixes, list) and 1 <= len(affixes) <= 6, "craft.affixes 应为 1–6 项。")
+        for affix in affixes:
+            bx.require(isinstance(affix, dict) and set(affix) <= {"id", "roll"} and isinstance(affix.get("id"), str), "词缀配方需要 catalog affixes 返回的 id，可选 roll。")
+            roll = affix.get("roll", 0.5)
+            bx.require(type(roll) in (float, int) and math.isfinite(roll) and 0 <= roll <= 1, "roll 是词缀范围内位置 0–1，默认 0.5，不是实际数值。")
+        recipes.append({"id": item["id"], **spec})
+    if not recipes:
+        return plan, []
+    bx.require(len(recipes) <= 10 and len({spec["id"] for spec in recipes}) == len(recipes), "每次最多 10 件且不能有重复配方物品 ID。")
+    audit = engine.calculate(root, crafts=recipes)["crafted_items"]
+    generated = {item["id"]: item["text"] for item in audit}
+    resolved = copy.deepcopy(plan)
+    resolved["operations"]["items"] = [{"id": item["id"], "text": generated[item["id"]]} if "craft" in item else item for item in resolved["operations"]["items"]]
+    return resolved, audit
+
+
 def evaluate(args):
     run, state = read_run(args.run)
     bx.require(state.get("intent"), "先通过多轮对话确认意图，并执行 intent。")
@@ -484,7 +522,8 @@ def evaluate(args):
         path = Path(plan["template_xml"])
         source = bx.read_document(path if path.is_absolute() else plan_path.parent / path)
     # Apply shared scenario first; candidate-specific conditions then require evidence.
-    document = bx.apply_plan(prepared(source, intent), plan)
+    resolved_plan, crafted_items = materialize_items(plan, root)
+    document = bx.apply_plan(prepared(source, intent), resolved_plan)
     release_inactive_sockets(document)
     result = engine.calculate(root, bx.serialise(document))
     errors, warnings = mechanical_issues(document, result, intent)
@@ -522,7 +561,7 @@ def evaluate(args):
                "status": "invalid" if errors else "validated", "roundtrip_verified": True,
                "baseline_warnings": baseline.get("warnings", []),
                "errors": list(dict.fromkeys(errors)), "warnings": list(dict.fromkeys(warnings)), "budget": budget, "readiness": audit,
-               "comparison_notes": comparison_notes, "comparison": compare(baseline, result, not comparison_notes), "plan": plan, "result": {k: v for k, v in result.items() if k != "xml"}}
+               "comparison_notes": comparison_notes, "comparison": compare(baseline, result, not comparison_notes), "plan": plan, "crafted_items": crafted_items, "result": {k: v for k, v in result.items() if k != "xml"}}
     write_json(destination / "evaluation.json", outcome)
     write_json(destination / "plan.json", plan)
     state["phase"] = "evaluated"
@@ -575,6 +614,10 @@ def report_html(state, outcome):
     scenario = json.dumps(intent["scenario"], ensure_ascii=False)
     changes = json.dumps(plan.get("operations", {}), ensure_ascii=False, indent=2)
     condition_notes = json.dumps(plan.get("config_evidence", {}), ensure_ascii=False, indent=2)
+    crafted_note = ""
+    if outcome.get("crafted_items"):
+        crafted_note = '<h3>目标稀有装备的词缀依据</h3><p>以下目标装由本机普通词缀库生成，已核对基底适用、物等、词缀冲突及最多三前缀/三后缀。它们是采购/制作目标；当前供给、制作方法和费用仍需核实。</p>'
+        crafted_note += listing([item["base"] + f"：{sum(a['type'] == 'Prefix' for a in item['affixes'])} 前缀 / {sum(a['type'] == 'Suffix' for a in item['affixes'])} 后缀；具体属性见采购清单与配装文件。" for item in outcome["crafted_items"]])
     baseline_note = ""
     if outcome.get("baseline_warnings"):
         baseline_note = '<p class="note">原始方案存在下列诊断提示；有资源不足等问题时，其面板仅作诊断参考，不能视为游戏内可持续达到的表现。</p>' + listing(outcome["baseline_warnings"])
@@ -584,7 +627,7 @@ def report_html(state, outcome):
 <section><h2>你的目标</h2><p>{esc(intent['goal'])}</p><p>{esc(intent['league'])} · 目标等级 {intent['target_level']} · 预算 {esc(intent['budget']['amount'])} {esc(intent['budget']['currency'])}</p><p>{esc(intent['notes'])}</p></section>
 <section><h2>前后对比</h2><p>原角色：{esc(state.get('baseline_label','用户导入角色'))}；候选：{esc(outcome['result']['main_skill_name'])}。总 DPS 只汇总勾选计入的技能，不能代替实际刷图速度。</p>{baseline_note}<table><thead><tr><th>指标</th><th>原方案</th><th>新方案</th><th>变化</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
 <section><h2>技能与插槽安排</h2><p>按下列顺序镶嵌，连线以 XML 中装备为准。3.29 允许宝石插入不同颜色的普通孔；颜色匹配时有品质加成。表内品质加成为本机按孔位计算的部分，其他装备或辅助的品质影响以 PoECharm 最终面板为准。</p><table><tr><th>位置与顺序</th><th>宝石</th><th>基础等级 / 品质</th><th>匹配孔色加成</th><th>状态</th></tr>{''.join(skill_rows)}</table></section>
-<section><h2>购买与准备</h2><p>已列成本：{b['low']:g}–{b['high']:g} {esc(b['currency'])}。待核实项目未计入这个范围；原 XML 也不代表游戏仓库盘点。</p><h3>程序从前后 XML 检测到的物品准备</h3>{listing(materials)}<h3>采购、制作和其他步骤</h3>{listing(shopping)}<h2>切换顺序</h2>{listing(plan.get('migration_steps',[]))}</section>
+<section><h2>购买与准备</h2><p>已列成本：{b['low']:g}–{b['high']:g} {esc(b['currency'])}。待核实项目未计入这个范围；原 XML 也不代表游戏仓库盘点。</p><h3>程序从前后 XML 检测到的物品准备</h3>{listing(materials)}<h3>采购、制作和其他步骤</h3>{listing(shopping)}{crafted_note}<h2>切换顺序</h2>{listing(plan.get('migration_steps',[]))}</section>
 <section><h2>计算条件与待核实项</h2><p>{esc(condition_summary)}</p><p>共同场景：<code>{esc(scenario)}</code></p>{listing(resources)}{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
 <section><h2>资料依据</h2><ul>{''.join(sources)}</ul><details><summary>具体改动及条件依据</summary><pre>{esc(changes)}</pre><pre>{esc(condition_notes)}</pre></details></section>
 <section><h2>如何使用</h2><p>在 PoECharm 中打开同目录的“改进配装.xml”，核对当前主技能、装备与天赋；按照上面的准备顺序在游戏内调整。它不会修改服务器角色。</p></section></html>'''
@@ -618,7 +661,17 @@ def export(args):
     state["selected_candidate"] = args.name
     state["updated_at"] = now()
     write_json(run / "run.json", state)
-    return {"status": "exported", "files": [str(output / "改进配装.xml"), str(output / "配装说明.html")], "budget_status": outcome["budget"]["status"], "warnings": outcome["warnings"]}
+    stats = verification["stats"]
+    user_summary = [f"配装 XML 已通过本机 PoECharm 计算及保存回读。目标：{state['intent']['league']} / {state['intent']['game_version']}。",
+                    "当前计算场景下：" + "；".join(f"{METRICS[key]} {stats[key]:,.1f}" for key in ("CombinedDPS", "Life", "EnergyShield", "HitChance", "ChaosResist") if key in stats) + "。"]
+    if outcome.get("comparison_notes"):
+        user_summary.append("前后计算存在条件或有效性差异，不提供同条件提升百分比；原面板仅供诊断，比较限制见说明。")
+    if outcome["budget"]["status"] in {"unknown", "estimate"}:
+        user_summary.append("国服完整采购成本尚未核实，不能承诺预算内买齐。先备齐核心装备和宝石，再按说明切换。")
+    if any(resource.get("leech_on_hit", 0) for resource in outcome["readiness"]["resources"]):
+        user_summary.append("吸取回复依赖命中；空挥、无敌阶段与转场的续航请看说明中的资源明细。")
+    return {"status": "exported", "files": [str(output / "改进配装.xml"), str(output / "配装说明.html")],
+            "user_summary": "\n".join(user_summary), "budget_status": outcome["budget"]["status"], "warnings": outcome["warnings"]}
 
 
 def catalog(args):
@@ -628,7 +681,7 @@ def catalog(args):
         bx.require(isinstance(queries, list) and 1 <= len(queries) <= 30, "batch 的 queries 应包含 1–30 项。")
         for query in queries:
             bx.require(isinstance(query, dict) and set(query) <= {"kind", "query", "limit"}, "批量查询仅接受 kind/query/limit。")
-            bx.require(query.get("kind") in {"gems", "skills", "nodes", "uniques", "config", "links", "classes"}, "批量查询不含 translations，请单独查询翻译。")
+            bx.require(query.get("kind") in {"gems", "skills", "nodes", "uniques", "config", "links", "classes", "bases", "affixes"}, "批量查询不含 translations，请单独查询翻译。")
             bx.require(isinstance(query.get("query", ""), str) and type(query.get("limit", 20)) is int and 1 <= query.get("limit", 20) <= 100, "查询文字或 limit 无效。")
         document = bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
         result = engine.calculate(root, document, queries=queries)
@@ -667,7 +720,7 @@ def parser():
             cmd.add_argument("--calculate", action="store_true")
             cmd.add_argument("--out")
         if name == "catalog":
-            cmd.add_argument("--kind", choices=["gems", "skills", "nodes", "uniques", "config", "translations", "links", "classes"])
+            cmd.add_argument("--kind", choices=["gems", "skills", "nodes", "uniques", "config", "translations", "links", "classes", "bases", "affixes"])
             cmd.add_argument("--batch")
             cmd.add_argument("--query", default="")
             cmd.add_argument("--input")

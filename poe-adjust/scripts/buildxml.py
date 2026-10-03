@@ -208,9 +208,12 @@ def apply_plan(source, plan):
         group = index_one(groups(root), data.get("group"), "技能组")
         gem = index_one(group.findall("Gem"), data.get("index"), "宝石")
         update_gem(gem, data)
+    changed_item_ids = set()
     for data in operations.get("items", []):
         require(set(data) <= {"id", "text"}, "装备包含未知字段。")
-        require(isinstance(data.get("id"), int) and data["id"] > 0, "装备需要正整数 id。")
+        require(type(data.get("id")) is int and data["id"] > 0, "装备需要正整数 id。")
+        require(data["id"] not in changed_item_ids, "同一计划中装备 id 不能重复，避免覆盖已核对的目标装备。")
+        changed_item_ids.add(data["id"])
         require(isinstance(data.get("text"), str) and 0 < len(data["text"]) <= 40000, "装备 text 不能为空或过长。")
         parent = root.find("Items")
         item = next((node for node in parent.findall("Item") if node.get("id") == str(data["id"])), None)
