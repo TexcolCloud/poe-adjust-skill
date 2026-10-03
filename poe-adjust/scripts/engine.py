@@ -83,9 +83,11 @@ def check(root: Path) -> dict:
     return {"pob_path": str(root), "engine_version": current, "python": sys.version.split()[0], "writes_to_installation": False}
 
 
-def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30) -> dict:
+def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None) -> dict:
     check(root)
     request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit}
+    if queries is not None:
+        request["queries"] = queries
     try:
         process = subprocess.run(
             [sys.executable, str(SCRIPTS / "engine.py"), "--worker"],

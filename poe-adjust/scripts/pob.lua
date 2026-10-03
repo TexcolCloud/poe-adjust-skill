@@ -79,15 +79,26 @@ for name, slot in pairs(build.itemsTab.slots) do
   end
 end
 table.sort(result.equipped, function(a, b) return a.slot < b.slot end)
-if request.catalog and request.catalog ~= "" then
+local function queryCatalog(kind, query, limit)
   local entries = {}
-  local q = string.lower(request.query or "")
+  local q = string.lower(query or "")
   local function matches(value) return q == "" or string.find(string.lower(value or ""), q, 1, true) end
-  if request.catalog == "gems" then
+  if kind == "gems" then
     for id, gem in pairs(data.gems) do
-      if matches(id) or matches(gem.name) then table.insert(entries, {id = id, name = gem.name, skill_id = gem.grantedEffectId, tags = gem.tags}) end
+      if matches(id) or matches(gem.name) or matches(gem.grantedEffectId) or q == "id:" .. string.lower(gem.grantedEffectId) then
+        local skill = data.skills[gem.grantedEffectId]
+        local requirements = {}
+        for level, values in pairs(skill and skill.levels or {}) do
+          if level <= (gem.naturalMaxLevel or 20) then table.insert(requirements, {gem_level = level, character_level = values.levelRequirement}) end
+        end
+        table.sort(requirements, function(a,b) return a.gem_level < b.gem_level end)
+        table.insert(entries, {id = id, name = gem.name, skill_id = gem.grantedEffectId, tags = gem.tags,
+          min_level = requirements[1] and requirements[1].character_level, level_requirements = requirements,
+          natural_max_level = gem.naturalMaxLevel, vaal = gem.vaalGem or false,
+          special_variant = string.find(gem.grantedEffectId, "Alt[XYZ]") ~= nil or string.find(id, "Awakened", 1, true) ~= nil})
+      end
     end
-  elseif request.catalog == "skills" then
+  elseif kind == "skills" then
     for id, skill in pairs(data.skills) do
       if matches(id) or matches(skill.name) then
         table.insert(entries, {id = id, name = skill.name, description = skill.description,
@@ -95,7 +106,7 @@ if request.catalog and request.catalog ~= "" then
           constant_stats = skill.constantStats, stat_ids = skill.stats})
       end
     end
-  elseif request.catalog == "nodes" then
+  elseif kind == "nodes" then
     for id, node in pairs(build.spec.nodes) do
       if matches(node.name) or matches(node.ascendancyName) or matches(table.concat(node.sd or {}, " ")) or tostring(id) == q then
         local links, path = {}, {}
@@ -107,11 +118,11 @@ if request.catalog and request.catalog ~= "" then
           allocated = node.alloc or false, reachable = node.path ~= nil, points_to_allocate = node.pathDist, path = path})
       end
     end
-  elseif request.catalog == "uniques" then
+  elseif kind == "uniques" then
     for _, group in pairs(data.uniques) do
       for _, raw in pairs(group) do if matches(raw) then table.insert(entries, {raw = raw}) end end
     end
-  elseif request.catalog == "config" then
+  elseif kind == "config" then
     for _, section in ipairs(LoadModule("Modules/ConfigOptions")) do
       if section.var and (matches(section.var) or matches(section.label) or matches(type(section.tooltip) == "string" and section.tooltip or "")) then
         table.insert(entries, scalarTable(section))
@@ -119,16 +130,26 @@ if request.catalog and request.catalog ~= "" then
     end
   else error("Unknown catalog") end
   table.sort(entries, function(a,b)
-    if request.catalog == "nodes" then
+    if kind == "nodes" then
       local da, db = a.points_to_allocate or 1000, b.points_to_allocate or 1000
       if da ~= db then return da < db end
       return a.id < b.id
     end
     return tostring(a.id or a.raw or a.var) < tostring(b.id or b.raw or b.var)
   end)
-  result.catalog_total = #entries
-  result.catalog = {}
-  for i = 1, math.min(#entries, request.limit or 30) do result.catalog[i] = entries[i] end
+  local selected = {}
+  for i = 1, math.min(#entries, limit or 30) do selected[i] = entries[i] end
+  return {kind = kind, query = query, total = #entries, entries = selected}
+end
+if request.catalog and request.catalog ~= "" then
+  local catalog = queryCatalog(request.catalog, request.query, request.limit)
+  result.catalog_total, result.catalog = catalog.total, catalog.entries
+end
+if request.queries then
+  result.catalog_batch = {}
+  for _, query in ipairs(request.queries) do
+    table.insert(result.catalog_batch, queryCatalog(query.kind, query.query, query.limit))
+  end
 end
 result.xml = assert(build:SaveDB("POE Adjust"))
 _RESULT_JSON = assert(json.encode(result))

@@ -35,7 +35,10 @@ python $entry catalog --kind nodes --input '<角色.xml>' --query '12345' --limi
 python $entry catalog --kind nodes --input '<角色.xml>' --query 'Champion' --limit 30
 python $entry catalog --kind uniques --query 'Emperor' --limit 3
 python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
+python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 ```
+
+一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的角色等级需求 `level_requirements`、`min_level`、`special_variant`、`vaal`，开荒时据此核对而非猜等级。
 
 技能返回 `skill_id` 才是操作字段；`id` 可能是游戏物品路径。查询天赋时带输入文件，使用其版本与当前已点天赋。结果按本机引擎计算的所需新增点数排序；`allocated` 表示已点，`reachable` 表示有可分配路线，`points_to_allocate` 是新增点数，`path` 包含到目标需要的节点 ID。将路线与保留节点合并后设置完整 `tree.nodes`，再评估点数和依赖；不要孤立添加远处的大点。`linked` 返回邻接节点，供调整已有路径时查看。查询只返回最多 100 条；细化关键词，不反复截断全库。
 
@@ -63,6 +66,8 @@ python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
   "minimum_stats": {"FireResist": 75, "ColdResist": 75, "LightningResist": 75},
   "quest_passive_points": 23,
   "ascendancy_points": 8,
+  "calculation_mode": "steady",
+  "resource_mode": "sustained",
   "notes": "用户允许更换主技能；保留盾牌；不重新练号。"
 }
 ```
@@ -72,6 +77,10 @@ python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
 `keep_slots` 锁定该插槽原物品的完整文本，而非只锁物品名字。`keep_skill_ids` 要求候选中该技能启用。未明确允许时三个 allow 字段保持 false。`baseline_main_group` 从 inspection 的 `skill_groups[].index` 选择；先确定用户真正使用的主技能。
 
 `scenario` 是共同敌人/战斗配置，实际配置名用 config 查询。空对象使用引擎默认场景，并在报告明确；不要把默认场景称为终局首领。输入里旧战斗 Input 会被重置，盗贼与万神殿信息保留。共同场景在候选中不可单独改动。
+
+`calculation_mode` 默认 `steady`：守护增益、药剂必须关闭。`conditional` 用于用户接受的条件面板，开启的守护需 `config_evidence.guard`，每个药剂需 `config_evidence["Flask 1"]` 等说明触发、时长与覆盖。
+
+`resource_mode` 默认 `sustained`：每秒消耗超出秒回与吸取时拒绝交付。只有用户接受停手恢复才用 `burst`，计划给出 `burst_seconds`；程序校验时间不超过资源池并报告停手仅靠秒回所需的恢复时间。吸取值仍依赖命中，不能当转场回复。
 
 ## 候选 plan.json
 
@@ -96,6 +105,8 @@ python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
 链接/日期必须替换为实际证据，不能照抄占位示例。示例改动只是协议展示，并非对所有角色适用的建议。
 
 `mode` 为 refine 或 rebuild。候选名命令参数 `--name` 使用短英文，如 `proposal-a`；面向用户的中文名称放 `name`。失败候选可用同名重新评估；原角色快照不覆盖。
+
+可用普通点或升华点应完成分配。确需留点时，计划加 `"unused_points_reason":{"normal":"具体留点用途","ascendancy":"具体原因"}`，只填实际留点的类型。理由会进入最终说明；不能用通用套话跳过设计。
 
 ### operations 可用字段
 
@@ -124,9 +135,17 @@ python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
 
 ### 预算与依据
 
-shopping 每项需要 description、status。status：
+shopping 每项需要 description、status。物品条目还应提供结构化关联：
 
-- owned：用户确认已有或操作不产生通货费用。
+- 宝石：`{"kind":"gem","skill_id":"SupportBrutality","level":20,"quality":0,"quantity":1,"description":"将原 19 级练至 20 级或采购替换","status":"unknown"}`。
+- 装备：`{"kind":"item","item_id":20,"quantity":1,"description":"目标胸甲，含连线/改色","status":"unknown"}`。
+- 洗点、制作等额外操作：`kind:"service"`，用 description 写具体内容。
+
+程序从前后 XML 自动检测新增宝石、等级/品质/数量变化和新装备/改造；未匹配的需求保持 unknown。价格 low/high 表示该条全部 quantity 的总价。原 XML 19 级不能抵消目标 20 级，缺少同规格的物品不能直接标 owned。原 XML 也不等于仓库盘点；用户额外声称已备齐时在说明记录，实际规格须核对。
+
+status：
+
+- owned：原 XML 可复用的同规格物品，或确认不产生通货费用的操作。没有 kind 的文字声明不能抵消程序检测的新增需求。
 - verified_cn：提供 low/high/currency/source/checked_at/league；source 为实际国服来源链接，league 与 intent.league 完全一致。
 - estimate：提供 low/high/currency，报告保持“估价”标记。
 - unknown：价格或可获得性尚不确定，不计入已知成本范围。
@@ -139,8 +158,10 @@ shopping 每项需要 description、status。status：
 
 evaluate 会计算原方案与候选、检查约束、输出候选 XML，然后回读重算。`status:invalid` 的 `errors` 必须解决才可 export。warnings 不被隐藏：包含引擎未解析词缀、缺少涂油、预算未知、升级比较等。
 
-已覆盖：解析/重复 ID/悬空装备引用、当前方案选择、丢失天赋、当前等级点数与升华点、启用技能与装备需求、资源警告、启用技能组的孔色/数量/连线匹配（支持白孔和引擎标记的任意孔色装备）、用户锁定条件、预算上限、回读数据与核心指标一致性。禁用技能组视为备选方案，不占用当前配装的物理插槽。
+已覆盖：解析/重复 ID/悬空装备引用、当前方案选择、丢失天赋、当前等级点数与升华点/无解释的留点、启用技能与装备需求、常态守护/药剂、持续资源或有时限的爆发、自动物品差异、启用技能组的孔色/数量/连线匹配（支持白孔和引擎标记的任意孔色装备）、用户锁定条件、预算上限、回读数据与核心指标一致性。禁用技能组视为备选方案，不占用当前配装的物理插槽。
 
 仍需 agent 结合证据审查：改色/连线的可行性与成本、插槽顺序对特殊装备的作用、触发循环、药剂覆盖率、条件持续性、特殊机制、所有装备词缀组合的游戏内合法性、国服可获得性和价格、用户目标是否实际改善。不能把“计算通过”写成“全部游戏机制与市场均保证”。
 
 export 只接收当前意图下的有效候选；会检查文件摘要并最终复算。输出可直接交付，不把内部 run.json、计划或临时文件作为最终成果。
+
+`evaluate.readiness` 返回实际常态/条件开关、剩余点数和资源明细。原方案诊断失效或条件不同时，`comparison.*.percent` 为 null，不能自己重新计算百分比并称为同条件实战提升。`status` 返回已发现的 pob_path/engine_version，后续查询无需反复 doctor。新技能版本会要求旧候选重新 evaluate。

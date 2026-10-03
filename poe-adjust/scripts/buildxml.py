@@ -170,7 +170,7 @@ def update_gem(gem, values):
 
 
 def apply_plan(source, plan):
-    allowed = {"name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "assumptions", "migration_steps", "config_evidence", "legality_notes"}
+    allowed = {"name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "assumptions", "migration_steps", "config_evidence", "legality_notes", "unused_points_reason", "burst_seconds"}
     require(not (set(plan) - allowed), "计划包含未知字段：" + ", ".join(sorted(set(plan) - allowed)))
     require(plan.get("mode") in {"refine", "rebuild"}, "mode 应为 refine 或 rebuild。")
     require(isinstance(plan.get("summary"), str) and plan["summary"].strip(), "请说明方案目的。")
