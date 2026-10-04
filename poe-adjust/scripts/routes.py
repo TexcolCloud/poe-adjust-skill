@@ -66,6 +66,10 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None):
     if route["version_status"] == "unverified":
         warnings.append("国服赛季与资料版本的对应关系未完全核实；关键改动需以国服公告为准，不能承诺当前赛季强度。")
     result = copy.deepcopy(route)
+    if classes is not None:
+        result["class_display_name"] = selected.get("display_name", bx.CLASSES[route["class_id"]])
+        ascendancy = next(entry for entry in selected["ascendancies"] if entry["name"] == route["ascendancy"])
+        result["ascendancy_display_name"] = ascendancy.get("display_name", ascendancy["name"])
     stages = result.get("stages")
     bx.require(isinstance(stages, list) and 1 <= len(stages) <= 12, "stages 需要 1–12 个阶段。")
     levels = [stage.get("level") for stage in stages]
@@ -131,6 +135,8 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None):
 def render(route, warnings, engine_version, tree_version):
     esc = lambda value: html.escape(str(value), quote=True)
     listing = lambda values: "<ul>" + "".join("<li>" + esc(v) + "</li>" for v in values) + "</ul>"
+    class_name = route.get("class_display_name", bx.CLASSES[route["class_id"]])
+    ascendancy_name = route.get("ascendancy_display_name", route["ascendancy"])
     sources = {source["id"]: source for source in route["sources"]}
     sections = []
     for stage in route["stages"]:
@@ -142,4 +148,4 @@ def render(route, warnings, engine_version, tree_version):
         items = [item["name"] + " · " + ACQUISITIONS[item["acquisition"]] + ("；未获得时：" + item["fallback"] if item.get("fallback") else "") for item in stage.get("required_items", [])]
         sections.append(f'''<section><h2>{stage['level']} 级 · {esc(stage['name'])}</h2><p>主技能按 {stage['links']} 连安排。{esc(stage.get('link_fallback',''))}</p><table><tr><th>宝石</th><th>目标等级/品质</th><th>获取与替代</th></tr>{''.join(rows)}</table><p>宝石等级为本阶段可用的练级目标，不表示刚领取就达到该等级。</p><h3>装备优先级</h3>{listing(stage['gear'])}{listing(items)}<h3>天赋与升华</h3>{listing(stage['passives'])}<p>{esc(stage['ascendancy'])}</p><h3>资源与操作</h3><p>{esc(stage['resources'])}</p><h3>继续推进前检查</h3>{listing(stage['checks'])}<h3>转入下一阶段的条件</h3>{listing(stage['transition'])}</section>''')
     evidence = [f'<li><a href="{esc(source["url"])}">{esc(source["title"])}</a> · {esc(source["version"])} · {esc(source["checked_at"])}</li>' for source in sources.values()]
-    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(route['name'])}</title><style>body{{font:16px/1.75 system-ui,"Microsoft YaHei",sans-serif;max-width:1080px;margin:32px auto;padding:0 22px;background:#f4f3ef;color:#23303b}}header,section{{padding:26px;background:white;border:1px solid #ddd;border-radius:12px;margin:18px 0}}h1{{font-size:30px}}h2{{color:#235b53}}table{{border-collapse:collapse;width:100%}}td,th{{text-align:left;padding:10px;border-bottom:1px solid #ddd}}.note{{background:#fff5da;padding:14px}}@media print{{section{{break-inside:avoid}}}}</style><header><h1>{esc(route['name'])}</h1><p>{esc(route['goal'])}</p><p>{esc(route['league'])} · {esc(bx.CLASSES[route['class_id']])} → {esc(route['ascendancy'])} · {'自力获取' if route['trade_mode']=='ssf' else '允许交易'} · 初始预算 {route['budget']['amount']:g} {esc(route['budget']['currency'])}</p><p class="note">这是分阶段行动路线。宝石等级已按本机 PoB {esc(engine_version)} / 天赋 {esc(tree_version)} 核对；任务领取、掉落与国服改动以所列资料和实际游戏为准。尚未使用完整阶段装备进行伤害/生存实算，不承诺面板或通关速度。</p></header>{''.join(sections)}<section><h2>需要留意</h2>{listing(warnings + route.get('risks', []))}<p>{esc(route.get('notes',''))}</p></section><section><h2>查阅资料</h2><ul>{''.join(evidence)}</ul><p>实际推进后，可提供新的角色 XML，继续调用配装助手计算下一阶段的具体装备与天赋。</p></section></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(route['name'])}</title><style>body{{font:16px/1.75 system-ui,"Microsoft YaHei",sans-serif;max-width:1080px;margin:32px auto;padding:0 22px;background:#f4f3ef;color:#23303b}}header,section{{padding:26px;background:white;border:1px solid #ddd;border-radius:12px;margin:18px 0}}h1{{font-size:30px}}h2{{color:#235b53}}table{{border-collapse:collapse;width:100%}}td,th{{text-align:left;padding:10px;border-bottom:1px solid #ddd}}.note{{background:#fff5da;padding:14px}}@media print{{section{{break-inside:avoid}}}}</style><header><h1>{esc(route['name'])}</h1><p>{esc(route['goal'])}</p><p>{esc(route['league'])} · {esc(class_name)} → {esc(ascendancy_name)} · {'自力获取' if route['trade_mode']=='ssf' else '允许交易'} · 初始预算 {route['budget']['amount']:g} {esc(route['budget']['currency'])}</p><p class="note">这是分阶段行动路线。宝石等级已按本机 PoB {esc(engine_version)} / 天赋 {esc(tree_version)} 核对；任务领取、掉落与国服改动以所列资料和实际游戏为准。尚未使用完整阶段装备进行伤害/生存实算，不承诺面板或通关速度。</p></header>{''.join(sections)}<section><h2>需要留意</h2>{listing(warnings + route.get('risks', []))}<p>{esc(route.get('notes',''))}</p></section><section><h2>查阅资料</h2><ul>{''.join(evidence)}</ul><p>实际推进后，可提供新的角色 XML，继续调用配装助手计算下一阶段的具体装备与天赋。</p></section></html>'''

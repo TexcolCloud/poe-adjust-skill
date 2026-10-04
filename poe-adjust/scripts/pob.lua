@@ -22,6 +22,7 @@ print = function() end
 -- @LOAD_HEADLESS@
 local json = require("dkjson")
 local request = assert(json.decode(_REQUEST_JSON))
+local function calculateRequest(request)
 if launch.promptMsg then error(launch.promptMsg) end
 if request.xml ~= "" then loadBuildFromXML(request.xml, "POE Adjust") end
 if launch.promptMsg then error(launch.promptMsg) end
@@ -266,4 +267,14 @@ if request.queries then
   end
 end
 result.xml = assert(build:SaveDB("POE Adjust"))
-_RESULT_JSON = assert(json.encode(result))
+return result
+end
+local response
+if request.xml_batch then
+  assert(#request.xml_batch >= 1 and #request.xml_batch <= 12, "A calculation batch accepts 1-12 builds")
+  response = {calculations = {}}
+  for _, xml in ipairs(request.xml_batch) do table.insert(response.calculations, calculateRequest({xml = xml})) end
+else
+  response = calculateRequest(request)
+end
+_RESULT_JSON = assert(json.encode(response))

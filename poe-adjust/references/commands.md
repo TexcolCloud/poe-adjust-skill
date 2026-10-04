@@ -46,7 +46,7 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 
 一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的角色等级需求 `level_requirements`、`min_level`、`special_variant`、`vaal`，开荒时据此核对而非猜等级。
 
-`classes` 返回当前树的职业与升华 ID/英文名，避免错配或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 compatible/incompatible。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
+`classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 compatible/incompatible。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
 
 技能返回 `skill_id` 才是操作字段；`id` 可能是游戏物品路径。查询天赋时带输入文件，使用其版本与当前已点天赋。结果按本机引擎计算的所需新增点数排序；`allocated` 表示已点，`reachable` 表示有可分配路线，`points_to_allocate` 是新增点数，`path` 包含到目标需要的节点 ID。将路线与保留节点合并后设置完整 `tree.nodes`，再评估点数和依赖；不要孤立添加远处的大点。`linked` 返回邻接节点，供调整已有路径时查看。查询只返回最多 100 条；细化关键词，不反复截断全库。
 
@@ -188,6 +188,18 @@ status：
 金额单位必须和预算一致；先核实汇率再换算。不同市场的价格、制作期望成本和成品成交价格不可混为一谈。空 shopping 表示价格未核实。列出全部必要成本，价格状态只是记录，不自动证明引用网页可信。
 
 `config_evidence` 示例：`{"conditionOnslaught":"装备词缀提供击杀获得，刷图可持续；无小怪首领不使用此假设"}`。说明必须和计算场景相符。
+
+## 批量比较单个宝石
+
+已经 evaluate 通过的候选，可用一次原生引擎进程比较同一位置的替代宝石：
+
+```powershell
+python $entry probe --run $run --name proposal-a --group 1 --index 2 --ids 'SupportBrutality,SupportIronGrip' --level 19 --quality 0
+```
+
+group/index 为候选当前技能组/宝石的 1 起始序号，ids 为已从 catalog 查到的 1–11 个不同 skill_id。level/quality 省略则保持该位置原规格；对比宝石自然等级上限不同时分开查询，不能让所有宝石沿用不适用的 20 级。
+
+返回 screened、原位置基准，以及每种替代的实算伤害、资源、用户约束和机械检查错误。候选文件保持不变。先排除 errors 非空的结果，再结合清图/首领、操作与成本判断。DPS 较高不自动更适合；当前比较未核算新增采购、未生成最终 XML 回读。选定后更新完整 plan 并重新 evaluate/export。
 
 ## 校验与交付
 

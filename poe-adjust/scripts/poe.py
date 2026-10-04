@@ -18,7 +18,7 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -633,18 +633,60 @@ def report_html(state, outcome):
 <section><h2>如何使用</h2><p>在 PoECharm 中打开同目录的“改进配装.xml”，核对当前主技能、装备与天赋；按照上面的准备顺序在游戏内调整。它不会修改服务器角色。</p></section></html>'''
 
 
-def export(args):
+def read_candidate(args):
     run, state = read_run(args.run)
     bx.require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", args.name), "候选名称无效。")
     folder = run / "candidates" / args.name
     outcome = read_json(folder / "evaluation.json")
     bx.require(outcome.get("skill_version") == VERSION, "技能校验规则已更新，请用当前版本重新 evaluate。")
-    bx.require(outcome.get("status") == "validated" and outcome.get("roundtrip_verified"), "候选仍有校验错误，请先修正再导出。")
+    bx.require(outcome.get("status") == "validated" and outcome.get("roundtrip_verified"), "候选仍有校验错误，请先修正并重新 evaluate。")
     bx.require(outcome["intent_hash"] == state.get("intent_hash") and outcome["original_sha256"] == state["original_sha256"], "意图或原角色已变化，必须重新 evaluate。")
     xml = (folder / "candidate.xml").read_text(encoding="utf-8")
     bx.require(bx.digest(xml) == outcome["xml_sha256"], "候选文件在计算后被修改，请重新 evaluate。")
     root = engine.resolve_root(args.pob or state["pob_path"])
     bx.require(engine.version(root) == outcome["engine_version"], "引擎已升级，请重新计算。")
+    return run, state, outcome, xml, root
+
+
+def probe(args):
+    """Compare one gem slot in a single native worker, without changing a candidate."""
+    run, state, outcome, xml, root = read_candidate(args)
+    ids = [value.strip() for value in args.ids.split(",")]
+    bx.require(1 <= len(ids) <= 11 and all(re.fullmatch(r"[A-Za-z0-9_]+", value) for value in ids) and len(set(ids)) == len(ids), "--ids 需要 1–11 个不同的本机宝石 skill_id，以逗号分隔。")
+    source = bx.parse(xml)
+    group = bx.index_one(bx.groups(source), args.group, "技能组")
+    bx.require(group.get("enabled", "true") != "false" and not group.get("source"), "probe 只比较当前启用的普通宝石组。")
+    bx.index_one(group.findall("Gem"), args.index, "宝石")
+    documents = []
+    for skill_id in ids:
+        change = {"group": args.group, "index": args.index, "skill_id": skill_id}
+        for field in ("level", "quality"):
+            value = getattr(args, field, None)
+            if value is not None: change[field] = value
+        documents.append(bx.apply_plan(source, {"mode": outcome["plan"]["mode"], "summary": "单个宝石比较", "operations": {"gems": [change]}}))
+    calculations = engine.calculate(root, xml_batch=[xml] + [bx.serialise(document) for document in documents])["calculations"]
+    baseline = calculations[0]
+    original = bx.read_document(run / "original.xml")
+    before = read_json(run / "baseline.json")
+    rows = []
+    keys = ("CombinedDPS", "FullDPS", "HitChance", "Life", "EnergyShield", "ManaCost", "ManaPerSecondCost", "ManaRegenRecovery", "ManaLeechGainRate", "LifePerSecondCost", "LifeRegenRecovery", "LifeLeechGainRate")
+    for skill_id, document, result in zip(ids, documents, calculations[1:]):
+        errors, warnings = mechanical_issues(document, result, state["intent"])
+        errors.extend(check_constraints(original, document, before, result, state["intent"], outcome["plan"]))
+        audit = readiness(result, state["intent"], outcome["plan"])
+        errors.extend(audit["errors"])
+        warnings.extend(audit["warnings"])
+        gem = next(gem for gem in result["gems"] if gem["group"] == args.group and gem["index"] == args.index)
+        rows.append({"skill_id": skill_id, "name": gem.get("display_name", gem.get("name")), "level": gem.get("level"), "quality": gem.get("quality"),
+                     "stats": {key: result["stats"].get(key) for key in keys},
+                     "dps_delta": result["stats"].get("CombinedDPS", 0) - baseline["stats"].get("CombinedDPS", 0),
+                     "errors": list(dict.fromkeys(errors)), "warnings": list(dict.fromkeys(warnings))})
+    return {"status": "screened", "baseline": {key: baseline["stats"].get(key) for key in keys}, "alternatives": rows,
+            "next": "这是同一配装中单个宝石的比较，不改文件。结合清图/首领、资源和操作选取，不只取最高 DPS。选定后写回完整 plan 并重新 evaluate/export；获取成本及最终 XML 回读尚未在此验证。"}
+
+
+def export(args):
+    run, state, outcome, xml, root = read_candidate(args)
     verification = engine.calculate(root, xml)
     current_errors, _ = mechanical_issues(bx.parse(xml), verification, state["intent"])
     current_errors.extend(readiness(verification, state["intent"], outcome["plan"])["errors"])
@@ -706,15 +748,21 @@ def catalog(args):
 def parser():
     p = argparse.ArgumentParser(description="POE 配装助手：本机 PoB 实算、候选校验和 XML 导出。")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("doctor", "inspect", "catalog", "decode", "start", "intent", "evaluate", "export", "status", "route"):
+    for name in ("doctor", "inspect", "catalog", "decode", "start", "intent", "evaluate", "probe", "export", "status", "route"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--pob", help="PoECharm 文件夹、PoB 文件夹或可执行文件；默认自动发现")
         if name in {"inspect", "decode", "start"}: cmd.add_argument("--input", required=True)
-        if name in {"start", "intent", "evaluate", "export", "status"}: cmd.add_argument("--run", required=True)
+        if name in {"start", "intent", "evaluate", "probe", "export", "status"}: cmd.add_argument("--run", required=True)
         if name == "start": cmd.add_argument("--invoked", action="store_true")
         if name == "intent": cmd.add_argument("--file", required=True)
-        if name in {"evaluate", "export"}: cmd.add_argument("--name", required=True)
+        if name in {"evaluate", "probe", "export"}: cmd.add_argument("--name", required=True)
         if name == "evaluate": cmd.add_argument("--plan", required=True)
+        if name == "probe":
+            cmd.add_argument("--group", type=int, required=True)
+            cmd.add_argument("--index", type=int, required=True)
+            cmd.add_argument("--ids", required=True)
+            cmd.add_argument("--level", type=int)
+            cmd.add_argument("--quality", type=int)
         if name == "decode": cmd.add_argument("--out", required=True)
         if name == "inspect":
             cmd.add_argument("--calculate", action="store_true")
@@ -757,6 +805,7 @@ def main(argv=None):
         elif args.command == "start": result = begin(args)
         elif args.command == "intent": result = set_intent(args)
         elif args.command == "evaluate": result = evaluate(args)
+        elif args.command == "probe": result = probe(args)
         elif args.command == "export": result = export(args)
         elif args.command == "catalog":
             bx.require(1 <= args.limit <= 100, "limit 应在 1–100。")

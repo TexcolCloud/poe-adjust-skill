@@ -111,13 +111,15 @@ def validate_game_version(game_version, league, data_version=None, version_sourc
             raise EngineError(f"引用的官方公告实际为 {evidence['season']} / {documented_version}，不能作为 {game_version} 的版本依据。请打开 doctor/start 返回的 version_evidence.url 核对正文。")
 
 
-def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None) -> dict:
+def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None) -> dict:
     check(root)
     request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit}
     if queries is not None:
         request["queries"] = queries
     if crafts is not None:
         request["crafts"] = crafts
+    if xml_batch is not None:
+        request["xml_batch"] = xml_batch
     try:
         process = subprocess.run(
             [sys.executable, str(SCRIPTS / "engine.py"), "--worker"],
@@ -135,20 +137,25 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EngineError("计算引擎没有返回有效结果：" + process.stdout.decode("utf-8", errors="replace")[-1000:]) from exc
     result["engine_version"] = version(root)
-    translations = root.parent / "Data/Translate/zh-rCN/Items_Gems.txt.csv"
     names = {}
-    if translations.is_file():
-        with translations.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
-            names = {row[0]: row[1] for row in csv.reader(stream) if len(row) >= 2}
-    entries = result.get("gems", []) + result.get("catalog", [])
-    for query_result in result.get("catalog_batch", []):
-        entries += query_result["entries"]
-    for entry in entries:
-        if entry.get("name") in names:
-            entry["name_cn"] = names[entry["name"]]
-            entry["display_name"] = f"{entry['name_cn']}（{entry['name']}）"
-    if result.get("main_skill_name") in names:
-        result["main_skill_name_cn"] = names[result["main_skill_name"]]
+    for filename in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv"):
+        translations = root.parent / "Data/Translate/zh-rCN" / filename
+        if translations.is_file():
+            with translations.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
+                names.update({row[0]: row[1] for row in csv.reader(stream) if len(row) >= 2})
+    for calculation in result.get("calculations", [result]):
+        calculation["engine_version"] = result["engine_version"]
+        entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", [])
+        for query_result in calculation.get("catalog_batch", []):
+            entries += query_result["entries"]
+        entries += [ascendancy for entry in entries for ascendancy in entry.get("ascendancies", [])]
+        for entry in entries:
+            if entry.get("name") in names:
+                entry["name_cn"] = names[entry["name"]]
+                entry["display_name"] = f"{entry['name_cn']}（{entry['name']}）"
+        for key in ("main_skill_name", "class", "ascendancy"):
+            if calculation.get(key) in names:
+                calculation[key + "_cn"] = names[calculation[key]]
     return result
 
 

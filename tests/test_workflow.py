@@ -481,11 +481,19 @@ class RealEngineTests(unittest.TestCase):
     def test_13_native_support_compatibility_and_route_class_data(self):
         query = "ShieldCrush,SupportMeleePhysicalDamage,SupportGreaterMultipleProjectiles"
         result = engine.calculate(self.pob, queries=[{"kind": "links", "query": query, "limit": 1},
-                                                   {"kind": "classes", "query": "Duelist", "limit": 1}])
+                                                   {"kind": "classes", "query": "Duelist", "limit": 1},
+                                                   {"kind": "classes", "query": "Templar", "limit": 1},
+                                                   {"kind": "nodes", "query": "39790", "limit": 1}])
         links = result["catalog_batch"][0]["entries"][0]
         self.assertEqual(links["compatible"], ["SupportMeleePhysicalDamage"])
         self.assertEqual(links["incompatible"], ["SupportGreaterMultipleProjectiles"])
         self.assertIn("Champion", [a["name"] for a in result["catalog_batch"][1]["entries"][0]["ascendancies"]])
+        templar = result["catalog_batch"][2]["entries"][0]
+        self.assertEqual(templar["name_cn"], "圣堂武僧")
+        self.assertEqual(next(a for a in templar["ascendancies"] if a["name"] == "Inquisitor")["name_cn"], "判官")
+        self.assertEqual(result["catalog_batch"][3]["entries"][0]["name_cn"], "至圣所")
+        checked_route, warnings = routes.validate(route_fixture(), {"ShieldCrush": {"skill_id": "ShieldCrush", "name": "Shield Crush", "tags": {"grants_active_skill": True}, "level_requirements": [{"gem_level": 1, "character_level": 1}]}}, "3.29", result["classes"])
+        self.assertIn("决斗者（Duelist） → 冠军（Champion）", routes.render(checked_route, warnings, "2.67.2", "3_29"))
         plan = copy.deepcopy(self.rebuild)
         plan["operations"]["replace_skills"][0]["gems"][1]["skill_id"] = "SupportGreaterMultipleProjectiles"
         outcome = self.evaluate_plan(plan, "incompatible-support")
@@ -543,6 +551,21 @@ class RealEngineTests(unittest.TestCase):
         outcome = self.evaluate_plan(plan, "missing-belt")
         self.assertEqual(outcome["status"], "invalid")
         self.assertTrue(any("Belt 的装备 100 未被引擎装入" in error for error in outcome["errors"]), outcome["errors"])
+
+    def test_17_gem_probe_matches_individual_engine_and_does_not_write_candidate(self):
+        self.evaluate_plan(self.refine, "gem-probe")
+        folder = self.run_dir / "candidates/gem-probe"
+        snapshot = {path.name: bx.digest(path.read_bytes()) for path in folder.iterdir()}
+        result = poe.probe(args(run=str(self.run_dir), name="gem-probe", group=1, index=2,
+                                ids="SupportIronGrip,SupportBrutality,SupportSpellEcho", level=19, quality=0))
+        self.assertEqual(result["status"], "screened")
+        rows = result["alternatives"]
+        self.assertAlmostEqual(rows[1]["dps_delta"], 0, places=6)
+        self.assertTrue(any("未辅助" in error for error in rows[2]["errors"]), rows[2]["errors"])
+        changed = bx.apply_plan(bx.read_document(folder / "candidate.xml"), {"mode": "refine", "summary": "comparison", "operations": {"gems": [{"group": 1, "index": 2, "skill_id": "SupportIronGrip", "level": 19, "quality": 0}]}})
+        standalone = engine.calculate(self.pob, bx.serialise(changed))
+        self.assertAlmostEqual(rows[0]["stats"]["CombinedDPS"], standalone["stats"]["CombinedDPS"], places=6)
+        self.assertEqual(snapshot, {path.name: bx.digest(path.read_bytes()) for path in folder.iterdir()})
 
 
 if __name__ == "__main__": unittest.main()
