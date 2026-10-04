@@ -22,8 +22,8 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
-# Historical source records, not an engine compatibility allowlist.
-VERSION_EVIDENCE = {
+# Historical search hints, never current-season or compatibility evidence.
+VERSION_SOURCE_HINTS = {
     "3.28": {"season": "S29", "name": "沙海幻境", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22602/m14525/202603/982863.shtml"},
     "3.29": {"season": "S30", "name": "永火之咒", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml"},
 }
@@ -141,13 +141,15 @@ def metadata(root: Path) -> dict:
     heading = re.search(r"^---\s+(\d+\.\d+)\b[^\r\n]*", notes[release.start():], re.M) if release else None
     rules = heading[1] if heading else None
     matched = rules is not None and latest == rules.replace(".", "_")
+    hint = VERSION_SOURCE_HINTS.get(rules) if matched else None
     return {"engine_version": current, "data_version": rules if matched else None,
             "available_tree_versions": trees, "latest_standard_tree": latest,
             "data_version_basis": {"status": "corroborated" if matched else "unresolved",
                 "release": current, "changelog_heading": heading[0] if heading else None,
                 "tree_metadata": latest,
                 "scope": "本机发布记录与标准树交叉确认；不代表已核实国服改动或所有游戏机制。"},
-            "version_evidence": VERSION_EVIDENCE.get(rules) if matched else None}
+            "version_source_hint": {**hint, "status": "unverified_hint",
+                "scope": "历史公告搜索线索，本次尚未联网核实；不表示当前赛季、用户区服或国服现行规则。"} if hint else None}
 
 
 def check(root: Path) -> dict:

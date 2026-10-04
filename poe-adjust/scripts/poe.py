@@ -20,7 +20,7 @@ import engine
 import facts
 import routes
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 SCHEMA_VERSION = 2
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
@@ -113,7 +113,7 @@ def begin(args):
     write_json(run / "inspection.json", inspection)
     overview = {"class": inspection["build"].get("className"), "ascendancy": inspection["build"].get("ascendClassName"),
                 "level": inspection["build"].get("level"), "tree_version": inspection["tree"].get("treeVersion"),
-                "data_version": info["data_version"], "version_evidence": info["version_evidence"], "skill_groups": [
+                "data_version": info["data_version"], "version_source_hint": info["version_source_hint"], "skill_groups": [
                     {"index": group["index"], "slot": group.get("slot"), "enabled": group.get("enabled"),
                      "gems": [{key: gem.get(key) for key in ("index", "skillId", "nameSpec", "level", "quality")} for gem in group["gems"]]}
                     for group in inspection["skill_groups"]]}
@@ -1082,7 +1082,7 @@ def research(args):
         bx.require(args.league and args.league.strip(), "research --version 需要 --league，使用本次用户确认的赛季或永久区。")
         info = engine.check(root)
         data_version = engine.require_data_version(info)
-        source = args.source or (info.get("version_evidence") or {}).get("url", "")
+        source = args.source or (info.get("version_source_hint") or {}).get("url", "")
         engine.validate_game_version(data_version, args.league, data_version, source)
         evidence = facts.version_fact(source, data_version, args.league, output.parent / ".poe-evidence", info["engine_fingerprint"])
         record = {"league": args.league, "game_version": data_version, "engine_fingerprint": info["engine_fingerprint"], "version_evidence": evidence}

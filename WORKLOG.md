@@ -1,5 +1,13 @@
 # POE 配装助手交付记录
 
+## 2026-10-04 23:30 2.1.1 候选验证完成，安装保持 2.1.0
+
+统一实测中，模型曾把 doctor/start 返回的历史公告条目当作本次已核实的版本证据。沿用原入口，将元数据的 `version_evidence` 替换为 `version_source_hint`，显式标为 `unverified_hint`；只有实际读取正文的 research 继续返回 `version_evidence`。没有加入赛季兼容白名单或配装答案。
+
+66 项定向回归通过（29.286 秒，`.work/211-source-hint-tests.log`），包括全部轻量检查及真实引擎旧基线刷新；编译、原生技能校验器、diff 和 doctor 通过。候选包 11 文件、103,083 字节，源码/ZIP 逐项一致，SHA256 `b32a344ef6bcfcb8ace595e43f9db40799c2750e8e4a68208017ce90b393b58d`；原 XML 摘要不变。证据 `.work/211-package-manifest.json`、`.work/211-doctor.json`。安装继续冻结 2.1.0，不在运行中的任务下更换脚本。
+
+两项统一任务已回答玩家目标，尚未交付。技能加载卡片仍显示旧简介，正文缓存未直接证实；23:11:56/23:13:00 分别暂停并恢复任务，要求读取磁盘当前文档，没有提示配装或路线答案。计为技术干预，保留全部耗时；不能算无干预首轮。使用说明启动语句已改为每次读取磁盘技能。当前证据见 `.work/live-210-answers.json`、`.work/live-210-manifest.json`。
+
 ## 2026-10-04 22:52 2.1.0 已冻结安装，统一实测中
 
 22:45:24 冻结、22:46:09 安装 2.1.0。11 文件源码/ZIP/安装逐项相同；包 102,885 字节，SHA256 `c6d0f8be1bc97316170f82716853ab18fce7d3998eea270e593f0a5b1c3f16b8`。安装版 doctor 成功，原 XML 摘要不变；证据 `.work/210-package-manifest.json`、`.work/210-install-manifest.json`、`.work/210-installed-doctor.json`。22:52:18 新建「POE抗伤角色重配」，只给玩家目标和启动语句，首份结果前不提示配装答案；实测记录见 `.work/live-210-manifest.json`。自动化仍暂停。

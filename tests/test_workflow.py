@@ -71,7 +71,14 @@ class DocumentTests(unittest.TestCase):
             (root / "manifest.xml").write_text('<PoBVersion><Version number="9.1.0"/></PoBVersion>', encoding="utf-8")
             (root / "GameVersions.lua").write_text('treeVersionList = {"3_29", "3_30_ruthless", "3_30"}', encoding="utf-8")
             (root / "changelog.txt").write_text('VERSION[9.1.0][2027/01/01]\nfixes\nVERSION[9.0.0]\n--- 3.30 - Example ---\n', encoding="utf-8")
-            self.assertEqual(engine.metadata(root)["data_version"], "3.30")
+            info = engine.metadata(root)
+            self.assertEqual(info["data_version"], "3.30")
+            self.assertIsNone(info["version_source_hint"])
+            self.assertNotIn("version_evidence", info)
+            with patch.dict(engine.VERSION_SOURCE_HINTS, {"3.30": {"season": "historic-example", "url": "https://poe.qq.com/example"}}):
+                hint = engine.metadata(root)["version_source_hint"]
+                self.assertEqual(hint["status"], "unverified_hint")
+                self.assertNotIn("checked_at", hint)
             before = engine.fingerprint(root)
             (root / "Modules").mkdir()
             data = root / "Modules/Data.lua"
@@ -524,10 +531,10 @@ class FactTests(unittest.TestCase):
     def test_version_research_returns_short_body_evidence_without_native_calculation(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "version.json"
-            url = engine.VERSION_EVIDENCE["3.29"]["url"]
+            url = engine.VERSION_SOURCE_HINTS["3.29"]["url"]
             record = {"html": '<div id="newsDetail"><h2>S30 patch</h2><p>在3.29.0版本中，测试挑战赛季开放。</p><p>' + "other updates " * 20000 + '</p></div>',
                       "url": url, "checked_at": "2026-10-04", "sha256": "fixture"}
-            info = {"data_version": "3.29", "engine_fingerprint": "fixture", "version_evidence": {"url": url}}
+            info = {"data_version": "3.29", "engine_fingerprint": "fixture", "version_source_hint": {"url": url, "status": "unverified_hint"}}
             with patch.object(engine, "resolve_root", return_value=Path(temp)), patch.object(engine, "check", return_value=info), \
                     patch.object(engine, "calculate", side_effect=AssertionError("version research needs no calculation")), patch.object(facts, "fetch", return_value=record):
                 stdout = io.StringIO()
@@ -546,7 +553,7 @@ class FactTests(unittest.TestCase):
     def test_new_season_research_accepts_new_source_and_preserves_missing_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "version.json"
-            info = {"data_version": "3.30", "engine_fingerprint": "future", "version_evidence": None}
+            info = {"data_version": "3.30", "engine_fingerprint": "future", "version_source_hint": None}
             command = ["research", "--version", "--league", "S31", "--out", str(output)]
             with patch.object(engine, "resolve_root", return_value=Path(temp)), patch.object(engine, "check", return_value=info):
                 with redirect_stdout(io.StringIO()):
