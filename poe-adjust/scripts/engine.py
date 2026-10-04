@@ -188,7 +188,7 @@ def validate_contract(result):
                 "active_skills": list, "damage_sources": list, "classes": list, "excluded_guard_checks": list,
                 "nodes": list, "config_keys": list, "config_lists": dict, "config_values": dict, "config_labels": dict,
                 "warnings": list, "xml": str,
-                "tree_version": str, "latest_tree_version": str, "capabilities": dict}
+                "tree_version": str, "latest_tree_version": str, "tree_context": dict, "socket_limits": dict, "capabilities": dict}
     for key, kind in required.items():
         if not isinstance(result.get(key), kind):
             raise EngineError(f"本机接口缺少有效 {key}；当前适配不能完成此项计算，请维护者检查接口变化。")
@@ -239,9 +239,12 @@ def ascendancy_paths(name, nodes):
     return selected, paths
 
 
-def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False) -> dict:
+def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False, class_id: int | None = None) -> dict:
+    if class_id is not None and (type(class_id) is not int or xml or xml_batch):
+        raise EngineError("职业起点查询需要整数 class_id，且不能覆盖已有 XML 的角色上下文。")
     info = check(root)
     request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit, "health_probe": health_probe}
+    if class_id is not None: request["class_id"] = class_id
     if queries is not None:
         request["queries"] = queries
     if crafts is not None:

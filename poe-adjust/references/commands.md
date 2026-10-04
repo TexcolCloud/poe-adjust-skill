@@ -53,7 +53,9 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 
 `research --trials` 读取当前版本前三次迷宫的剧情试炼位置，返回 trial_evidence.labyrinths 的 last_trial_act、trial_locations 和 area_level。章节来自实际网页，不按固定等级推断；区域等级不等于最低进入等级。该命令不能证明玩家已通关或第四次迷宫条件已满足。
 
-**查职业、升华节点 ID/原文、宝石或辅助兼容时不需要角色 XML。** 无角色开荒直接省略 `--input`，所有职业的数据都可查。不为目录查询手写最小 XML、下载构筑或解码巨大分享码；这些步骤不能改善查询。名称搜索也可能匹配贵族的同名节点，按 ascendancy_name 筛选实际升华，取 type=Notable 的大点。仅当需要相对于现有角色的天赋连接路径、已分配状态时，给 catalog 加真实 `--input '<角色.xml>'`。无输入时返回的节点 ID/stats/linked 可用于路线校验，path/allocated 不代表用户角色。
+**查职业、升华节点 ID/原文、宝石或辅助兼容时不需要角色 XML。** 无角色开荒直接省略 `--input`，所有职业的数据都可查。不为目录查询手写最小 XML、下载构筑或解码巨大分享码。名称搜索也可能匹配贵族的同名节点，按 ascendancy_name 筛选实际升华，取 type=Notable 的大点。已有角色加真实 `--input '<角色.xml>'`；新角色查普通天赋路线时先用 classes 查职业 ID，再加 `--class-id <整数ID>`，由本机引擎从该职业起点计算。两种上下文互斥，单项和批量查询都支持。
+
+查询结果 `tree_context` 明示依据、职业及起点，`engine_fingerprint` 绑定本机数据。未传角色也未指定职业时，basis=unspecified，仅提供节点 ID/stats/linked，不提供 path/allocated/points_to_allocate，防止默认职业路径被误用。有上下文的 path 从目标回溯到现有连接处，反序才是加点顺序；多个目标各自的路径不能直接把点数相加，也不证明组合是最佳分配。
 
 用完整升华英文名查询且结果未截断时，节点还提供 `ascendancy_path`、`ascendancy_path_names`、`ascendancy_path_cost`，表示从该升华起点实际经过的大小点及总点数。它与相对于载入角色的 path/points_to_allocate 不同。route 合并各分支计数并展示必经大点；不能省略前置、虚构连接或在已用八点之外追加升华。
 
@@ -65,7 +67,9 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 
 一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的 `level_requirements`（gem_level/character_level/strength/dexterity/intelligence）、`min_level`、`special_variant`、`vaal`，开荒时据此核对等级与属性，而非猜测。
 
-`classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 valid、errors、compatible/incompatible。未知 ID 或主辅位置错误只使该条查询无效，不中断整批；必须处理 errors，不能把空 incompatible 当作通过。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
+`classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和辅助 ID，数量上限读取本机装备基底最大孔数，返回 valid、errors、compatible/incompatible。未知 ID 或主辅位置错误只使该条查询无效，不中断整批；必须处理 errors，不能把空 incompatible 当作通过。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
+
+`socket_limits` 是本机各装备类别基底的孔数范围，不是当前已拥有的物资。`bases` 查询可用 `id:<完整基底英文名>` 精确匹配，返回 sockets/socket_category 和需求；未报告孔数不当作零。类别内上限不一致时，路线必须指定实际基底，不能把其中最高值套给所有装备；特殊物品效果仍用具体 XML 核查。
 
 批量查询和较大的单项查询使用 `--out` 保存到当前任务工作区，命令仅返回文件路径和每项条数；单项完整结果在 entries，批量在 queries[].entries。未指定 --out 且超过 12000 字符时会提示重新指定，完整结果不会截断后冒充齐全。用 `Get-Content -Raw -Encoding UTF8 '<结果.json>' | ConvertFrom-Json` 后选择相关 queries、宝石或字段输出，避免一次读取整个大文件触发 TeleAgent 的工具输出目录授权。输出路径不得与输入 XML/queries.json 相同。
 

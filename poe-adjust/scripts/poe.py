@@ -19,7 +19,7 @@ import engine
 import facts
 import routes
 
-VERSION = "1.7.4"
+VERSION = "1.7.5"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -926,6 +926,9 @@ def export(args):
 
 def catalog(args):
     root = engine.resolve_root(args.pob)
+    class_id = getattr(args, "class_id", None)
+    bx.require(class_id is None or not args.input, "--class-id 用于新角色起点查询，不能与 --input 混用。已有角色以 XML 为准。")
+    bx.require(class_id is None or args.kind != "translations", "翻译查询不需要 --class-id。")
     if getattr(args, "batch", None):
         queries = read_json(args.batch).get("queries")
         bx.require(isinstance(queries, list) and 1 <= len(queries) <= 30, "batch 的 queries 应包含 1–30 项。")
@@ -934,8 +937,9 @@ def catalog(args):
             bx.require(query.get("kind") in {"gems", "skills", "nodes", "uniques", "config", "links", "classes", "bases", "affixes"}, "批量查询不含 translations，请单独查询翻译。")
             bx.require(isinstance(query.get("query", ""), str) and type(query.get("limit", 20)) is int and 1 <= query.get("limit", 20) <= 100, "查询文字或 limit 无效。")
         document = bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
-        result = engine.calculate(root, document, queries=queries)
-        return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"], "queries": result["catalog_batch"]}
+        result = engine.calculate(root, document, queries=queries, class_id=class_id)
+        return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"],
+                "engine_fingerprint": result["engine_fingerprint"], "tree_context": result["tree_context"], "socket_limits": result["socket_limits"], "queries": result["catalog_batch"]}
     bx.require(args.kind, "catalog 需要 --kind 或 --batch。")
     if args.kind == "translations":
         entries = []
@@ -949,8 +953,9 @@ def catalog(args):
                         if len(entries) >= args.limit: return {"entries": entries, "truncated": True}
         return {"entries": entries, "truncated": False}
     document = bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
-    result = engine.calculate(root, document, catalog=args.kind, query=args.query, limit=args.limit)
-    return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"], "total": result.get("catalog_total"), "entries": result.get("catalog", [])}
+    result = engine.calculate(root, document, catalog=args.kind, query=args.query, limit=args.limit, class_id=class_id)
+    return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"],
+            "engine_fingerprint": result["engine_fingerprint"], "tree_context": result["tree_context"], "socket_limits": result["socket_limits"], "total": result.get("catalog_total"), "entries": result.get("catalog", [])}
 
 
 def research(args):
@@ -1014,6 +1019,7 @@ def parser():
             cmd.add_argument("--batch")
             cmd.add_argument("--query", default="")
             cmd.add_argument("--input")
+            cmd.add_argument("--class-id", type=int, help="新角色的本机职业 ID，按该职业起点查天赋；不能与 --input 同用")
             cmd.add_argument("--out", help="将完整查询保存到工作区 JSON，终端只返回索引")
             cmd.add_argument("--limit", type=int, default=20)
         if name == "research":
@@ -1081,12 +1087,15 @@ def main(argv=None):
             ids = routes.gem_ids(route)
             queries = [{"kind": "gems", "query": "id:" + skill_id, "limit": 2} for skill_id in ids]
             queries += [{"kind": "links", "query": query, "limit": 1} for query in routes.link_queries(route)]
+            queries += [{"kind": "bases", "query": "id:" + name, "limit": 2} for name in routes.base_names(route)]
             queries.append({"kind": "nodes", "query": route["ascendancy"], "limit": 100})
             calculation = engine.calculate(engine.resolve_root(args.pob), queries=queries)
             gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] if query["kind"] == "gems" for entry in query["entries"]}
             compatibility = {query["query"]: query["entries"][0] for query in calculation["catalog_batch"] if query["kind"] == "links"}
             nodes = [entry for query in calculation["catalog_batch"] if query["kind"] == "nodes" for entry in query["entries"]]
-            checked, warnings = routes.validate(route, gems, engine.require_data_version(calculation), calculation["classes"], compatibility, nodes)
+            bases = {entry["name"]: entry for query in calculation["catalog_batch"] if query["kind"] == "bases" for entry in query["entries"]}
+            checked, warnings = routes.validate(route, gems, engine.require_data_version(calculation), calculation["classes"], compatibility, nodes,
+                                                socket_limits=calculation["socket_limits"], bases=bases)
             output = Path(args.out).resolve()
             bx.require(output != Path(args.file).resolve(), "路线说明不能覆盖输入 JSON。")
             bx.require(output.suffix.lower() == ".html", "--out 请指定 HTML 文件。")

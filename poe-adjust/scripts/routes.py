@@ -9,7 +9,7 @@ import buildxml as bx
 import engine
 
 ACQUISITIONS = {"quest": "任务奖励", "vendor": "任务解锁商店", "drop": "随机掉落", "trade": "玩家交易", "lab": "迷宫获取", "owned": "确认已有"}
-WEAPONS = {"one_hand_shield": (3, 3), "dual_wield": (3, 3), "two_hand": (6, 0), "bow": (6, 0), "unarmed_shield": (0, 3)}
+WEAPONS = {"one_hand_shield": ("one_hand", "Shield"), "dual_wield": ("one_hand", "one_hand"), "two_hand": ("two_hand", None), "bow": ("bow", None), "unarmed_shield": (None, "Shield")}
 USAGES = {"main": "主要输出", "movement": "位移", "utility": "按需辅助操作", "aura": "常驻开启"}
 ATTRIBUTES = {"strength": "力量", "dexterity": "敏捷", "intelligence": "智慧"}
 
@@ -116,7 +116,16 @@ def validate_group(group, stage, gems, library, compatibility, capacity, warning
     return used
 
 
-def validate(route, gems, data_version=None, classes=None, compatibility=None, nodes=None):
+def base_names(route):
+    names = set()
+    for stage in route.get("stages", []):
+        bases = stage.get("bases", {})
+        bx.require(isinstance(bases, dict) and all(isinstance(name, str) and name.strip() for name in bases.values()), "阶段 bases 应为装备位置到本机基底名称的映射。")
+        names.update(bases.values())
+    return sorted(names)
+
+
+def validate(route, gems, data_version=None, classes=None, compatibility=None, nodes=None, *, socket_limits, bases=None):
     allowed = {"name", "confirmed", "goal", "league", "game_version", "class_id", "ascendancy", "trade_mode", "budget", "version_status", "version_source", "scope", "gems", "stages", "sources", "risks", "notes", "allow_minions", "allow_mule", "shared_trials"}
     bx.require(not (set(route) - allowed), "路线包含未知字段：" + ", ".join(sorted(set(route) - allowed)))
     bx.require(route.get("confirmed") is True, "先完成开荒目标的多轮澄清，再保存 confirmed=true。")
@@ -127,6 +136,7 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
     for key in ("allow_minions", "allow_mule"):
         bx.require(type(route.get(key)) is bool, "路线需要已确认的 " + key + "：是否允许召唤，以及是否愿意另建小号取宝石。未允许时填 false，不为通过检查擅自改为 true。")
     result = copy.deepcopy(route)
+    base_names(result)
     bx.require(type(route.get("shared_trials", False)) is bool, "shared_trials 应为用户确认的同赛季共享试炼进度，未确认时为 false。")
     if classes is not None:
         selected = next((entry for entry in classes if entry["id"] == route["class_id"]), None)
@@ -180,7 +190,7 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
     resolve_gem_levels(stages, gems)
     asc_nodes, paths = engine.ascendancy_paths(route["ascendancy"], nodes)
     previous_nodes, used_gems = set(), set()
-    stage_allowed = {"name", "level", "act", "weapon_setup", "skill_groups", "gear", "passives", "ascendancy_points", "ascendancy_nodes", "ascendancy_respec_reason", "resources", "checks", "transition", "required_items"}
+    stage_allowed = {"name", "level", "act", "weapon_setup", "bases", "skill_groups", "gear", "passives", "ascendancy_points", "ascendancy_nodes", "ascendancy_respec_reason", "resources", "checks", "transition", "required_items"}
     for stage in stages:
         bx.require(not (set(stage) - stage_allowed), "阶段存在未知字段：" + ", ".join(sorted(set(stage) - stage_allowed)))
         label = f"{stage['level']} 级阶段"
@@ -189,7 +199,28 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
         bx.require(isinstance(stage.get("resources"), str) and stage["resources"].strip(), label + "需要 resources。")
         bx.require(stage.get("weapon_setup") in WEAPONS, label + "需要 weapon_setup：one_hand_shield/dual_wield/two_hand/bow/unarmed_shield。")
         weapon_slots = WEAPONS[stage["weapon_setup"]]
-        capacities = {"Body Armour": 6, "Helmet": 4, "Gloves": 4, "Boots": 4, "Weapon 1": weapon_slots[0], "Weapon 2": weapon_slots[1]}
+        categories = {slot: slot for slot in ("Body Armour", "Helmet", "Gloves", "Boots")}
+        categories.update({"Weapon 1": weapon_slots[0], "Weapon 2": weapon_slots[1]})
+        bx.require(not (set(stage.get("bases", {})) - set(categories)), label + "bases 含未支持的装备位置。")
+        capacities, stage["socket_evidence"] = {}, {}
+        for slot, category in categories.items():
+            name = stage.get("bases", {}).get(slot)
+            if category is None:
+                bx.require(not name, label + "当前配置不能在 " + slot + " 安排基底。")
+                capacities[slot] = 0
+                continue
+            if name:
+                base = (bases or {}).get(name)
+                bx.require(base and base.get("socket_category") == category, label + "基底未找到或装备类型不符：" + name)
+                capacity = base.get("sockets")
+            else:
+                limit = (socket_limits or {}).get(category, {})
+                bx.require(type(limit.get("min")) is int and type(limit.get("max")) is int, label + "本机孔位数据缺失：" + category)
+                bx.require(limit["min"] == limit["max"], label + "本机 " + category + f" 基底孔数为 {limit['min']}–{limit['max']}，不能统一假设；用 catalog bases 查询并在 bases 中为 {slot} 指定具体基底。")
+                capacity = limit["max"]
+            bx.require(type(capacity) is int and capacity >= 0, label + "本机基底缺少合法孔数：" + str(name or category))
+            capacities[slot] = capacity
+            stage["socket_evidence"][slot] = {"capacity": capacity, "category": category, "base": name}
         groups = stage.get("skill_groups")
         bx.require(isinstance(groups, list) and 1 <= len(groups) <= 16, label + "需要 1–16 个 skill_groups。")
         bx.require(any(group.get("use") == "main" for group in groups), label + "至少一组 use=main 输出技能。")
@@ -254,6 +285,8 @@ def render(route, warnings, engine_version, tree_version):
     for stage in route["stages"]:
         chapter = f"第 {stage['act']} 章" if stage["act"] <= 10 else "异界"
         groups = [f"<p>剧情进度：{chapter}。等级里程碑不代表已经完成本章任务，先满足本段列出的领取和切换条件。</p>"]
+        socket_notes = [f"{slot}：{proof['capacity']} 孔（{proof['base'] or proof['category']}）" for slot, proof in stage["socket_evidence"].items()]
+        groups.append("<details><summary>本机装备孔位依据</summary>" + listing(socket_notes) + "<p>当前本机基底上限，不证明已取得连线、满足物等或具备制作费用；特殊物品效果与实际装备仍须核对。</p></details>")
         if stage.get("trial_requirements"):
             requirements = [f"{lab['name']}：" + "；".join(lab["trial_locations"]) for lab in stage["trial_requirements"]]
             progress = "用户已确认同赛季共享试炼进度；本角色仍须通关对应迷宫。" if route.get("shared_trials", False) else "先完成这些剧情试炼，再逐次通关迷宫取得本段升华点。"

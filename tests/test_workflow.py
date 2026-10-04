@@ -6,6 +6,7 @@ The user's XML and installed application files are never edited.
 import argparse
 import base64
 import copy
+from functools import partial
 from datetime import date, datetime, timedelta, timezone
 from contextlib import redirect_stderr, redirect_stdout
 import io
@@ -25,6 +26,11 @@ import engine
 import facts
 import poe
 import routes
+
+# Explicit fixture data; production route validation always receives native limits.
+FIXTURE_SOCKETS = {key: {"min": count, "max": count} for key, count in
+                   (("Body Armour", 6), ("Helmet", 4), ("Gloves", 4), ("Boots", 4), ("Shield", 3), ("one_hand", 3), ("two_hand", 6), ("bow", 6))}
+validate_route = partial(routes.validate, socket_limits=FIXTURE_SOCKETS)
 
 SAMPLE = '''<PathOfBuilding><Build level="86" className="Duelist" targetVersion="3_0" mainSocketGroup="1"/><Tree activeSpec="1"><Spec treeVersion="3_29" classId="4" ascendClassId="3" nodes="1,2"/></Tree><Skills activeSkillSet="2"><SkillSet id="1"><Skill enabled="true"><Gem skillId="Fireball" level="1" quality="0"/></Skill></SkillSet><SkillSet id="2"><Skill enabled="true" slot="Boots"><Gem skillId="ShieldCrush" gemId="stale" variantId="stale" level="20" quality="0"/></Skill></SkillSet></Skills><Items activeItemSet="1"><Item id="1">Rarity: NORMAL\nIron Greaves\nSockets: R-R-R-R</Item><ItemSet id="1"><Slot name="Boots" itemId="1"/></ItemSet></Items><Config/><Extension provider="fixture">preserve me</Extension></PathOfBuilding>'''
 
@@ -367,69 +373,69 @@ class RouteTests(unittest.TestCase):
     def test_route_rejects_gem_level_unavailable_at_milestone(self):
         self.route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = 20
         with self.assertRaisesRegex(ValueError, "需要角色 70 级"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
 
     def test_route_auto_levels_resolve_without_changing_input_and_report_all_errors(self):
         self.gems["ShieldCrush"]["level_requirements"] += [{"gem_level": 3, "character_level": 12}, {"gem_level": 18, "character_level": 68}]
         for stage in self.route["stages"]: stage["skill_groups"][0]["gems"][0]["level"] = "auto"
         original = copy.deepcopy(self.route)
-        checked, _ = routes.validate(self.route, self.gems)
+        checked, _ = validate_route(self.route, self.gems)
         self.assertEqual([stage["skill_groups"][0]["gems"][0]["level"] for stage in checked["stages"]], [1, 3, 18])
         self.assertEqual(self.route, original)
         for stage in self.route["stages"]: stage["skill_groups"][0]["gems"][0]["level"] = 70
-        with self.assertRaises(ValueError) as caught: routes.validate(self.route, self.gems)
+        with self.assertRaises(ValueError) as caught: validate_route(self.route, self.gems)
         for label in ("1 级阶段", "12 级阶段", "68 级阶段", "最高可练到宝石 18 级"):
             self.assertIn(label, str(caught.exception))
         self.route["stages"][0]["skill_groups"][0]["gems"][0]["level"] = "auto"
         self.gems["ShieldCrush"]["min_level"] = 2
         self.gems["ShieldCrush"]["level_requirements"][0]["character_level"] = 2
         with self.assertRaisesRegex(ValueError, "最早需要角色 2 级"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
 
     def test_route_rejects_wrong_ascendancy_and_incompatible_support(self):
         classes = [{"id": 4, "ascendancies": [{"name": "Champion"}]}]
         self.route["ascendancy"] = "Elementalist"
         with self.assertRaisesRegex(ValueError, "升华不属于"):
-            routes.validate(self.route, self.gems, "3.29", classes)
+            validate_route(self.route, self.gems, "3.29", classes)
         self.route["ascendancy"] = "Champion"
         links = {"ShieldCrush": {"incompatible": ["SupportGreaterMultipleProjectiles"]}}
         with self.assertRaisesRegex(ValueError, "以下辅助不支持"):
-            routes.validate(self.route, self.gems, "3.29", classes, links)
+            validate_route(self.route, self.gems, "3.29", classes, links)
         links["ShieldCrush"] = {"incompatible": [], "errors": ["Fixture native query failure"], "valid": False}
         with self.assertRaisesRegex(ValueError, "原生连线查询无效"):
-            routes.validate(self.route, self.gems, "3.29", classes, links)
+            validate_route(self.route, self.gems, "3.29", classes, links)
 
     def test_route_enforces_recorded_acquisition_chapter_class_and_player_preferences(self):
         acquisition = self.route["gems"]["ShieldCrush"]
         acquisition["available_from_act"] = 3
         with self.assertRaisesRegex(ValueError, "早于已记录的第 3 章"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
         acquisition["available_from_act"], acquisition["class_ids"] = 1, [3]
         with self.assertRaisesRegex(ValueError, "职业范围不含当前职业"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
         acquisition["via_mule"] = True
         with self.assertRaisesRegex(ValueError, "未允许另建小号"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
         self.route["allow_mule"] = True
-        routes.validate(self.route, self.gems)
+        validate_route(self.route, self.gems)
         self.gems["ShieldCrush"]["tags"]["minion"] = True
         with self.assertRaisesRegex(ValueError, "用户选择不使用召唤"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
         self.route["allow_minions"] = True
-        routes.validate(self.route, self.gems)
+        validate_route(self.route, self.gems)
 
     def test_ssf_does_not_depend_on_trade_or_random_core_without_fallback(self):
         self.route["gems"]["ShieldCrush"]["acquisition"] = "trade"
         with self.assertRaisesRegex(ValueError, "不能依赖交易宝石"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
         self.route["gems"]["ShieldCrush"]["acquisition"] = "drop"
         with self.assertRaisesRegex(ValueError, "fallback_skill_id"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
 
     def test_route_keeps_unverified_version_and_does_not_invent_dps(self):
         self.route["notes"] = "说明保持完整；不按标点猜测拆分"
         self.route["stages"][0]["transition"] = "核心物资备齐后进入下一阶段"
-        checked, warnings = routes.validate(self.route, self.gems)
+        checked, warnings = validate_route(self.route, self.gems)
         self.assertEqual(checked["notes"], [self.route["notes"]])
         self.assertEqual(checked["stages"][0]["transition"], [self.route["stages"][0]["transition"]])
         self.assertTrue(any("国服赛季" in warning for warning in warnings))
@@ -438,7 +444,7 @@ class RouteTests(unittest.TestCase):
         self.assertIn("宝石练级目标", report)
         self.route["version_status"] = "verified"
         with self.assertRaisesRegex(ValueError, "version_source"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
 
     def test_route_resource_evidence_uses_actual_level_and_keeps_unknown_explicit(self):
         entry = self.gems["ShieldCrush"]
@@ -447,7 +453,7 @@ class RouteTests(unittest.TestCase):
         entry["level_requirements"][1]["base_resources"] = {"manaReservationFlat": 147, "manaMultiplier": 20}
         self.route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = 20
         self.route["stages"][-1]["level"] = 70
-        checked, _ = routes.validate(self.route, self.gems)
+        checked, _ = validate_route(self.route, self.gems)
         first = checked["stages"][0]["skill_groups"][0]["gems"][0]
         self.assertEqual(first["base_resources"], {"cost": {"Mana": 5}, "manaReservationPercent": 23})
         self.assertNotIn("base_resources", self.route["stages"][0]["skill_groups"][0]["gems"][0])
@@ -455,7 +461,7 @@ class RouteTests(unittest.TestCase):
         for expected in ("单次基础消耗：魔力 5", "魔力保留 23%", "固定魔力保留 147", "倍率 120%", "Fixture &lt;native&gt; description", "未计入辅助倍率"):
             self.assertIn(expected, report)
         del entry["level_requirements"][0]["base_resources"]
-        checked, _ = routes.validate(self.route, self.gems)
+        checked, _ = validate_route(self.route, self.gems)
         self.assertIn("不能推断为零消耗", routes.render(checked, [], "fixture", "fixture"))
 
     def test_route_attributes_cover_utility_and_optional_links_without_summing(self):
@@ -468,7 +474,7 @@ class RouteTests(unittest.TestCase):
         stage = self.route["stages"][-1]
         stage["skill_groups"].append({"name": "辅助操作", "slot": "Boots", "use": "utility", "gems": [{"skill_id": "UtilityFixture", "level": 1}]})
         stage["skill_groups"][0]["upgrade_gems"] = [{"skill_id": "ShieldCrush", "level": 1}, {"skill_id": "SupportFixture", "level": 1}]
-        checked, warnings = routes.validate(self.route, self.gems)
+        checked, warnings = validate_route(self.route, self.gems)
         self.assertEqual(checked["stages"][0]["attribute_requirements"]["gems"], {"strength": 33, "dexterity": 0, "intelligence": 0})
         self.assertEqual(checked["stages"][-1]["attribute_requirements"]["gems"], {"strength": 33, "dexterity": 0, "intelligence": 80})
         self.assertEqual(checked["stages"][-1]["attribute_requirements"]["upgrade_gems"], {"strength": 33, "dexterity": 111, "intelligence": 80})
@@ -485,26 +491,50 @@ class RouteTests(unittest.TestCase):
         group["slot"] = "Body Armour"
         group["gems"] += [{"skill_id": f"SupportFixture{i}", "level": 1} for i in range(3)]
         group["upgrade_gems"] = copy.deepcopy(group["gems"]) + [{"skill_id": f"SupportFixture{i}", "level": 1} for i in (3, 4)]
-        checked, _ = routes.validate(self.route, self.gems)
+        checked, _ = validate_route(self.route, self.gems)
         self.assertEqual(len(checked["stages"][-1]["skill_groups"][0]["upgrade_gems"]), 6)
         group["gems"] = group.pop("upgrade_gems")
-        checked, _ = routes.validate(self.route, self.gems)
+        checked, _ = validate_route(self.route, self.gems)
         self.assertEqual(len(checked["stages"][-1]["skill_groups"][0]["gems"]), 6)
+        changed_limits = copy.deepcopy(FIXTURE_SOCKETS)
+        changed_limits["Body Armour"] = {"min": 5, "max": 5}
+        with self.assertRaisesRegex(ValueError, "实际孔数"):
+            validate_route(self.route, self.gems, socket_limits=changed_limits)
         other = copy.deepcopy(group)
         other["use"], other["slot"] = "utility", "Weapon 1"
         self.route["stages"][-1]["skill_groups"].append(other)
         with self.assertRaisesRegex(ValueError, "实际孔数"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
         other["slot"] = "Body Armour"
         with self.assertRaisesRegex(ValueError, "总孔数超过容量"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
         self.route["stages"][-1]["skill_groups"].pop()
         utility = {"name": "辅助操作", "use": "utility", "slot": "Boots", "gems": [{"skill_id": "ShieldCrush", "level": 1}, {"skill_id": "SupportFixture4", "level": 1}]}
         self.route["stages"][-1]["skill_groups"].append(utility)
         compatibility = {query: {"incompatible": []} for query in routes.link_queries(self.route)}
         compatibility["ShieldCrush,SupportFixture4"]["incompatible"] = ["SupportFixture4"]
         with self.assertRaisesRegex(ValueError, "以下辅助不支持"):
-            routes.validate(self.route, self.gems, compatibility=compatibility)
+            validate_route(self.route, self.gems, compatibility=compatibility)
+
+    def test_route_socket_ambiguity_needs_actual_base_and_never_guesses_capacity(self):
+        limits = copy.deepcopy(FIXTURE_SOCKETS)
+        limits["one_hand"] = {"min": 2, "max": 3}
+        with self.assertRaisesRegex(ValueError, "指定具体基底"):
+            validate_route(self.route, self.gems, socket_limits=limits)
+        for stage in self.route["stages"]: stage["bases"] = {"Weapon 1": "Fixture Sword"}
+        bases = {"Fixture Sword": {"socket_category": "one_hand", "sockets": 2}}
+        checked, _ = validate_route(self.route, self.gems, socket_limits=limits, bases=bases)
+        self.assertEqual(checked["stages"][0]["socket_evidence"]["Weapon 1"]["capacity"], 2)
+        self.assertEqual(routes.base_names(self.route), ["Fixture Sword"])
+        self.assertIn("Fixture Sword", routes.render(checked, [], "fixture", "fixture"))
+        bases["Fixture Sword"]["socket_category"] = "bow"
+        with self.assertRaisesRegex(ValueError, "类型不符"):
+            validate_route(self.route, self.gems, socket_limits=limits, bases=bases)
+        with self.assertRaisesRegex(ValueError, "孔位数据缺失"):
+            validate_route(route_fixture(), self.gems, socket_limits={})
+        self.route["stages"][0]["bases"] = {"Unknown Slot": "Fixture Sword"}
+        with self.assertRaisesRegex(ValueError, "未支持的装备位置"):
+            validate_route(self.route, self.gems, socket_limits=limits, bases=bases)
 
     def test_research_dates_and_notes_are_not_fabricated_or_malformed(self):
         engine.validate_checked_at(date.today().isoformat())
@@ -516,12 +546,12 @@ class RouteTests(unittest.TestCase):
             engine.validate_checked_at("2026-10-04T12:00:00")
         self.route["sources"][0]["checked_at"] = "2099-01-01"
         with self.assertRaisesRegex(ValueError, "未来"):
-            routes.validate(self.route, self.gems)
+            validate_route(self.route, self.gems)
         self.route["sources"][0]["checked_at"] = date.today().isoformat()
         for malformed in ("", "   ", None, {"note": "wrong shape"}, ["正常文字", 7]):
             self.route["notes"] = malformed
             with self.assertRaisesRegex(ValueError, "数组"):
-                routes.validate(self.route, self.gems)
+                validate_route(self.route, self.gems)
 
 
 @unittest.skipUnless(os.name == "nt", "需要 Windows 本机引擎")
@@ -964,16 +994,16 @@ class RealEngineTests(unittest.TestCase):
             self.assertEqual(level_20["character_level"], 70)
             self.assertEqual(level_20[attribute], 155)
         route = route_fixture()
-        checked, _ = routes.validate(route, gems)
+        checked, _ = validate_route(route, gems)
         self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["name"], gems["ShieldCrush"]["display_name"])
         route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = "auto"
-        checked, _ = routes.validate(route, gems)
+        checked, _ = validate_route(route, gems)
         actual = checked["stages"][-1]["skill_groups"][0]["gems"][0]["level"]
         self.assertEqual(actual, max(row["gem_level"] for row in gems["ShieldCrush"]["level_requirements"] if row["character_level"] <= 68))
         route["gems"]["Sunder"] = copy.deepcopy(route["gems"]["ShieldCrush"])
         route["stages"][0]["skill_groups"][0]["gems"][0]["skill_id"] = "Sunder"
         with self.assertRaisesRegex(ValueError, "需要角色 12 级"):
-            routes.validate(route, gems)
+            validate_route(route, gems)
 
     def test_27_display_ascendancies_have_connected_native_nodes(self):
         classes = engine.calculate(self.pob)["classes"]
@@ -994,6 +1024,36 @@ class RealEngineTests(unittest.TestCase):
         truncated = result["catalog_batch"][-1]
         self.assertGreater(truncated["total"], len(truncated["entries"]))
         self.assertTrue(all("ascendancy_path" not in node for node in truncated["entries"]))
+
+    def test_30_native_node_paths_require_explicit_character_context(self):
+        generic = engine.calculate(self.pob, catalog="nodes", query="Enduring Bond", limit=5)
+        self.assertEqual(generic["tree_context"], {"basis": "unspecified"})
+        target = next(node for node in generic["catalog"] if node["type"] == "Notable")
+        for key in ("path", "allocated", "reachable", "points_to_allocate"):
+            self.assertNotIn(key, target)
+        classes = {entry["name"]: entry["id"] for entry in generic["classes"]}
+        paths = []
+        for name in ("Witch", "Marauder"):
+            result = engine.calculate(self.pob, catalog="nodes", query="id:" + str(target["id"]), limit=1, class_id=classes[name])
+            context = result["tree_context"]
+            self.assertEqual(context["basis"], "class_start")
+            self.assertEqual(context["class_name"], name)
+            self.assertEqual(context["class_id"], classes[name])
+            self.assertEqual(result["nodes"], [context["start_node_id"]])
+            node = result["catalog"][0]
+            self.assertFalse(node["allocated"])
+            self.assertTrue(node["reachable"])
+            self.assertEqual(node["points_to_allocate"], len(node["path"]))
+            paths.append(node["path"])
+        self.assertNotEqual(paths[0], paths[1])
+        with self.assertRaisesRegex(ValueError, "Unknown class ID"):
+            engine.calculate(self.pob, catalog="nodes", query="Enduring Bond", class_id=max(classes.values()) + 100)
+        with self.assertRaisesRegex(ValueError, "不能覆盖"):
+            engine.calculate(self.pob, bx.serialise(self.original), class_id=classes["Witch"])
+        current = engine.calculate(self.pob, bx.serialise(self.original), catalog="nodes", query="Enduring Bond", limit=5)
+        self.assertEqual(current["tree_context"]["basis"], "input_xml")
+        self.assertEqual(current["tree_context"]["class_name"], "Duelist")
+        self.assertIn("path", current["catalog"][0])
 
     def test_28_same_version_engine_change_refreshes_baseline_and_blocks_old_export(self):
         self.evaluate_plan(self.refine, "fingerprint-before")
@@ -1052,7 +1112,9 @@ class RealEngineTests(unittest.TestCase):
                                                    {"kind": "links", "query": "Fireball,FreezingPulse", "limit": 1},
                                                    {"kind": "links", "query": "SupportMeleePhysicalDamage,NonexistentFixture", "limit": 1},
                                                    {"kind": "links", "query": "", "limit": 1},
-                                                   {"kind": "gems", "query": "id:Fireball", "limit": 1}])
+                                                   {"kind": "gems", "query": "id:Fireball", "limit": 1},
+                                                   {"kind": "bases", "query": "id:Stone Axe", "limit": 2},
+                                                   {"kind": "bases", "query": "id:Fishing Rod", "limit": 2}])
         links = result["catalog_batch"][0]["entries"][0]
         self.assertEqual(links["compatible"], ["SupportMeleePhysicalDamage"])
         self.assertEqual(links["incompatible"], ["SupportGreaterMultipleProjectiles"])
@@ -1062,12 +1124,17 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("Expected support gem: FreezingPulse", invalid[0]["errors"])
         self.assertEqual(len(invalid[1]["errors"]), 2)
         self.assertEqual(result["catalog_batch"][7]["entries"][0]["skill_id"], "Fireball")
+        axe, rod = (result["catalog_batch"][index]["entries"][0] for index in (8, 9))
+        self.assertEqual((axe["name"], axe["sockets"], axe["socket_category"]), ("Stone Axe", 6, "two_hand"))
+        self.assertEqual((rod["name"], rod["sockets"], rod["socket_category"]), ("Fishing Rod", 4, "two_hand"))
+        self.assertEqual((result["socket_limits"]["two_hand"]["min"], result["socket_limits"]["two_hand"]["max"]), (4, 6))
         self.assertIn("Champion", [a["name"] for a in result["catalog_batch"][1]["entries"][0]["ascendancies"]])
         templar = result["catalog_batch"][2]["entries"][0]
         self.assertEqual(templar["name_cn"], "圣堂武僧")
         self.assertEqual(next(a for a in templar["ascendancies"] if a["name"] == "Inquisitor")["name_cn"], "判官")
         self.assertEqual(result["catalog_batch"][3]["entries"][0]["name_cn"], "至圣所")
-        checked_route, warnings = routes.validate(route_fixture(), {"ShieldCrush": {"skill_id": "ShieldCrush", "name": "Shield Crush", "tags": {"grants_active_skill": True}, "level_requirements": [{"gem_level": 1, "character_level": 1}]}}, "3.29", result["classes"])
+        checked_route, warnings = validate_route(route_fixture(), {"ShieldCrush": {"skill_id": "ShieldCrush", "name": "Shield Crush", "tags": {"grants_active_skill": True}, "level_requirements": [{"gem_level": 1, "character_level": 1}]}}, "3.29", result["classes"], socket_limits=result["socket_limits"])
+        self.assertEqual(checked_route["stages"][0]["socket_evidence"]["Weapon 2"]["capacity"], 3)
         self.assertIn("决斗者（Duelist） → 冠军（Champion）", routes.render(checked_route, warnings, "2.67.2", "3_29"))
         plan = copy.deepcopy(self.rebuild)
         plan["operations"]["replace_skills"][0]["gems"][1]["skill_id"] = "SupportGreaterMultipleProjectiles"
@@ -1173,17 +1240,17 @@ class RealEngineTests(unittest.TestCase):
         stage = route["stages"][-1]
         stage["ascendancy_points"] = 8
         stage["ascendancy_nodes"] = [39790, 32816, 53884, 48214]
-        checked, _ = routes.validate(route, gems, "3.29", result["classes"], nodes=nodes)
+        checked, _ = validate_route(route, gems, "3.29", result["classes"], nodes=nodes)
         self.assertEqual(checked["stages"][-1]["ascendancy_used"], 8)
         stage["ascendancy_nodes"].append(40059)
         with self.assertRaisesRegex(ValueError, "共需 10 点"):
-            routes.validate(route, gems, nodes=nodes)
+            validate_route(route, gems, nodes=nodes)
         stage["ascendancy_nodes"].remove(40059)
         route["stages"][1].update({"ascendancy_points": 2, "ascendancy_nodes": [40059]})
         with self.assertRaisesRegex(ValueError, "洗点与切换原因"):
-            routes.validate(route, gems, nodes=nodes)
+            validate_route(route, gems, nodes=nodes)
         stage["ascendancy_respec_reason"] = "先准备后悔石，退还忏悔之兆与连接小点，再分配廉简之途。"
-        routes.validate(route, gems, nodes=nodes)
+        validate_route(route, gems, nodes=nodes)
 
         # An implicit prerequisite remains allocated when its child is selected.
         nodes = result["catalog_batch"][2]["entries"]
@@ -1191,7 +1258,7 @@ class RealEngineTests(unittest.TestCase):
         route["class_id"], route["ascendancy"] = 2, "Deadeye"
         route["stages"][1].update(level=33, act=4, ascendancy_points=2, ascendancy_nodes=[2872])
         route["stages"][-1].update(ascendancy_points=6, ascendancy_nodes=[24848, 26067])
-        checked, _ = routes.validate(route, gems, "3.29", result["classes"], nodes=nodes)
+        checked, _ = validate_route(route, gems, "3.29", result["classes"], nodes=nodes)
         final = checked["stages"][-1]
         self.assertEqual(final["ascendancy_used"], 6)
         details = {node["id"]: node for node in final["ascendancy_details"]}
@@ -1201,7 +1268,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("连接路径必经", routes.render(checked, [], result["engine_version"], result["tree_version"]))
         route["stages"][-1]["ascendancy_nodes"] = [24848]
         with self.assertRaisesRegex(ValueError, "洗点与切换原因"):
-            routes.validate(route, gems, nodes=nodes)
+            validate_route(route, gems, nodes=nodes)
 
     def test_20_native_general_cry_context_and_automatic_costs(self):
         plan = copy.deepcopy(self.rebuild)

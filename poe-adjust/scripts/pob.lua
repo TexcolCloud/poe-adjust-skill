@@ -26,6 +26,14 @@ local function calculateRequest(request)
 if launch.promptMsg then error(launch.promptMsg) end
 if request.xml ~= "" then loadBuildFromXML(request.xml, "POE Adjust") end
 if launch.promptMsg then error(launch.promptMsg) end
+if request.class_id ~= nil then
+  assert(request.xml == "", "Class-start query cannot replace an input build")
+  assert(build.spec.tree.classes[request.class_id], "Unknown class ID in current tree: " .. tostring(request.class_id))
+  build.spec:ResetNodes()
+  build.spec:SelectClass(request.class_id)
+  build.buildFlag = true
+end
+local hasTreeContext = request.xml ~= "" or request.class_id ~= nil
 -- Give derived socket and tree state a chance to settle before saving/calculating.
 for i = 1, 3 do runCallback("OnFrame") end
 local output = build.calcsTab.mainOutput
@@ -47,6 +55,12 @@ result.level = build.characterLevel
 result.class = build.spec.curClassName
 result.ascendancy = build.spec.curAscendClassName
 result.tree_version = build.spec.treeVersion
+result.tree_context = {basis = request.xml ~= "" and "input_xml" or request.class_id ~= nil and "class_start" or "unspecified"}
+if hasTreeContext then
+  result.tree_context.class_id = build.spec.curClassId
+  result.tree_context.class_name = build.spec.curClassName
+  result.tree_context.start_node_id = build.spec.curClass.startNodeId
+end
 result.latest_tree_version = latestTreeVersion
 result.matching_socket_quality_bonus = data.misc.MatchingSocketQualityBonus
 result.capabilities = {
@@ -66,6 +80,24 @@ for id, class in pairs(build.spec.tree.classes) do
   table.insert(result.classes, {id = id, name = class.name, ascendancies = ascendancies})
 end
 table.sort(result.classes, function(a,b) return a.id < b.id end)
+local function socketCategory(base)
+  local weapon = data.weaponTypeInfo[base.type]
+  return weapon and (weapon.oneHand and "one_hand" or weapon.flag == "Bow" and "bow" or "two_hand") or base.type
+end
+result.socket_limits = {}
+for name, base in pairs(data.itemBases) do
+  if type(base.socketLimit) == "number" then
+    local category = socketCategory(base)
+    local limits = result.socket_limits[category]
+    if not limits then
+      limits = {min = base.socketLimit, max = base.socketLimit, example_base = name}
+      result.socket_limits[category] = limits
+    end
+    limits.min = math.min(limits.min, base.socketLimit)
+    limits.max = math.max(limits.max, base.socketLimit)
+    if name < limits.example_base then limits.example_base = name end
+  end
+end
 result.main_group = build.mainSocketGroup
 result.main_skill = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.id
 result.main_skill_name = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.name
@@ -266,7 +298,9 @@ local function queryCatalog(kind, query, limit)
     local ids = {}
     for id in string.gmatch(query or "", "[^,%s]+") do table.insert(ids, id) end
     local errors, supports = {}, {}
-    if #ids < 1 or #ids > 6 then table.insert(errors, "links query needs main skill ID and up to five supports") end
+    local maxSockets = 0
+    for _, limits in pairs(result.socket_limits) do maxSockets = math.max(maxSockets, limits.max) end
+    if #ids < 1 or #ids > maxSockets then table.insert(errors, "links query requires an active skill and fits at most " .. maxSockets .. " native equipment sockets") end
     local main = ids[1] and data.skills[ids[1]]
     if not main then table.insert(errors, "Unknown main skill: " .. tostring(ids[1]))
     elseif main.support then table.insert(errors, "Main skill must be active: " .. ids[1]) end
@@ -293,10 +327,11 @@ local function queryCatalog(kind, query, limit)
       if matches(class.name) or tostring(class.id) == q then table.insert(entries, class) end
     end
   elseif kind == "bases" then
+    local exactName = q:match("^id:(.+)$")
     for name, base in pairs(data.itemBases) do
-      if matches(name) or matches(base.type) then
+      if (exactName and string.lower(name) == exactName) or (not exactName and (matches(name) or matches(base.type))) then
         table.insert(entries, {id = name, name = name, type = base.type, sub_type = base.subType,
-          requirements = base.req, sockets = base.socketLimit or 0, implicit = base.implicit, tags = base.tags})
+          requirements = base.req, sockets = base.socketLimit, socket_category = socketCategory(base), implicit = base.implicit, tags = base.tags})
       end
     end
   elseif kind == "affixes" then
@@ -320,11 +355,17 @@ local function queryCatalog(kind, query, limit)
         for _, adjacent in pairs(node.linked or {}) do table.insert(links, adjacent.id) end
         for _, pathNode in ipairs(node.path or {}) do table.insert(path, pathNode.id) end
         table.sort(links)
-        table.insert(entries, {id = id, name = node.name, type = node.type, stats = node.sd, linked = links, mastery_effects = node.masteryEffects,
+        local entry = {id = id, name = node.name, type = node.type, stats = node.sd, linked = links, mastery_effects = node.masteryEffects,
           ascendancy_name = ascendancyName, ascendancy_internal_name = node.ascendancyName or "",
           no_tree_connection = ascendancyName ~= "" and not node.isAscendancyStart and #links == 0,
-          is_ascendancy_start = node.isAscendancyStart or false,
-          allocated = node.alloc or false, reachable = node.path ~= nil, points_to_allocate = node.pathDist, path = path})
+          is_ascendancy_start = node.isAscendancyStart or false}
+        if hasTreeContext then
+          entry.allocated = node.alloc or false
+          entry.reachable = node.path ~= nil
+          entry.points_to_allocate = node.pathDist
+          entry.path = path
+        end
+        table.insert(entries, entry)
       end
     end
   elseif kind == "uniques" then
