@@ -165,7 +165,7 @@ for id in pairs(mainEnv.grantedPassives or {}) do
   else result.capabilities.granted_passives = false end
 end
 table.sort(result.granted_passives, function(a, b) return a.id < b.id end)
-local costKeys = {"ManaCost", "LifeCost", "ESCost", "ManaPerSecondCost", "LifePerSecondCost", "ESPerSecondCost", "Cooldown", "Speed", "SkillTriggerRate"}
+local costKeys = {"ManaCost", "LifeCost", "ESCost", "ManaPerSecondCost", "LifePerSecondCost", "ESPerSecondCost", "Cooldown", "Speed", "SkillTriggerRate", "Repeats", "TotemPlacementSpeed", "TrapThrowingSpeed", "MineLayingSpeed"}
 local function supportLevelLimit(effect)
   if not effect or not effect.grantedEffect then return nil end
   for index, stat in ipairs(effect.grantedEffect.stats or {}) do
@@ -192,6 +192,11 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   local gemIndex
   for index, gem in ipairs(skill.socketGroup and skill.socketGroup.gemList or {}) do if gem == instance then gemIndex = index; break end end
   local actor = computed.skillData.triggeredByGeneralsCry and "mirage" or computed.skillFlags.minion and "minion" or "player"
+  local nativeOutput = cached and cached.Env.player.output or {}
+  local rateKey = computed.skillFlags.trap and "TrapThrowingSpeed" or computed.skillFlags.mine and "MineLayingSpeed" or computed.skillFlags.totem and "TotemPlacementSpeed" or "Speed"
+  local rate = nativeOutput.SkillTriggerRate or nativeOutput[rateKey]
+  local repeats = nativeOutput.Repeats or 1
+  if type(rate) == "number" and type(repeats) == "number" and repeats > 0 then rate = rate / repeats else rate = nil end
   local requiredLevel = limit and instance and instance.gemData and assert(instance.reqLevel, "Native trigger target requirement is unavailable")
   table.insert(result.active_skills, {id = skill.activeEffect.grantedEffect.id, name = skill.activeEffect.grantedEffect.name,
     group = groupIndex, index = gemIndex, slot = skill.socketGroup and skill.socketGroup.slot,
@@ -204,6 +209,7 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     trigger_level_limit = limit, trigger_target_required_level = requiredLevel,
     info = computed.infoMessage, info_secondary = computed.infoMessage2,
     generals_cry = computed.skillData.triggeredByGeneralsCry or false,
+    usage_rate = {value = rate, metric = nativeOutput.SkillTriggerRate and "SkillTriggerRate" or rateKey, repeats = repeats, scope = "Native action frequency; cost projection additionally checks the full native per-second cost."},
     costs = scalarTable(costs)})
 end
 result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet

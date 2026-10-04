@@ -86,7 +86,7 @@ def validate_group(group,stage,gems,library,compatibility,capacity,warnings,pend
 
 
 def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=None,*,bases=None,slots=None,evidence=None,claims=None):
-    allowed={"schema_version","name","confirmed","goal","league","game_version","class_id","ascendancy","trade_mode","budget","version_source","scope","gems","stages","risks","notes","allow_minions","allow_mule","constraint_sources","evidence","claims","assessment","inventory","shopping"}
+    allowed={"schema_version","name","confirmed","goal","objectives","league","game_version","class_id","ascendancy","trade_mode","budget","version_source","scope","gems","stages","risks","notes","allow_minions","allow_mule","constraint_sources","evidence","claims","assessment","inventory","shopping"}
     bx.require(isinstance(route,dict) and set(route)<=allowed,"路线含旧字段或未知字段；按 leveling.md 的 schema_version=2 迁移。")
     bx.require(route.get("schema_version")==2 and route.get("confirmed") is True,"先确认路线方向，再使用 schema_version=2。")
     for key in ("name","goal","league","scope"):
@@ -117,6 +117,9 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     bx.require(isinstance(stages,list) and stages,"stages 至少一个阶段；同级切换可分阶段。")
     stage_ids=set(); prior_level=None; instances={}; acquired_instances=set(); previous_nodes=set(); warnings=[]; pending=[]
     native_slots={s["name"] for s in slots or []}
+    coverage,coverage_pending=facts.objective_coverage(route.get("objectives",[]),evidence,claims)
+    result["objective_coverage"]=coverage
+    pending+=coverage_pending
     if not data_version: pending.append("version:data")
     resolve_gem_levels(stages,gems)
     asc_nodes,paths=engine.ascendancy_paths(route["ascendancy"],nodes or []) if route.get("ascendancy") else ({},{})

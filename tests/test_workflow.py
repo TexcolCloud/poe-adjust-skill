@@ -25,6 +25,7 @@ import engine
 import facts
 import poe
 import routes
+import resources
 
 SAMPLE = '''<PathOfBuilding><Build level="86" className="Duelist" targetVersion="3_0" mainSocketGroup="1"/><Tree activeSpec="1"><Spec treeVersion="3_29" classId="4" ascendClassId="3" nodes="1,2"/></Tree><Skills activeSkillSet="2"><SkillSet id="1"><Skill enabled="true"><Gem skillId="Fireball" level="1" quality="0"/></Skill></SkillSet><SkillSet id="2"><Skill enabled="true" slot="Boots"><Gem skillId="ShieldCrush" gemId="stale" variantId="stale" level="20" quality="0"/></Skill></SkillSet></Skills><Items activeItemSet="1"><Item id="1">Rarity: NORMAL\nIron Greaves\nSockets: R-R-R-R</Item><ItemSet id="1"><Slot name="Boots" itemId="1"/></ItemSet></Items><Config/><Extension provider="fixture">preserve me</Extension></PathOfBuilding>'''
 
@@ -40,6 +41,7 @@ def intent_for(root):
            "quest_passive_points":23,"normal_points_available":108,"ascendancy_points":8}
     slots={s.get("name") for s in bx.active_set(root,"Items","ItemSet","activeItemSet").findall("Slot")}
     value["keep_slots"]=[{"slot":"Weapon 2" if "Weapon 2" in slots else "Boots","preserve":"exact_spec"}]
+    value["objectives"]=[{"objective_id":"fixture-goal","text":value["goal"],"evidence_refs":["user"]}]
     value["constraint_sources"]={"/"+k:"user" for k in value if k not in {"schema_version","confirmed","league","game_version"}}
     value["evidence"]=[{"evidence_id":"user","kind":"user_statement","subject":"intent","text":"离线夹具明确声明以上方向、预算、目标等级、进度和保留规格；不是真实玩家授权记录。"}]
     return value
@@ -286,27 +288,27 @@ class DocumentTests(unittest.TestCase):
 
     def test_readiness_leaves_points_and_conditions_to_explicit_judgment(self):
         result={"points":103,"ascendancy_points":6,"stats":{"GuardSkillActive":True},"equipped":[{"slot":"Flask 1","active":True}]}
-        audit=poe.readiness(result,intent_for(self.root),{})
+        audit=resources.assess(result,intent_for(self.root),{})
         self.assertFalse(audit["errors"])
         self.assertEqual(audit["unused_points"]["ascendancy"],2)
         self.assertIn("condition:guard",audit["pending"])
         self.assertIn("condition:Flask 1",audit["pending"])
         result["ascendancy_points"]=9
-        self.assertTrue(poe.readiness(result,intent_for(self.root),{})["errors"])
+        self.assertTrue(resources.assess(result,intent_for(self.root),{})["errors"])
 
     def test_usage_checks_declared_window_and_recovery_without_mode_switch(self):
         result=resource_fixture()
         result["stats"].update(ManaUnreserved=300,ManaCost=30,ManaPerSecondCost=60,ManaRegenRecovery=10)
-        audit=poe.readiness(result,{},{});self.assertIn("resource:Mana:usage",audit["pending"])
+        audit=resources.assess(result,{},{});self.assertIn("resource:Mana:usage",audit["pending"])
         usage={"skill_ref":"main","active_seconds":4,"recovery_seconds":20,"claim_id":"use"}
-        audit=poe.readiness(result,{}, {"usage":[usage]})
+        audit=resources.assess(result,{}, {"usage":[usage]})
         self.assertEqual(audit["resources"][0]["maximum_burst_seconds"],6)
         self.assertEqual(audit["resources"][0]["recovery_seconds_at_regen_only"],20)
         self.assertFalse(audit["errors"])
         usage["recovery_seconds"]=19
-        self.assertTrue(poe.readiness(result,{}, {"usage":[usage]})["errors"])
+        self.assertTrue(resources.assess(result,{}, {"usage":[usage]})["errors"])
         usage.update(continuous=True)
-        self.assertTrue(poe.readiness(result,{}, {"usage":[usage]})["errors"])
+        self.assertTrue(resources.assess(result,{}, {"usage":[usage]})["errors"])
 
     def test_gem_upgrade_and_duplicate_gems_are_not_free_owned_inventory(self):
         old={"gems":[{"id":"SupportBrutality","level":19,"quality":0,"slot":"Boots"}],"equipped":[]}
@@ -324,16 +326,16 @@ class DocumentTests(unittest.TestCase):
     def test_energy_shield_costs_recharge_conditions_and_self_degen(self):
         result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":True}
         result["stats"].update(ManaUnreserved=0,ManaCost=20,ESPerSecondCost=100,EnergyShield=300,EnergyShieldRecharge=120,EnergyShieldRechargeDelay=2)
-        audit=poe.readiness(result,{},{});self.assertEqual(audit["resources"][-1]["net_cost"],100)
+        audit=resources.assess(result,{},{});self.assertEqual(audit["resources"][-1]["net_cost"],100)
         claims=[{"claim_id":"charge","status":"model_assessed","subjects":["resource:EnergyShield:recharge"]}]
-        audit=poe.readiness(result,{}, {},claims);self.assertEqual(audit["resources"][-1]["net_cost"],-20)
+        audit=resources.assess(result,{}, {},claims);self.assertEqual(audit["resources"][-1]["net_cost"],-20)
         result["stats"]["EnergyShield"]=30
-        self.assertIn("resource:EnergyShield:startup",poe.readiness(result,{}, {},claims)["pending"])
+        self.assertIn("resource:EnergyShield:startup",resources.assess(result,{}, {},claims)["pending"])
         result["stats"].update(LifeRegenRecovery=100,LifeDegen=300)
-        life=poe.readiness(result,{}, {})["resources"][1]
+        life=resources.assess(result,{}, {})["resources"][1]
         self.assertEqual(life["regeneration"],-200)
         del result["stats"]["LifeDegen"]
-        self.assertIsNone(poe.readiness(result,{}, {})["resources"][1]["regeneration"])
+        self.assertIsNone(resources.assess(result,{}, {})["resources"][1]["regeneration"])
 
     def test_incomparable_conditions_do_not_emit_gain_percentage(self):
         before, after = {"stats": {"CombinedDPS": 10}}, {"stats": {"CombinedDPS": 30}}
@@ -343,19 +345,19 @@ class DocumentTests(unittest.TestCase):
     def test_automatic_trigger_costs_are_added_once_and_corpse_dependencies_explained(self):
         result=resource_fixture();result["stats"].update(ManaCost=10,ManaPerSecondCost=20,ManaRegenRecovery=30)
         result["active_skills"].append({"id":"auto","skill_ref":"auto","trigger":"native","costs":{"ManaCost":30,"ManaPerSecondCost":60,"LifeCost":0,"LifePerSecondCost":0,"ESCost":0,"ESPerSecondCost":0,"SkillTriggerRate":2}})
-        audit=poe.readiness(result,{},{});self.assertEqual(audit["resources"][0]["cost_per_second"],80)
+        audit=resources.assess(result,{},{});self.assertEqual(audit["resources"][0]["cost_per_second"],80)
         self.assertEqual(audit["resources"][0]["net_cost"],50)
         result["active_skills"][0].update(generals_cry=True,actor="mirage")
         result["stats"]["ManaLeechGainRate"]=999
-        audit=poe.readiness(result,{},{});self.assertEqual(audit["resources"][0]["leech_on_hit"],0)
+        audit=resources.assess(result,{},{});self.assertEqual(audit["resources"][0]["leech_on_hit"],0)
         self.assertIn("dependency:main",audit["pending"])
         claims=[{"claim_id":"corpses","status":"model_assessed","subjects":["dependency:main"]}]
-        self.assertNotIn("dependency:main",poe.readiness(result,{}, {},claims)["pending"])
+        self.assertNotIn("dependency:main",resources.assess(result,{}, {},claims)["pending"])
 
 
 
 def route_fixture():
-    return {"schema_version":2,"name":"离线路线","confirmed":True,"goal":"验证阶段结构","league":"测试赛季","class_id":4,"game_version":"3.29","ascendancy":"Champion","scope":"所列阶段","trade_mode":"ssf",
+    return {"schema_version":2,"name":"离线路线","confirmed":True,"goal":"验证阶段结构","objectives":[{"objective_id":"fixture-goal","text":"验证阶段结构","evidence_refs":["user"]}],"league":"测试赛季","class_id":4,"game_version":"3.29","ascendancy":"Champion","scope":"所列阶段","trade_mode":"ssf",
             "constraint_sources":{"/goal":"user","/trade_mode":"user"},"gems":{"ShieldCrush":{}},
             "stages":[{"stage_id":"stage-"+str(i),"name":"测试阶段","level":level,"act":act,"entry_conditions":[],"bases":{"Gloves":"Iron Gauntlets"},
                        "skill_groups":[{"name":"输出","slot":"Gloves","use":"按需使用","gems":[{"instance_id":"one","skill_id":"ShieldCrush","level":1,"quality":0}]}],
@@ -580,19 +582,19 @@ class NativeBoundaryTests(unittest.TestCase):
     def test_missing_cost_is_only_zero_with_observed_no_cost_flag(self):
         result=resource_fixture();del result["stats"]["ManaCost"];del result["stats"]["ManaPerSecondCost"]
         claims=[{"claim_id":"unrelated","subjects":["resource:Mana"],"status":"model_assessed"}]
-        audit=poe.readiness(result,{}, {},claims)
+        audit=resources.assess(result,{}, {},claims)
         self.assertIn("native:resource:Mana",audit["pending"]);self.assertIsNone(audit["resources"][0]["cost_per_second"])
         result["active_skills"][0]["no_cost"]=True
-        audit=poe.readiness(result,{},{});self.assertEqual(audit["resources"][0]["cost_per_second"],0)
+        audit=resources.assess(result,{},{});self.assertEqual(audit["resources"][0]["cost_per_second"],0)
         self.assertIsNone(audit["resources"][0]["native_cost_per_second"])
     def test_uncovered_native_cost_is_preserved_as_gap(self):
         result=resource_fixture();result["stats"]["FutureResourceCost"]=12
-        audit=poe.readiness(result,{},{});self.assertIn("capability:resource_cost:main:FutureResourceCost",audit["pending"])
+        audit=resources.assess(result,{},{});self.assertIn("capability:resource_cost:main:FutureResourceCost",audit["pending"])
         self.assertEqual(audit["additional_native_costs"][0]["value"],12)
     def test_manual_secondary_skill_without_frequency_cannot_be_declared_free(self):
         result=resource_fixture();result["active_skills"].append({"id":"movement","skill_ref":"movement","costs":{"ManaCost":20}})
         claims=[{"claim_id":"reason","status":"model_assessed","subjects":["skill:movement"]}]
-        self.assertIn("usage:movement",poe.readiness(result,{}, {},claims)["pending"])
+        self.assertIn("usage:movement",resources.assess(result,{}, {},claims)["pending"])
 
 
 class EvidenceTests(unittest.TestCase):
@@ -770,22 +772,22 @@ class FinalReviewTests(unittest.TestCase):
     def test_resource_prose_cannot_replace_numeric_usage_or_startup(self):
         result=resource_fixture();result["stats"].update(ManaCost=20,ManaPerSecondCost=60,ManaRegenRecovery=10)
         claim={"claim_id":"text","status":"model_assessed","subjects":["resource:Mana:usage"],"text":"Drink a potion or cast slowly"}
-        self.assertIn("resource:Mana:usage",poe.readiness(result,{}, {},[claim])["pending"])
+        self.assertIn("resource:Mana:usage",resources.assess(result,{}, {},[claim])["pending"])
         result["stats"].update(EnergyShield=10,ESCost=1,ESPerSecondCost=50,EnergyShieldRecharge=60,EnergyShieldRechargeDelay=2)
         claim["subjects"]=["resource:EnergyShield:recharge","resource:EnergyShield:startup"]
-        self.assertIn("resource:EnergyShield:startup",poe.readiness(result,{}, {},[claim])["pending"])
+        self.assertIn("resource:EnergyShield:startup",resources.assess(result,{}, {},[claim])["pending"])
 
     def test_paced_cost_cannot_keep_full_speed_leech(self):
         result=resource_fixture();result["stats"].update(ManaCost=20,ManaPerSecondCost=60,ManaLeechGainRate=50)
         result["active_skills"][0]["costs"]={"Speed":3,"ManaCost":20,"LifeCost":0,"ESCost":0}
-        audit=poe.readiness(result,{}, {"usage":[{"skill_ref":"main","casts_per_second":1}]})
+        audit=resources.assess(result,{}, {"usage":[{"skill_ref":"main","casts_per_second":1}]})
         self.assertIn("capability:resource:Mana:paced_leech",audit["pending"])
         self.assertIsNone(audit["resources"][0]["sustainable_while_hitting"])
 
     def test_flask_prose_cannot_certify_continuous_coverage(self):
         result=resource_fixture();result["equipped"]=[{"slot":"Flask 1","id":1,"active":True,"flask_local":{"duration":5,"chargesMax":30,"chargesUsed":10}}]
         claim={"claim_id":"flask","status":"model_assessed","subjects":["condition:Flask 1"]}
-        audit=poe.readiness(result,{}, {"usage":[{"skill_ref":"main","continuous":True}]},[claim])
+        audit=resources.assess(result,{}, {"usage":[{"skill_ref":"main","continuous":True}]},[claim])
         self.assertIn("capability:flask_coverage:Flask 1",audit["pending"])
         self.assertEqual(audit["conditions"]["flask_facts"][0]["flask_local"]["chargesUsed"],10)
 
@@ -808,6 +810,133 @@ class FinalReviewTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"],"met");self.assertFalse(pending)
         self.assertEqual(facts.entry_checks([check],{},[claim],"stage:a")[0][0]["status"],"unknown")
         self.assertTrue(facts.entry_checks([check],{"stats":{"CustomNewMetric":50}},[claim],"stage:b")[1])
+
+
+class WorkflowInterfaceTests(unittest.TestCase):
+    def test_objective_coverage_tracks_each_user_requirement(self):
+        objectives=[{'objective_id':'recover','text':'停手恢复','evidence_refs':['user']},
+                    {'objective_id':'easy','text':'减少操作','evidence_refs':['user']}]
+        evidence={'user':{'kind':'user_statement','status':'user_declared'}}
+        claims=[{'claim_id':'recover','subjects':['objective:recover'],'status':'model_assessed','evidence_refs':['native:candidate#/stats/LifeRegenRecovery'],'conditions':[],'uncertainties':[]}]
+        rows,pending=facts.objective_coverage(objectives,evidence,claims)
+        self.assertEqual(rows[0]['status'],'model_assessed')
+        self.assertEqual(rows[1]['status'],'unresolved')
+        self.assertIn('objective:easy',pending)
+
+    def test_objective_statement_cannot_be_invented_by_model(self):
+        rows,pending=facts.objective_coverage([{'objective_id':'new','text':'New preference','evidence_refs':['web']}],
+            {'web':{'kind':'web','status':'source_observed'}},[])
+        self.assertEqual(rows[0]['basis_status'],'unresolved')
+        self.assertTrue(pending)
+
+    def test_inline_native_values_follow_current_calculation(self):
+        raw=[{'claim_id':'life','text':'生命 {{value:native:candidate#/stats/Life}}。','subjects':['goal'],'evidence_refs':['native:candidate#/stats/Life']}]
+        native={'candidate':{'stats':{'Life':1234}}}
+        observed=facts.assess_claims(raw,{},native)
+        self.assertEqual(observed[0]['rendered_text'],'生命 1234。')
+        native['candidate']['stats']['Life']=4321
+        self.assertEqual(facts.assess_claims(raw,{},native)[0]['rendered_text'],'生命 4321。')
+
+    def test_inline_value_without_real_reference_stays_unresolved(self):
+        raw=[{'claim_id':'bad','text':'生命 {{value:native:candidate#/stats/Missing}}。','subjects':['goal'],'evidence_refs':['native:candidate#/stats/Life']}]
+        observed=facts.assess_claims(raw,{}, {'candidate':{'stats':{'Life':100}}})
+        self.assertEqual(observed[0]['status'],'unresolved')
+
+    def test_cli_error_has_field_and_source_file(self):
+        error=bx.ContractError('Frequency invalid',location='/usage/1/casts_per_second',expected=1,actual=100)
+        output=io.StringIO()
+        with patch.object(poe,'evaluate',side_effect=error),redirect_stderr(output):
+            code=poe.main(['evaluate','--run','fixture','--name','test','--plan','input-plan.json'])
+        result=json.loads(output.getvalue())
+        self.assertEqual(code,2)
+        self.assertEqual(result['diagnostic']['location'],'/usage/1/casts_per_second')
+        self.assertTrue(result['diagnostic']['input_file'].endswith('input-plan.json'))
+
+    def test_status_detects_candidate_tampering_without_calculation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);xml=bx.serialise(bx.parse(SAMPLE));poe.write_text(run/'original.xml',xml)
+            plan=run/'source-plan.json';poe.write_json(plan,{'operations':{}})
+            candidate=run/'candidates/test';poe.write_text(candidate/'candidate.xml',xml);poe.write_text(candidate/'requested.xml',xml)
+            value={'schema_version':2,'skill_version':poe.VERSION,'intent_hash':None,'original_sha256':bx.digest(xml),'xml_sha256':bx.digest(xml),'requested_sha256':bx.digest(xml),
+                   'source_plan':str(plan),'source_plan_sha256':bx.digest(plan.read_bytes()),'engine_fingerprint':'fixture','status':'draft','pending':['budget'],'errors':[]}
+            poe.write_json(candidate/'evaluation.json',value)
+            poe.write_json(run/'run.json',{'schema_version':2,'invoked':True,'phase':'evaluated','original_sha256':bx.digest(xml),'pob_path':str(run),
+                                          'candidates':{'test':{'evaluation_sha256':bx.digest((candidate/'evaluation.json').read_bytes())}}})
+            with patch.object(engine,'resolve_root',return_value=run),patch.object(engine,'check',return_value={'engine_fingerprint':'fixture'}),patch.object(engine,'calculate',side_effect=AssertionError('status must not calculate')):
+                first=poe.workflow_status(args(run=str(run)))
+                self.assertTrue(first['candidate_records'][0]['valid'])
+                self.assertEqual(first['candidate_records'][0]['plan_file'],str(plan))
+                poe.write_text(candidate/'candidate.xml',xml+' ')
+                second=poe.workflow_status(args(run=str(run)))
+                self.assertFalse(second['candidate_records'][0]['valid'])
+                self.assertTrue(any(a['action']=='reevaluate' for a in second['next_actions']))
+                poe.write_text(candidate/'candidate.xml',xml)
+                poe.write_json(plan,{'operations':{'main_group':2}})
+                self.assertFalse(poe.workflow_status(args(run=str(run)))['candidate_records'][0]['valid'])
+                with self.assertRaisesRegex(ValueError,'计划'):
+                    poe.read_candidate(args(run=str(run),name='test'))
+
+    def test_route_status_requires_current_input_output_and_engine(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'route.json';output=root/'route.html';state=root/'route.state.json'
+            poe.write_json(source,{'goal':'fixture'});poe.write_text(output,'fixture report')
+            poe.write_json(state,{'input':str(source),'input_sha256':bx.digest(source.read_bytes()),'output':str(output),'phase':'exported','file_exported':True,
+                                 'stages':{'a':{'status':'calculated'},'b':{'status':'unsupported'}},
+                                 'engine_fingerprint':'fixture','files':{str(output):bx.digest(output.read_bytes())}})
+            with patch.object(engine,'resolve_root',return_value=root),patch.object(engine,'fingerprint',return_value='fixture'):
+                self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+                self.assertEqual(poe.workflow_status(args(route_state=str(state)))['completed_stages'],['a'])
+                poe.write_json(source,{'goal':'changed'})
+                result=poe.workflow_status(args(route_state=str(state)))
+                self.assertFalse(result['file_exported'])
+                self.assertEqual(result['next_actions'][0]['action'],'resume_route')
+
+
+class ResourceRegressionTests(unittest.TestCase):
+    def secondary(self, result, **costs):
+        result['active_skills'].append({'id':'secondary','skill_ref':'secondary','actor':'player',
+            'costs':{'ManaCost':10,'LifeCost':0,'ESCost':0,'ManaPerSecondCost':10,'ESPerSecondCost':0,'Speed':1,**costs}})
+        return {'claim_id':'secondary','status':'model_assessed','subjects':['skill:secondary']}
+
+    def test_secondary_energy_shield_payment_uses_native_rule(self):
+        result=resource_fixture()
+        result['resource_rules']={'energy_shield_protects_mana':True}
+        result['stats'].update(Mana=0,EnergyShield=100,EnergyShieldRegenRecovery=100)
+        claim=self.secondary(result,ManaCost=20,ManaPerSecondCost=0,ESPerSecondCost=40,Speed=2)
+        audit=resources.assess(result,{}, {'usage':[{'skill_ref':'secondary','casts_per_second':1,'claim_id':'secondary'}]},[claim])
+        self.assertFalse(audit['errors'])
+        mana,_,shield=audit['resources']
+        self.assertEqual(mana['manual_cost_per_second'],0)
+        self.assertEqual(shield['manual_cost_per_second'],20)
+        self.assertEqual(shield['single_cost'],20)
+
+    def test_secondary_continuous_use_cannot_borrow_main_window(self):
+        result=resource_fixture();result['stats'].update(Mana=50,ManaRegenRecovery=5)
+        claim=self.secondary(result)
+        usage=[{'skill_ref':'main','active_seconds':1,'recovery_seconds':1},
+               {'skill_ref':'secondary','casts_per_second':1,'continuous':True,'claim_id':'secondary'}]
+        audit=resources.assess(result,{}, {'usage':usage},[claim])
+        self.assertTrue(audit['errors'] or any('timing' in gap for gap in audit['pending']))
+
+    def test_secondary_frequency_cannot_exceed_native_rate(self):
+        result=resource_fixture();result['stats']['ManaRegenRecovery']=1000
+        claim=self.secondary(result)
+        audit=resources.assess(result,{}, {'usage':[{'skill_ref':'secondary','casts_per_second':100,'claim_id':'secondary'}]},[claim])
+        self.assertTrue(audit['errors'])
+
+    def test_secondary_per_second_cost_is_not_silently_free(self):
+        result=resource_fixture()
+        self.secondary(result,ManaCost=0,ManaPerSecondCost=30)
+        audit=resources.assess(result,{}, {})
+        self.assertTrue(any('secondary' in gap for gap in audit['pending']))
+
+    def test_different_active_windows_preserve_timing_gap(self):
+        result=resource_fixture();result['stats'].update(ManaCost=10,ManaPerSecondCost=10,ManaRegenRecovery=5)
+        claim=self.secondary(result)
+        usage=[{'skill_ref':'main','active_seconds':1,'recovery_seconds':3},
+               {'skill_ref':'secondary','casts_per_second':1,'active_seconds':20,'recovery_seconds':0,'claim_id':'secondary'}]
+        audit=resources.assess(result,{}, {'usage':usage},[claim])
+        self.assertTrue(audit['errors'] or any('timing' in gap for gap in audit['pending']))
 
 
 class RealEngineTests(unittest.TestCase):
@@ -1594,6 +1723,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(reviewed["final_review"]["status"],"model_reviewed")
         self.assertTrue(any("entry_check:" in p for p in response["pending"]))
         self.assertTrue(poe.read_json(output.with_suffix(".state.json"))["file_exported"])
+        self.assertEqual(poe.workflow_status(args(route_state=str(output.with_suffix('.state.json'))))['completed_stages'],['a'])
         snapshot=Path(first["calculation"]["xml_path"]);snapshot.write_text(snapshot.read_text(encoding="utf-8")+"\n",encoding="utf-8")
         with patch.object(facts,"gem_facts",return_value={}),patch.object(poe,"roundtrip",wraps=poe.roundtrip) as replay:
             poe.route_command(args(invoked=True,file=str(path),out=str(output)))

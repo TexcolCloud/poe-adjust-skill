@@ -1,8 +1,8 @@
 # POE 配装 skill：模型决策与程序校验的设计收束
 
-状态：本轮设计已实施，源码与交付 ZIP 为 2.1.1 / schema_version 2。2026-10-05 完成原冻结 2.1.0 的两项 TeleAgent 实测评审：角色重配 67/100、开荒路线 54/100，五份 XML 独立重算/回读通过，但稳定性和无人审核交付均未达标。2.1.1 未覆盖新发现的主要问题，暂不开始其 UI 实测；测试安装保留 2.1.0，后台自动化暂停。详见本文第 12 节与 TEST-REPORT.md。1.7.6 / `3dd76b5` 是下列审查清单的历史基准；活动命令以 skill 内的 commands.md/leveling.md 为准，旧行号只用于追溯设计发现。
+状态：2026-10-05 当前 2.3.0 / schema_version 2 已完成 129 项全量离线验证并安装，进入新动态任务实测。最近完整对话评分仍是 2.1.0 的角色 67/100、路线 54/100；程序回归不代替配装质量。当前用户授权持续迭代至今天中午 12:00，完成当时已开始的一轮再暂停。1.7.6 / `3dd76b5` 是下列审查清单的历史基准；活动命令以 skill 内按任务分流的参考文档为准，旧行号只用于追溯设计发现。
 
-用户已授权实施全部收束及新增目标，随后要求“先完成最新修改目标，最后统一实机验证”。因此不发布中间 2.0.0、不恢复后台自动化；离线回归与最终安装实测记录见 TEST-REPORT.md/WORKLOG.md。
+用户要求每轮基于实际暴露问题修改、先离线通过再实机，并注重复用、泛化与维护。当前主线程执行与心跳恢复共享 WORKLOG.md 的轮次状态，不同时重复实验；验证与冻结证据见 TEST-REPORT.md。
 
 
 ## 1. 已确定的设计结论
@@ -11,7 +11,7 @@
 
 本次收束不是把常量搬进配置文件，也不是让模型用一段理由跳过所有报错。需要消除的是程序、提示词和测试中把某种配装习惯当成唯一正确策略的规定；需要保留的是可重复核对的事实、用户限制、文件完整性和运行边界。
 
-设计不增加服务、模型 API、数据库、策略 DSL 或并行实现。沿用当前 11 个交付文件、Python 标准库、一个 `poe.py` 入口和已安装 PoECharm。推理、搜索和用户对话均由 TeleAgent 自身完成。普通用户只回答玩家层面的问题并取得 XML/HTML，不维护字段、依赖或规则表。
+设计不增加服务、模型 API、数据库、策略 DSL 或并行实现。继续使用 Python 标准库、一个 `poe.py` 入口和已安装 PoECharm。2.3.0 将资源核验迁入 resources.py，并将原长参考文档拆为配装、资料、证据三个按需入口；15 个交付文件均有实际职责，旧 readiness 实现与调用方已迁移。推理、搜索和用户对话均由 TeleAgent 自身完成。普通用户只回答玩家层面的问题并取得 XML/HTML，不维护字段、依赖或规则表。
 
 | 规则类别 | 决策与证据来源 | 程序行为 |
 | --- | --- | --- |
@@ -95,12 +95,16 @@ ABI、原生结构或 XML 保存契约变化需要维护者更新适配器；新
 | 所在文件 | 单一职责与本次改动边界 |
 | --- | --- |
 | [SKILL.md](D:/CodingProjects/poe-adjust-skill/poe-adjust/SKILL.md) | TeleAgent 的触发、对话、研究、决策和交付原则。保留用户明确调用、多轮明确方向；移除赛季常量、技能专用豁免及唯一策略规定 |
-| [commands.md](D:/CodingProjects/poe-adjust-skill/poe-adjust/references/commands.md) | 配装协议及字段语义唯一说明；引用程序返回的规则，不复制当前赛季上限 |
-| [leveling.md](D:/CodingProjects/poe-adjust-skill/poe-adjust/references/leveling.md) | 路线协议、阶段依赖和交付范围；共享证据与状态定义引用 commands.md，不另写一套 |
+| [commands.md](D:/CodingProjects/poe-adjust-skill/poe-adjust/references/commands.md) | 单入口调用、任务文档索引、错误与恢复；不重复详细协议 |
+| [build.md](D:/CodingProjects/poe-adjust-skill/poe-adjust/references/build.md) | intent、计划修改与候选比较；合法选项引用当前查询结果 |
+| [data.md](D:/CodingProjects/poe-adjust-skill/poe-adjust/references/data.md) | 结构化目录、只读原文、外部事实的查阅与证据来源 |
+| [evidence.md](D:/CodingProjects/poe-adjust-skill/poe-adjust/references/evidence.md) | claims、usage、物资和最终复核的共享协议 |
+| [leveling.md](D:/CodingProjects/poe-adjust-skill/poe-adjust/references/leveling.md) | 路线协议、阶段依赖和交付范围；共享证据与资料引用对应文档，不另写一套 |
 | [buildxml.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/buildxml.py) | 解析、结构校验、稳定引用、应用修改、保留扩展。保留明确的输入类型/操作字段，移出需要当前游戏数据才能判断的约束 |
 | [pob.lua](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/pob.lua) | 从已安装引擎读取能力、目录、原生事实、计算及保存结果，不选择流派、不判断用户偏好 |
 | [engine.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/engine.py) | 进程、发现、指纹、按操作检查契约、缓存与回读；不维护赛季玩法答案 |
 | [facts.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/facts.py) | 来源获取、片段/行/版本/时间记录及结构化匹配；解析失败与事实冲突分开 |
+| [resources.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/resources.py) | 每技能支付、当前原生频率、使用与恢复窗口；不能覆盖的混合时序保留缺口 |
 | [poe.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/poe.py) | 编排会话、用户约束、证据绑定、条件账目、导出状态与事实摘要。现有函数原位替换，不新增 policy engine |
 | [routes.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/routes.py) | 阶段结构及原生约束检查、路线报告；不规定唯一阶段形状或必用过渡技能 |
 | [headless.lua](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/headless.lua) | 保留只读原生运行封装；只有确需适配新接口才修改，不为策略改造复制启动器 |

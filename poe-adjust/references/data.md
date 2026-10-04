@@ -1,0 +1,70 @@
+# 当前本机事实与外部资料
+
+查询对象/合法选项时用 catalog；缺描述/机制时用 data；当前国服规则、取得和价格用 research 或 TeleAgent 联网工具。具体候选收益必须完整角色实算。使用依据时读取 [证据协议](evidence.md)。
+
+## 当前本机目录与资料
+
+```powershell
+python $entry catalog --kind classes --query '' --limit 20 --out '<工作区>/classes.json'
+python $entry catalog --kind rules --query '' --limit 30 --out '<工作区>/rules.json'
+python $entry catalog --kind gems --query 'Fireball' --limit 8 --out '<工作区>/gems.json'
+python $entry catalog --kind skills --query 'Embrace Madness' --limit 3
+python $entry catalog --kind links --query 'Fireball,FreezingPulse,SupportAddedLightningDamage' --limit 1
+python $entry catalog --kind bases --query 'id:Iron Gauntlets' --limit 2
+python $entry catalog --kind affixes --query '<完整基底名>|maximum Life' --limit 20 --out '<工作区>/affixes.json'
+python $entry catalog --kind nodes --input '<角色.xml>' --query 'life' --limit 20 --offset 0 --out '<工作区>/nodes.json'
+python $entry catalog --kind nodes --class-id <本机职业ID> --query 'life' --limit 20 --out '<工作区>/start-nodes.json'
+python $entry catalog --kind nodes --query '<完整升华英文名>' --limit 100 --out '<工作区>/ascendancy.json'
+python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
+python $entry catalog --kind metrics --input '<角色.xml>' --query 'MaximumHitTaken' --limit 30 --out '<工作区>/metrics.json'
+python $entry catalog --kind uniques --query '<名字>' --limit 3 --out '<工作区>/uniques.json'
+python $entry catalog --kind translations --query '盾' --limit 12
+python $entry catalog --batch '<工作区>/queries.json' --out '<工作区>/catalog.json'
+python $entry research --gems '<skill_id,skill_id>' --out '<工作区>/gem-facts.json'
+python $entry research --version --league '<用户目标赛季>' --source '<官方公告URL>' --out '<工作区>/version.json'
+python $entry research --trials --out '<工作区>/trial-facts.json'
+```
+
+批量文件：`{"queries":[{"kind":"gems","query":"id:Fireball","limit":2,"offset":0}]}`。支持上述原生 kind，translations 单查。单页 limit=1–100，按返回 next_offset 继续；程序自动分批，不限制整体候选/路线数量。长结果使用 --out 后选择相关字段读取，不把整份大 JSON 打到工具输出。多次分批前后指纹须一致。
+
+- classes 返回当前职业与其主升华 ID；rules 含副升华目录、slots、规则来源及 `meaning/status`。observed 不一律表示游戏上限：engine_state 是本次状态，native_fact 是原生事实，engine_constraint 是接口约束，unsupported 是没读到可靠规则。不能把建议/默认值当合法上限。
+- bases 返回当前基底 `sockets/valid_slots/affix_limits/requirements`；这是基底原生容量，实际物品可能有独特改变，完整角色需实算。affixes 返回当前物品词缀池、互斥组及物品等级要求。
+- gems 的 `natural_max_level`、`level_requirements[].naturally_trainable` 与有效数据级别分开。可计算不证明对应裸宝石可获得。quality 不设复制的统一上限，取得方式仍须依据。`base_resources` 是该等级基础费用/保留/辅助倍率，不能代替完整连线续航。
+- links 接受有序宝石 ID，可以多个主动及重复 ID。relations 用 `active_index/support_index/applied` 区分输入位置；valid 仅表示类型查询成功，incompatible 是未起作用的辅助，不证明物理安装、触发、费用或冷却正确。
+- config 返回原生类型、枚举 options[].val、标签及可读取默认值；用 val 写入，不能用显示 label 替代。最终实际条件在计算结果 config_values。
+- metrics 需要真实 XML，列出当前实际数字指标。minimum_stats 和 comparison 不受中文显示名称表限制；未知指标保留缺口。
+- 普通节点 path/points_to_allocate 只有真实 XML 或 --class-id 上下文才提供，两者互斥。不带上下文时只查目录，不能用默认角色路径。当前 path 从目标回溯到既有连接处；反序是加点顺序，多个路径须合并后重新计点。
+- 完整升华目录可按 linked 与起点核对路径；完整单次查询另含 ascendancy_path/path_cost，截断页不认证整张图。授予天赋在 granted_passives；已在树上分配不能再算一份收益。anoint_recipe 按本机清单保留重复材料和本机译名，不猜固定配方。
+- research 保留原生事实与网页事实的不同范围。宝石 choices 是当前页面实际任务/NPC/章节/职业行，不代表角色已完成或国服无差异。试炼只返回观测位置/区域等级，不按表格顺序推导奖励点数、解锁或玩家进度。版本正文未确认即 unverified；历史链接只是查询种子，不能从赛季编号推算版本。
+
+doctor/start 的指纹覆盖计算代码、数据、适配器和译名；data_version_basis 说明本机规则版本依据。version_source_hint 只是未核实的历史公告搜索线索，不证明当前赛季或用户区服；research --version 实际读取正文后才返回 version_evidence。软件版本相同但内容变化仍使旧结果失效。接口不兼容明确报告，不自动修改 PoECharm。操作只要求自己需要的能力，不以守护接口缺失否定职业目录。
+
+## 本机原文只读查询
+
+```powershell
+python $entry data --mode list --limit 30 --out '<工作区>/data-index.json'
+python $entry data --mode list --path 'engine/Data' --limit 40 --offset 0
+python $entry data --mode search --path 'engine/Data' --query 'totem' --limit 15 --out '<工作区>/matches.json'
+python $entry data --mode search --path 'translations' --query '图腾' --limit 10
+python $entry data --mode read --path '<上一步返回的source>' --line <实际行号> --limit 30 --out '<工作区>/passage.json'
+```
+
+单页最多 200 条/行，搜索为字面匹配；用 next_offset/next_line 翻页。默认范围是公开代码/资料/简体中文翻译和本机元数据声明的最新标准树；指定 `engine/TreeData/<返回的版本>` 可读其他树，不能当成本赛季规则。搜索 excerpt 可能截短，truncated 明示；采用结论前 read 上下文。read 返回确切行号、原文、文件字节 SHA256 和 evidence_template，补 evidence_id/subject 后放入 evidence 即可。验证时重新读取相同行、比较文件摘要；更新后旧引用变成 unresolved。
+
+先 catalog 查具体对象和合法选项，只有缺信息才搜索原文，不把整个目录塞入上下文。以下是定位提示，文件有变以当次 list 为准：
+
+| 需要核对 | 本机资料位置（相对 engine/，翻译除外） |
+|---|---|
+| 宝石标签、等级表、品质、技能描述与辅助限制 | Data/Gems.lua、Data/Skills；用 catalog gems/skills/links 优先 |
+| 传奇、基底、词缀、物等、药剂参数 | Data/Uniques、Data/Bases、Data/ModExplicit.lua、Data/ModFlask.lua、Data/EnchantmentFlask.lua |
+| 天赋、专精、连接与效果 | TreeData 下实际版本；catalog nodes 优先；translations/tree_dn.csv、tree_sd.csv、tree_rt.csv 辅助对照 |
+| 精华、工艺台、腐化、势力隐性与附魔 | Data/Essence.lua、ModMaster.lua、ModCorrupted.lua、ModEldritch.lua、ModVeiled.lua、BeastCraft.lua 等；不等于完整制作步骤或解锁成本 |
+| 星团、纹身、永恒珠宝 | Data/ClusterJewels.lua、TattooPassives.lua、TimelessJewelData；压缩/二进制种子表只列目录，不伪装成文本解析或已模拟 |
+| 角色成长、资源、敌人基础与洗点表 | Data/Misc.lua、Data/Costs.lua；倍率/权重不是角色最终值 |
+| 召唤物、灵体与技能 | Data/Minions.lua、Data/Spectres.lua、Data/Skills；分清基础倍率、主体和最终输出 |
+| 首领技能与地图词缀 | Data/Bosses.lua、BossSkills.lua、ModMap.lua；只覆盖内置项目，描述存在不代表 apply/计算已实现 |
+| 万神殿、盗贼、战斗条件与默认值 | Data/Pantheons.lua、Modules/ConfigOptions.lua；默认场景由模型按实际进度核对 |
+| 费用、触发、回复、减伤与伤害实现 | Modules/Calc*、ModParser.lua、SkillStatMap.lua、相关 Classes；读实现只作机制依据，完整收益用实算 |
+| 中文效果与交易词条对应 | translations/statDescriptions.csv、Items*.csv 等，Data/TradeSiteStats.lua；不是国服实时行情 |
+
+本接口不开放 Settings、Builds、任意绝对路径或跳出范围的链接；文本只读不执行。结果仅写任务工作区，安装目录与 PoECharm 资料目录受写入检查。它不是 TeleAgent 其他工具的系统级沙箱。目录授权被拒绝后不能换工具绕行，资料缺失就保留缺口。国服当季取得、完整剧情奖励/商店/试炼路线及实时价格仍要联网核实。

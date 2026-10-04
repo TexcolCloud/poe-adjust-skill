@@ -19,8 +19,9 @@ import buildxml as bx
 import engine
 import facts
 import routes
+import resources
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 SCHEMA_VERSION = 2
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
@@ -97,14 +98,14 @@ def begin(args):
     source = Path(args.input).resolve()
     document = bx.read_document(source)
     root = engine.resolve_root(args.pob)
-    info = engine.health(root)
     run = Path(args.run).resolve()
     engine.check_output_path(run / "run.json")
     if (run / "run.json").exists():
         _, state = read_run(run)
         bx.require(state["input_sha256"] == bx.digest(source.read_bytes()), "此会话已有其他角色，请使用新目录。")
-        return {"run": str(run), "phase": state["phase"], "already_exists": True}
+        return {**workflow_status(argparse.Namespace(run=str(run),pob=str(root))),"already_exists":True}
     bx.require(not run.exists() or not any(run.iterdir()), "请选择空的会话目录，以免覆盖已有文件。")
+    info=engine.health(root)
     run.mkdir(parents=True, exist_ok=True)
     original = bx.serialise(document)
     write_text(run / "original.xml", original)
@@ -124,8 +125,8 @@ def begin(args):
 
 
 def validate_intent(value, original, native=None, folder=None):
-    allowed = {"schema_version", "confirmed", "goal", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
-    bx.require(value.get("schema_version") == SCHEMA_VERSION, "intent 使用 schema_version=2；旧默认策略字段需按 commands.md 迁移。")
+    allowed = {"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
+    bx.require(value.get("schema_version") == SCHEMA_VERSION, "intent 使用 schema_version=2；旧默认策略字段需按 references/build.md 与 evidence.md 迁移。")
     bx.require(not set(value) - allowed, "意图包含未知/弃用字段：" + ", ".join(sorted(set(value) - allowed)))
     bx.require(value.get("confirmed") is True, "先归纳已表达的目标；confirmed 只记录流程，不代表程序独立验证用户表达。")
     for key in ("goal", "league"):
@@ -165,6 +166,7 @@ def validate_intent(value, original, native=None, folder=None):
         bx.index_one(bx.groups(original), result["baseline_main_group"], "原角色主技能组")
     bx.set_config(copy.deepcopy(original), result["scenario"])
     records = facts.load_evidence(result.get("evidence", []), folder or Path.cwd(), {"league": result["league"]})
+    facts.objective_coverage(result.get("objectives",[]),records,[])
     sources = result.get("constraint_sources", {})
     bx.require(isinstance(sources, dict), "constraint_sources 是约束字段到用户声明 evidence_id 的映射。")
     required = ["goal"] + [key for key in ("mode", "budget", "target_level", "quest_passive_points", "normal_points_available", "ascendancy_points", "secondary_ascendancy_points", "max_changed_equipment", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "baseline_main_group") if result.get(key) is not None]
@@ -346,154 +348,6 @@ def mechanical_issues(document, result, intent):
     errors.extend(socket_layout_issues(document,result,gaps))
     return list(dict.fromkeys(errors)), list(dict.fromkeys(warnings)), list(dict.fromkeys(gaps))
 
-def readiness(result, intent, plan, claims=None):
-    """Report observed constraints and scoped usage, not a universal play style."""
-    claims = claims or []
-    errors, warnings, pending, resources = [], [], [], []
-    stats = result["stats"]
-    def number(data, key):
-        value = data.get(key)
-        return value if type(value) in (int,float) and math.isfinite(value) else None
-    def needs(subject):
-        if not facts.has_claim(claims,subject): pending.append(subject)
-    unused = {}
-    for label, used_key, limit_key in (("normal","points","normal_points_available"),("ascendancy","ascendancy_points","ascendancy_points"),("secondary_ascendancy","secondary_ascendancy_points","secondary_ascendancy_points")):
-        used, limit = result.get(used_key), intent.get(limit_key)
-        unused[label] = limit - used if type(limit) is int and type(used) is int else None
-        if unused[label] is not None and unused[label] < 0: errors.append(f"{label} 使用 {used} 点，超过已确认可用 {limit} 点。")
-        elif limit is None and used: needs("progress:" + label)
-    guard = stats.get("GuardSkillActive")
-    flasks = [item["slot"] for item in result.get("equipped",[]) if item["slot"].startswith("Flask ") and item.get("active")]
-    if guard: needs("condition:guard")
-    for slot in flasks: needs("condition:" + slot)
-    for key in plan.get("operations",{}).get("config",{}): needs("config:" + key)
-    active = [skill for skill in result.get("active_skills",[]) if not skill.get("disabled")]
-    main = next((skill for skill in active if skill.get("is_main")),None)
-    known_cost_keys={prefix+suffix for prefix in ("Mana","Life","ES") for suffix in ("Cost","PerSecondCost")}
-    extra_costs=[]
-    for subject,data in [("main",stats)]+[(skill.get("skill_ref",skill.get("id")),skill.get("costs",{})) for skill in active]:
-        for key,value in data.items():
-            if key.endswith("Cost") and key not in known_cost_keys and type(value) in (int,float) and value>0:
-                extra_costs.append({"subject":subject,"metric":key,"value":value,"status":"native_observed","scope":"当前三资源账目未覆盖此项，不按免费处理。"})
-                pending.append("capability:resource_cost:"+str(subject)+":"+key)
-    automatic = [skill for skill in active if not skill.get("is_main") and skill.get("trigger") and (number(skill.get("costs",{}),"SkillTriggerRate") or 0) > 0]
-    usage = plan.get("usage",[])
-    bx.require(isinstance(usage,list),"usage 应为数组。")
-    by_ref = {skill.get("skill_ref"):skill for skill in active if skill.get("skill_ref")}
-    usages = {}
-    for row in usage:
-        bx.require(isinstance(row,dict) and set(row) <= {"skill_ref","casts_per_second","active_seconds","recovery_seconds","continuous","claim_id"},"usage 字段无效。")
-        ref = row.get("skill_ref")
-        bx.require(ref in by_ref and ref not in usages,"usage.skill_ref 需要本次原生返回的唯一技能引用。")
-        for key in ("casts_per_second","active_seconds","recovery_seconds"):
-            if key in row: bx.require(number(row,key) is not None and row[key]>=0, key + " 需要有限非负数，单位为次/秒或秒。")
-        if "continuous" in row: bx.require(type(row["continuous"]) is bool,"usage.continuous 应为布尔值。")
-        usages[ref] = row
-        if not any(c["claim_id"]==row.get("claim_id") and c["status"]=="model_assessed" and "skill:"+ref in c["subjects"] for c in claims): needs("skill:"+ref)
-    for skill in active:
-        ref = skill.get("skill_ref") or skill.get("id")
-        if skill.get("generals_cry"): needs("dependency:" + ref)
-        if skill is not main and skill not in automatic and any((number(skill.get("costs",{}),key) or 0)>0 for key in ("ManaCost","LifeCost","ESCost")) and ref not in usages:
-            pending.append("usage:" + ref)
-    for gem in result.get("gems",[]):
-        if gem.get("enabled") and gem.get("group_enabled") and (gem.get("count",1)>1 or gem.get("group_count",1)>1): needs(f"count:{gem['group']}:{gem['index']}")
-    eb = result.get("resource_rules",{}).get("energy_shield_protects_mana")
-    main_usage = usages.get(main.get("skill_ref") if main else None,{})
-    flask_facts=[{k:item[k] for k in ("slot","id","flask_local","flask_scope") if k in item} for item in result.get("equipped",[]) if item["slot"] in flasks]
-    if main_usage.get("continuous") is True:
-        pending += ["capability:flask_coverage:"+slot for slot in flasks]
-    for resource, cost_key, label in (("Mana","Mana","魔力"),("Life","Life","生命"),("EnergyShield","ES","能量护盾")):
-        single, native_cost = number(stats,cost_key+"Cost"), number(stats,cost_key+"PerSecondCost")
-        raw_native_cost=native_cost
-        if main and main.get("no_cost") is True:
-            if single is None: single=0
-            if native_cost is None: native_cost=0
-        pool = number(stats,resource+"Unreserved")
-        if pool is None: pool = number(stats,resource)
-        raw_regen, degen = number(stats,resource+"RegenRecovery"), number(stats,resource+"Degen")
-        regen = number(stats,"Net"+resource+"Regen")
-        if regen is None and raw_regen is not None and degen is not None: regen = raw_regen-degen
-        native_leech = number(stats,resource+"LeechGainRate")
-        leech = 0 if main and main.get("actor") in {"mirage","minion"} else native_leech
-        automatic_values = [number(skill.get("costs",{}),cost_key+"PerSecondCost") for skill in automatic]
-        auto_cost = sum(automatic_values) if all(value is not None for value in automatic_values) else None
-        cost = native_cost + auto_cost if native_cost is not None and auto_cost is not None else None
-        single_values = [single] + [number(skill.get("costs",{}),cost_key+"Cost") for skill in automatic]
-        single = max(single_values) if all(value is not None for value in single_values) else None
-        if resource=="Mana" and eb: single=0
-        if resource=="EnergyShield":
-            cap=number(stats,"EnergyShieldRecoveryCap")
-            if pool is not None and cap is not None: pool=min(pool,cap)
-            if eb:
-                mana_values=[number(stats,"ManaCost")]+[number(skill.get("costs",{}),"ManaCost") for skill in automatic]
-                single=single+max(mana_values) if single is not None and all(v is not None for v in mana_values) else None
-        # A paced main skill is projected only when native cost agrees with single-cost × rate.
-        projection = "native_full_speed"
-        rate = main_usage.get("casts_per_second")
-        if rate is not None and main:
-            native_rate=number(main.get("costs",{}),"SkillTriggerRate") or number(main.get("costs",{}),"Speed")
-            main_single=number(main.get("costs",{}),cost_key+"Cost")
-            if native_rate is None or native_rate<=0 or native_cost is None or main_single is None or not math.isclose(native_cost,main_single*native_rate,rel_tol=1e-5,abs_tol=1e-5) or automatic:
-                pending.append("capability:usage_projection:"+main["skill_ref"])
-                projection="unsupported"
-            elif rate>native_rate+1e-8:
-                errors.append("使用频率超过本机当前技能频率："+main["skill_ref"])
-            else:
-                cost=main_single*rate
-                projection="linear_native_cost_only"
-        manual_cost=0
-        for ref,row in usages.items():
-            skill=by_ref[ref]
-            if skill is main or skill in automatic: continue
-            value=number(skill.get("costs",{}),cost_key+"Cost")
-            if value is None or row.get("casts_per_second") is None:
-                manual_cost=None
-                break
-            manual_cost+=value*row["casts_per_second"]
-            single=max(single,value) if single is not None else None
-        if cost is not None and manual_cost is not None: cost+=manual_cost
-        elif manual_cost is None: cost=None
-        subject="resource:"+resource
-        if single is not None and pool is not None and single>0 and (single>pool or resource=="Life" and single>=pool):
-            errors.append(f"可用{label} {pool:g} 不能支付单次消耗 {single:g}。")
-        recharge=number(stats,"EnergyShieldRecharge") if resource=="EnergyShield" else None
-        recharge_counted=0
-        if recharge and facts.has_claim(claims,"resource:EnergyShield:recharge"):
-            recharge_counted=recharge
-            delay=number(stats,"EnergyShieldRechargeDelay")
-            if delay is None: pending.append("native:resource:EnergyShield:delay")
-            elif None not in (cost,regen,leech,pool) and max(cost-regen-leech,0)*delay>pool:
-                pending.append("resource:EnergyShield:startup")
-            warnings.append("能盾充能仅在对应 claim 的启动/打断条件下计入；不是持续覆盖证明。")
-        if projection == "linear_native_cost_only" and leech and rate < native_rate:
-            leech = None
-            pending.append("capability:"+subject+":paced_leech")
-        known=all(value is not None for value in (pool,single,cost,regen,leech))
-        net=cost-regen-leech-recharge_counted if known else None
-        record={"resource":label,"resource_id":resource,"pool":pool,"single_cost":single,"native_cost_per_second":raw_native_cost,"cost_per_second":cost,
-                "main_cost_scope":"not_applicable_by_native_flag" if main and main.get("no_cost") is True else "native_value_or_unknown",
-                "automatic_cost_per_second":auto_cost,"manual_cost_per_second":manual_cost,"regeneration":regen,"raw_regeneration":raw_regen,"degen":degen,
-                "native_leech_on_hit":native_leech,"leech_on_hit":leech,"recharge":recharge,"recharge_counted":recharge_counted,"net_cost":net,
-                "sustainable_while_hitting":net<=0.01 if net is not None else None,"projection":projection,"scope":"所列技能及条件下的支付账目；DPS 仍是原生快照，未按使用节奏重算的伤害不能当实际持续输出。"}
-        if not known: pending.append("native:"+subject)
-        elif net>0.01:
-            maximum=max(pool-(1 if resource=="Life" else 0),0)/net
-            record["maximum_burst_seconds"]=maximum
-            duration=main_usage.get("active_seconds")
-            if main_usage.get("continuous") is True: errors.append(f"{label}净缺口 {net:g}/秒，不满足声明的持续使用。")
-            elif duration is not None:
-                if duration>maximum: errors.append(f"声明的使用时长超过{label}静态储量可支持的 {maximum:g} 秒。")
-                recovery=net*duration/regen if regen>0 else None
-                record["recovery_seconds_at_regen_only"]=recovery
-                if recovery is None: pending.append("capability:"+subject+":recovery")
-                elif main_usage.get("recovery_seconds") is None: pending.append(subject+":recovery")
-                elif main_usage["recovery_seconds"]<recovery: errors.append(f"{label}声明恢复时间小于净秒回所需时间 {recovery:g} 秒。")
-            else: pending.append(subject+":usage")
-            warnings.append(f"{label}当前使用方式有净缺口 {net:g}/秒；不能据此声称无限持续。")
-        if leech and leech>0: needs(subject+":leech")
-        resources.append(record)
-    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,
-            "conditions":{"guard_active":guard,"active_flasks":flasks,"flask_facts":flask_facts,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。药剂局部数据不证明持续补充，无持续覆盖测量时保留 capability 缺口。"},"resources":resources,"additional_native_costs":extra_costs}
 
 def material_requirements(original, document, before, after):
     """Derive purchases/upgrades from actual XML, not a prose claim of ownership."""
@@ -743,20 +597,21 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     bx.require(not (evidence.keys() & plan_evidence.keys()),"intent 和 plan 的 evidence_id 不能重复。")
     evidence.update(plan_evidence)
     claims = facts.assess_claims(plan.get("claims", []), evidence, {"baseline": baseline, "candidate": result})
+    coverage,coverage_pending=facts.objective_coverage(intent.get("objectives",[]),evidence,claims)
     errors, warnings, native_gaps = mechanical_issues(document, result, intent)
     mechanical_errors = list(errors)
     constraint_errors, constraint_pending = check_constraints(original, document, baseline, result, intent, plan)
     # Permission and absent native measurements cannot be supplied by a model conclusion.
     constraint_pending = [p for p in constraint_pending if p.startswith(("permission:", "metric:")) or not facts.has_claim(claims,p)]
     errors += constraint_errors
-    audit = readiness(result, intent, plan, claims)
+    audit = resources.assess(result, intent, plan, claims)
     errors += audit["errors"]
     warnings += audit["warnings"]
     requirements = material_requirements(original, document, baseline, result)
     budget = budget_summary(plan, intent, requirements, evidence, claims)
     if budget["over_budget"]: errors.append("已知采购成本下界超过用户预算。")
     warnings += budget["warnings"]
-    pending = native_gaps + constraint_pending + audit["pending"]
+    pending = native_gaps + constraint_pending + audit["pending"] + coverage_pending
     pending += ["material:"+value for value in budget["unresolved"]]
     if budget["status"] in {"unknown", "uncertain_range"}: pending.append("budget")
     if intent.get("budget") and budget["high"] > intent["budget"]["amount"]: pending.append("budget:upper_bound")
@@ -786,11 +641,11 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     if comparison_notes: warnings.append("前后只展示数值差，不声明同条件提升百分比。")
     review, review_pending = facts.final_review({"intent": intent, "plan": plan}, evidence, claims,
         {"baseline": calculation_facts(baseline, claims), "candidate": calculation_facts(result, claims),
-         "resources": audit, "materials": requirements, "budget": budget, "comparison_notes": comparison_notes,
+         "resources": audit, "materials": requirements, "budget": budget, "objective_coverage":coverage, "comparison_notes": comparison_notes,
          "pending": list(dict.fromkeys(pending)), "errors": errors}, assessment)
     pending += review_pending
     errors, pending = list(dict.fromkeys(errors)), list(dict.fromkeys(pending))
-    diagnostics=[]
+    diagnostics=list(audit.get("diagnostics",[]))
     for category,messages in (("mechanical",mechanical_errors),("user_constraint",constraint_errors),("usage",audit["errors"]),("budget",["已知采购成本下界超过用户预算。"] if budget["over_budget"] else [])):
         for message in messages:
             diagnostics.append({"code":category+"_violation","category":category,"subject":"candidate","evidence_refs":[],"affects":["delivery"],"message":message,"status":"failed"})
@@ -804,7 +659,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
                           "target_version":version["status"], "goal":"model_assessed" if "goal_assessment" not in pending else "unresolved",
                           "scope":"程序核对结构、可用原生事实和证据引用；目标取舍、来源语义、效果覆盖仍是模型判断，不是实战保证。"},
             "configuration_audit":{"original_inputs":[dict(n.attrib) for n in bx.active_config(original).findall("Input")],"common_changes":plan.get("scenario",{}),"user_required":intent.get("scenario",{}),"candidate_changes":plan.get("operations",{}).get("config",{}),"baseline_actual":baseline.get("config_values",{}),"candidate_actual":result.get("config_values",{})},
-            "diagnostics":diagnostics,"budget":budget,"readiness":audit,"claims":claims,"evidence":evidence,"target_version_evidence":version,
+            "diagnostics":diagnostics,"budget":budget,"readiness":audit,"objective_coverage":coverage,"claims":claims,"evidence":evidence,"target_version_evidence":version,
             "review_packet":review,
             "actual_changes":actual_changes(baseline,result),"comparison_notes":comparison_notes,"comparison":compare(baseline,result,not comparison_notes)}
 
@@ -814,8 +669,9 @@ def evaluate(args):
     bx.require(state.get("intent"), "先通过多轮对话确认意图，并执行 intent。")
     bx.require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", args.name), "候选名称请使用 1–48 位小写英文、数字或连字符。")
     intent, plan_path = state["intent"], Path(args.plan).resolve()
+    source_plan_sha256=bx.digest(plan_path.read_bytes())
     plan = read_json(plan_path)
-    bx.require(plan.get("schema_version")==SCHEMA_VERSION,"plan 使用 schema_version=2，旧策略字段请按 commands.md 迁移。")
+    bx.require(plan.get("schema_version")==SCHEMA_VERSION,"plan 使用 schema_version=2，旧策略字段请按 references/build.md 与 evidence.md 迁移。")
     original = bx.read_document(run / "original.xml")
     root = engine.resolve_root(args.pob or state["pob_path"])
     info = engine.check(root)
@@ -852,6 +708,7 @@ def evaluate(args):
     xml=roundtrip(root,result,document)
     result["xml_sha256"]=bx.digest(xml)
     assessment=assess_candidate(original,document,baseline,result,intent,plan,plan_path.parent,Path(state.get("intent_evidence_folder",str(plan_path.parent))),root=root)
+    bx.require(bx.digest(plan_path.read_bytes())==source_plan_sha256,"计算期间源计划变化，请重新 evaluate。",location="/source_plan",input_file=str(plan_path))
     destination=run/"candidates"/args.name
     requested=bx.serialise(document)
     write_text(destination/"requested.xml",requested)
@@ -860,6 +717,7 @@ def evaluate(args):
     outcome={"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"name":plan.get("name",args.name),"evaluated_at":now(),
              "engine_version":result["engine_version"],"engine_fingerprint":result["engine_fingerprint"],"intent_hash":state["intent_hash"],
              "original_sha256":state["original_sha256"],"xml_sha256":bx.digest(xml),"requested_sha256":bx.digest(requested),"roundtrip_verified":True,
+             "source_plan":str(plan_path),"source_plan_sha256":source_plan_sha256,
              "evidence_folder":str(plan_path.parent),"baseline":baseline,"result":{k:v for k,v in result.items() if k!="xml"},
              "plan":plan,"crafted_items":crafted,"tree_diagnostics":tree_diagnostics,**assessment}
     write_json(destination/"evaluation.json",outcome)
@@ -911,7 +769,8 @@ def report_html(state, outcome):
     rows="".join(f"<tr><td>{esc(METRICS.get(key,key))}</td><td>{show(row['before'])}</td><td>{show(row['after'])}</td><td>{show(row['delta'])}</td></tr>" for key,row in outcome["comparison"].items() if key in displayed)
     resources="".join(f"<tr><td>{esc(row['resource'])}</td><td>{show(row['pool'])}</td><td>{show(row['single_cost'])}</td><td>{show(row['cost_per_second'])}</td><td>{show(row['regeneration'])}</td><td>{show(row['leech_on_hit'])}</td><td>{show(row['net_cost'])}</td></tr>" for row in outcome["readiness"]["resources"])
     materials="".join(f"<tr><td>{esc(row['requirement_id'])}</td><td>{row['quantity']}</td><td>{row['declared_owned']}</td><td>{esc(row['status'])}</td></tr>" for row in budget["materials"])
-    claims="".join(f"<li><b>{esc(c['claim_id'])}</b> [{esc(c['status'])}] {esc(c['text'])}{bullets(c['conditions']+c['uncertainties'])}<small>依据：{esc(', '.join(c['evidence_refs']))}</small></li>" for c in outcome["claims"])
+    claims="".join(f"<li><b>{esc(c['claim_id'])}</b> [{esc(c['status'])}] {esc(c['rendered_text'])}{bullets(c['conditions']+c['uncertainties'])}<small>依据：{esc(', '.join(c['evidence_refs']))}</small></li>" for c in outcome["claims"])
+    objectives=bullets([row['text']+'：'+row['status']+'；判断 '+', '.join(row['claim_ids']) for row in outcome['objective_coverage']])
     evidence="".join(f"<li>{esc(key)}：{esc(row['status'])}；{esc(row.get('origin',''))}；{esc(row.get('excerpt',row.get('text',row.get('value',''))))} {('<a href='+chr(34)+esc(row['url'])+chr(34)+'>来源</a>') if isinstance(row.get('url'),str) and row['url'].startswith(('https://','http://')) else ''}</li>" for key,row in outcome["evidence"].items())
     groups={}
     for gem in result["gems"]: groups.setdefault(gem["group"],[]).append(gem)
@@ -921,7 +780,7 @@ def report_html(state, outcome):
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(outcome['name'])}</title>
 <style>body{{font:16px/1.7 system-ui;background:#f5f6f8;color:#202a38;max-width:1050px;margin:auto;padding:28px}}section{{background:white;padding:24px;margin:18px 0;border-radius:12px}}table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}small{{color:#526174}}h1{{margin-bottom:6px}}</style>
 <h1>{esc(outcome['name'])}</h1><p>{esc(status)} · PoECharm {esc(outcome['engine_version'])}</p>
-<section><h2>目标与结论</h2><p>{esc(state['intent']['goal'])}</p><p>{esc(plan['summary'])}</p><p>{esc(outcome['validation']['scope'])}</p>{bullets(outcome['errors']+outcome['pending']+outcome['warnings'])}</section>
+<section><h2>目标与结论</h2><p>{esc(state['intent']['goal'])}</p>{objectives}<p>{esc(plan['summary'])}</p><p>{esc(outcome['validation']['scope'])}</p>{bullets(outcome['errors']+outcome['pending']+outcome['warnings'])}</section>
 <section><h2>实际改动与准备</h2>{bullets(outcome['actual_changes'])}{bullets(plan.get('migration_steps',[]))}<p>{esc(scenario_summary(result))}</p>{bullets(outcome['comparison_notes'])}</section>
 <section><h2>原生计算数值</h2><p>下表为当前配置快照；使用频率或覆盖时间改变后，未重算的 DPS 不能作为持续输出。</p><table><tr><th>指标</th><th>原方案</th><th>候选</th><th>数值差</th></tr>{rows}</table></section>
 <section><h2>技能与资源</h2>{links}<table><tr><th>资源</th><th>可用池</th><th>单次费用</th><th>每秒费用</th><th>净秒回</th><th>命中吸取</th><th>净消耗</th></tr>{resources}</table><p>吸取需要命中；充能、时序与额外操作的条件见依据及明细。未知项不按零计算。</p></section>
@@ -939,6 +798,8 @@ def read_candidate(args):
     outcome=json.loads(raw)
     bx.require(outcome.get("schema_version")==SCHEMA_VERSION and outcome.get("skill_version")==VERSION,"协议或技能已变化，请重新 evaluate。")
     bx.require(outcome["intent_hash"]==state.get("intent_hash") and outcome["original_sha256"]==state["original_sha256"],"意图或原始角色变化，请重算。")
+    source_plan=Path(outcome["source_plan"])
+    bx.require(source_plan.is_file() and bx.digest(source_plan.read_bytes())==outcome["source_plan_sha256"],"源计划被修改或移动，请使用源计划重新 evaluate。",location="/source_plan",input_file=str(source_plan))
     xml=(folder/"candidate.xml").read_text(encoding="utf-8")
     bx.require(bx.digest(xml)==outcome["xml_sha256"],"候选 XML 被修改，请重新 evaluate。")
     bx.require(bx.digest((folder/"requested.xml").read_text(encoding="utf-8"))==outcome["requested_sha256"],"请求 XML 被修改，请重新 evaluate。")
@@ -1010,7 +871,7 @@ def probe(args):
             bx.require(result["engine_fingerprint"]==outcome["engine_fingerprint"],"比较期间引擎变化，请重算。")
             errors,warnings,pending=mechanical_issues(document,result,state["intent"])
             ce,cp=check_constraints(original,document,outcome["baseline"],result,state["intent"],plan)
-            audit=readiness(result,state["intent"],plan,[])
+            audit=resources.assess(result,state["intent"],plan,[])
             context_changes=[k for k in ("config_values","level","class","main_skill") if baseline.get(k)!=result.get(k)]
             comparison=compare(baseline,result,not context_changes)
             rows.append({"id":variant["id"],**({"skill_id":variant["id"]} if not getattr(args,"variants",None) else {}),"status":"blocked" if errors+ce+audit["errors"] else "screened",
@@ -1067,6 +928,7 @@ def export(args):
     if outcome["budget"]["status"] in {"unknown","uncertain_range"}: summary+="成本或物资缺口未补齐，不能承诺预算内买齐。"
     if any(s.get("is_main") and s.get("generals_cry") for s in verification.get("active_skills",[])): summary+="幻影吸取未计入玩家回复，供尸、触发与操作条件见说明。"
     return {"status":outcome["status"],"file_exported":True,"files":[str(output/filename),str(output/"配装说明.html")],"facts_summary":summary,
+            "facts":outcome["review_packet"]["facts"],"objective_coverage":outcome["objective_coverage"],
             "pending":outcome["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
             "reply_policy":"交付两份文件和事实摘要；可自然解释已引用的 claims、取舍与操作，不添加未实算数值或超出评审范围的保证。"}
 
@@ -1211,7 +1073,8 @@ def route_snapshots(route,native,root,folder,output):
         except (ValueError,KeyError,TypeError,IndexError,OSError) as exc:
             record.update(status="unsupported",reason=str(exc))
         finally:
-            write_json(output.with_suffix(".state.json"),{"phase":"calculating","file_exported":False,"output":str(output),
+            progress=read_json(output.with_suffix(".state.json"))
+            write_json(output.with_suffix(".state.json"),{**progress,"phase":"calculating","file_exported":False,"output":str(output),
                        "engine_fingerprint":native["engine_fingerprint"],"stages":{sid:{k:v for k,v in row.items() if k in {"status","reason","xml_path","xml_sha256"}} for sid,row in records.items()},
                        "next":"处理具体错误后重跑同一 route 命令；已保存阶段按输入和摘要复用。"})
     return records
@@ -1221,9 +1084,10 @@ def route_command(args):
     bx.require(args.invoked,"仅在用户明确调用技能后规划路线。")
     path=Path(args.file).resolve(); output=Path(args.out).resolve()
     bx.require(output.suffix.lower()==".html" and output!=path,"--out 需要独立 HTML 文件。")
+    input_sha256=bx.digest(path.read_bytes())
     route=read_json(path)
     root=engine.resolve_root(args.pob)
-    write_json(output.with_suffix(".state.json"),{"phase":"preparing","file_exported":False,"input":str(path),"output":str(output)})
+    write_json(output.with_suffix(".state.json"),{"phase":"preparing","file_exported":False,"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":engine.fingerprint(root)})
     ids=routes.gem_ids(route)
     queries=[{"kind":"gems","query":"id:"+v,"limit":2} for v in ids]
     queries += [{"kind":"links","query":v,"limit":1} for v in routes.link_queries(route)]
@@ -1266,7 +1130,7 @@ def route_command(args):
         for slot,base in stage.get("bases",{}).items():
             if actual_bases.get(slot)!=base: errors.append("快照装备与阶段声明的基底不一致："+slot)
         relevant=[c for c in claims if {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
-        audit=readiness(value,checked,{"usage":stage["snapshot"].get("usage",[])},relevant)
+        audit=resources.assess(value,checked,{"usage":stage["snapshot"].get("usage",[])},relevant)
         errors+=audit["errors"]; notes+=audit["warnings"]; gaps+=audit["pending"]
         texts={int(i.get("id")):bx.normal_item(bx.text_item(i)) for i in document.findall("Items/Item")}
         material_specs=[]
@@ -1326,22 +1190,65 @@ def route_command(args):
     warnings+=budget["warnings"]
     checked["pending"]=list(dict.fromkeys(checked["pending"]+["material:"+ref for ref in budget["unresolved"]]))
     review,review_pending=facts.final_review(route,registry,claims,
-        {"engine_fingerprint":calculation["engine_fingerprint"],"budget":budget,"pending":checked["pending"],
+        {"engine_fingerprint":calculation["engine_fingerprint"],"budget":budget,"pending":checked["pending"],"objective_coverage":checked["objective_coverage"],
          "stages":[{"stage_id":s["stage_id"],"level":s.get("level"),"act":s.get("act"),"completed_act":s.get("completed_act"),
                     "entry_conditions":s.get("entry_conditions",[]),"calculation":s.get("calculation",{"status":"not_calculated"})} for s in checked["stages"]]},route.get("assessment",{}))
     checked["pending"]+=review_pending
     checked["final_review"]={k:review[k] for k in ("token","status","findings","scope")}
     checked["delivery_status"]="blocked" if budget["over_budget"] or snapshot_failed else "draft" if checked["pending"] else "scoped_result"
     bx.require(engine.fingerprint(root)==calculation["engine_fingerprint"],"路线核对期间引擎变化，旧阶段缓存自动失效；待更新完成后重试同一 route 命令。")
+    bx.require(bx.digest(path.read_bytes())==input_sha256,"核对期间源路线变化，请重跑 route。",location="/input",input_file=str(path))
     evidence_file=output.with_suffix(".evidence.json")
     review_file=output.with_suffix(".review.json")
     write_json(review_file,review)
     write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings})
     write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"]))
-    write_json(output.with_suffix(".state.json"),{"phase":"exported","file_exported":True,"status":checked["delivery_status"],"input":str(path),
+    progress=read_json(output.with_suffix(".state.json"))
+    write_json(output.with_suffix(".state.json"),{**progress,"phase":"exported","file_exported":True,"status":checked["delivery_status"],"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":calculation["engine_fingerprint"],
                "files":{str(p):bx.digest(p.read_bytes()) for p in (output,evidence_file,review_file)},"review_token":review["token"]})
     return {"status":checked["delivery_status"],"file_exported":True,"files":[str(output),str(evidence_file)],"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":checked["pending"],"warnings":warnings,
             "scope":"目录核对与实际阶段快照分别列出；仅 calculation 中的数值经过所声明完整输入实算，未物化阶段不宣称精确 DPS/生存/续航。获取位置不证明当前已完成任务。", "next":"按阶段进入条件推进；缺口处理前仅作为草案。阶段快照存于工作区 calculations，最终角色继续使用 evaluate/export。"}
+
+
+def workflow_status(args):
+    """Read integrity and next operations without repeating native calculation."""
+    route_state=getattr(args,"route_state",None)
+    if route_state:
+        location=Path(route_state).resolve()
+        state=read_json(location)
+        source=Path(state["input"])
+        unchanged=source.is_file() and bx.digest(source.read_bytes())==state.get("input_sha256")
+        files=state.get("files",{})
+        intact=bool(files) and all(Path(name).resolve().parent==location.parent and Path(name).is_file() and bx.digest(Path(name).read_bytes())==digest for name,digest in files.items())
+        root=engine.resolve_root(args.pob)
+        current=engine.fingerprint(root)==state.get("engine_fingerprint")
+        ready=unchanged and intact and current and state.get("file_exported") is True
+        return {"phase":state["phase"],"file_exported":ready,"input_unchanged":unchanged,"files_intact":intact,"engine_unchanged":current,
+                "state_file":str(location),"completed_stages":[sid for sid,row in state.get("stages",{}).items() if row.get("status")=="calculated"],
+                "next_actions":[{"action":"review_delivery" if ready else "resume_route","input":str(source),"output":state.get("output"),"reference":"references/leveling.md"}],
+                "scope":"完整交付需要输入、输出与当前引擎一致；恢复时重新核对来源与判断。"}
+    run,state=read_run(args.run)
+    records=[]
+    actions=[]
+    if not state.get("intent"): actions.append({"action":"clarify_intent","reference":"references/build.md"})
+    for name in state.get("candidates",{}):
+        candidate={"name":name}
+        try:
+            _,_,outcome,_,_=read_candidate(argparse.Namespace(run=str(run),name=name,pob=args.pob))
+            pending=outcome["pending"]
+            delivery=run/"output"/name/"delivery.json"
+            receipt=read_json(delivery) if delivery.is_file() else {}
+            files=receipt.get("files",{})
+            complete=receipt.get("file_exported") is True and bool(files) and all((delivery.parent/filename).resolve().is_relative_to(delivery.parent) and (delivery.parent/filename).is_file() and bx.digest((delivery.parent/filename).read_bytes())==digest for filename,digest in files.items())
+            candidate.update(valid=True,status=outcome["status"],pending=pending[:12],pending_total=len(pending),file_exported=complete,
+                             plan_file=outcome["source_plan"],details_file=str(run/"candidates"/name/"evaluation.json"),review_file=str(run/"candidates"/name/"review.json"))
+            actions.append({"action":"review_delivery" if complete else "resolve_candidate" if pending or outcome["errors"] else "export","candidate":name,"details_file":candidate["details_file"]})
+        except (ValueError,OSError,KeyError) as exc:
+            candidate.update(valid=False,reason=str(exc))
+            actions.append({"action":"reevaluate","candidate":name,"reason":str(exc),"reference":"references/build.md"})
+        records.append(candidate)
+    return {"run":str(run),"phase":state["phase"],"pob_path":state["pob_path"],"skill_version":VERSION,"intent":state.get("intent"),
+            "candidates":[r["name"] for r in records],"candidate_records":records,"next_actions":actions}
 
 
 def parser():
@@ -1351,7 +1258,11 @@ def parser():
         cmd = sub.add_parser(name)
         cmd.add_argument("--pob", help="PoECharm 文件夹、PoB 文件夹或可执行文件；默认自动发现")
         if name in {"inspect", "decode", "start"}: cmd.add_argument("--input", required=True)
-        if name in {"start", "intent", "evaluate", "probe", "export", "status"}: cmd.add_argument("--run", required=True)
+        if name in {"start", "intent", "evaluate", "probe", "export"}: cmd.add_argument("--run", required=True)
+        if name=="status":
+            context=cmd.add_mutually_exclusive_group(required=True)
+            context.add_argument("--run")
+            context.add_argument("--route-state",help="route 输出的 .state.json；只读核对交付和可恢复阶段")
         if name == "start": cmd.add_argument("--invoked", action="store_true")
         if name == "intent": cmd.add_argument("--file", required=True)
         if name in {"evaluate", "probe", "export"}: cmd.add_argument("--name", required=True)
@@ -1474,22 +1385,27 @@ def main(argv=None):
             else:
                 bx.require(len(json.dumps(result, ensure_ascii=False)) <= 12000, "查询结果较大；请加 --out '<工作区>/查询结果.json' 保存完整结果，再按相关字段读取，避免 TeleAgent 截断或转存至额外授权目录。")
         elif args.command == "route": result = route_command(args)
-        else:
-            run, state = read_run(args.run)
-            result = {"run": str(run), "phase": state["phase"], "pob_path": state["pob_path"], "engine_version": state["engine_version"], "skill_version": VERSION, "intent": state.get("intent"), "candidates": [p.parent.name for p in (run / "candidates").glob("*/evaluation.json")]}
+        else: result=workflow_status(args)
         if args.command in {"evaluate","route","export"} and len(json.dumps(result,ensure_ascii=False))>12000:
             details=(Path(args.out).resolve().with_suffix(".evidence.json") if args.command=="route" else
                      Path(args.run).resolve()/("candidates" if args.command=="evaluate" else "output")/args.name/("evaluation.json" if args.command=="evaluate" else "final-assessment.json"))
-            result={k:v for k,v in result.items() if k not in {"budget","readiness","comparison","tree_diagnostics","baseline_warnings"}}
+            concise={"status","file_exported","files","candidate","review_file","review_token","evaluation_file","xml","roundtrip_verified","name","stages","facts_summary","budget_status","scope","next","reply_policy","errors","pending","warnings"}
+            result={k:v for k,v in result.items() if k in concise}
             for field in ("errors","pending","warnings"):
                 if field in result:
-                    result[field+"_total"]=len(result[field]);result[field]=result[field][:12]
+                    result[field+"_total"]=len(result[field]);result[field]=[v[:160] if isinstance(v,str) else v for v in result[field][:12]]
+            for field in ("facts_summary","next","reply_policy","scope"):
+                if field in result and isinstance(result[field],str): result[field]=result[field][:1800]
             result.update(details_file=str(details),output_scope="终端摘要；完整数值、条件和全部缺口已保存在 details_file，请按字段读取。")
         result["runtime"]={**engine.PERFORMANCE,"elapsed_seconds":round(time.perf_counter()-started,4)}
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, allow_nan=False))
         return 0
     except (ValueError, OSError, KeyError, TypeError, IndexError) as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        diagnostic=dict(exc.diagnostic) if isinstance(exc,bx.ContractError) else {"code":"engine_failure" if isinstance(exc,engine.EngineError) else "io_error" if isinstance(exc,OSError) else "invalid_input","message":str(exc),"action":"inspect_error","retryable":False}
+        source=getattr(args,"plan",None) or getattr(args,"file",None) or getattr(args,"input",None)
+        if source: diagnostic["input_file"]=str(Path(source).resolve())
+        if isinstance(exc,json.JSONDecodeError): diagnostic.update(line=exc.lineno,column=exc.colno,action="edit_input")
+        print(json.dumps({"ok": False, "error": str(exc),"diagnostic":diagnostic}, ensure_ascii=False), file=sys.stderr)
         return 2
 
 

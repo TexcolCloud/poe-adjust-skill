@@ -213,12 +213,24 @@ def assess_claims(claims, evidence, native=None):
             bx.require(isinstance(row[field], list) and all(isinstance(v, str) and v.strip() for v in row[field]), field + " 应为非空字符串数组。")
         bx.require(row["subjects"], "claim 需要关联具体 subjects。")
         missing = []
-        for reference in row["evidence_refs"]:
+        embedded=re.findall(r"\{\{value:([^{}]+)\}\}",row["text"])
+        references=list(dict.fromkeys(row["evidence_refs"]+embedded))
+        row["evidence_refs"]=references
+        for reference in references:
             try:
                 observed = resolve_reference(reference, evidence, native)
                 if observed["status"] == "unresolved": missing.append(reference)
             except ValueError as exc:
                 missing.append(str(exc))
+        def substitute(match):
+            ref=match.group(1)
+            observed=evidence.get(ref,{})
+            value=observed.get("value")
+            if type(value) not in (int,float,bool,str) or observed.get("status")=="unresolved":
+                missing.append("inline_value:"+ref)
+                return "[未取得实际值："+ref+"]"
+            return format(value,".10g") if type(value) in (int,float) else json.dumps(value,ensure_ascii=False) if type(value) is bool else value
+        row["rendered_text"]=re.sub(r"\{\{value:([^{}]+)\}\}",substitute,row["text"])
         row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] else "unresolved"
         row["missing_evidence"] = missing
         row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
@@ -230,6 +242,29 @@ def assess_claims(claims, evidence, native=None):
 
 def has_claim(claims, subject):
     return any(row["status"] == "model_assessed" and subject in row["subjects"] for row in claims)
+
+
+def objective_coverage(objectives, evidence, claims):
+    """Trace model-decomposed user goals; completeness and meaning remain model judgments."""
+    bx.require(isinstance(objectives,list),"objectives 为用户目标数组。",location="/objectives",expected="array")
+    rows,pending,seen=[],[],set()
+    if not objectives: pending.append("objective:missing")
+    for index,entry in enumerate(objectives):
+        path=f"/objectives/{index}"
+        bx.require(isinstance(entry,dict) and set(entry)=={"objective_id","text","evidence_refs"},"目标使用 objective_id/text/evidence_refs。",location=path)
+        key=entry["objective_id"]
+        bx.require(isinstance(key,str) and key.strip() and key not in seen,"objective_id 唯一且非空。",location=path+"/objective_id",actual=key)
+        seen.add(key)
+        bx.require(isinstance(entry["text"],str) and entry["text"].strip(),"目标需要具体 text。",location=path+"/text")
+        refs=entry["evidence_refs"]
+        bx.require(isinstance(refs,list) and all(isinstance(ref,str) for ref in refs),"目标依据为 evidence_id 数组。",location=path+"/evidence_refs")
+        basis=bool(refs) and all(evidence.get(ref,{}).get("kind")=="user_statement" and evidence[ref].get("status")=="user_declared" for ref in refs)
+        linked=[c for c in claims if "objective:"+key in c["subjects"]]
+        assessed=basis and any(c["status"]=="model_assessed" for c in linked)
+        rows.append({**entry,"basis_status":"user_declared" if basis else "unresolved","claim_ids":[c["claim_id"] for c in linked],
+                     "status":"model_assessed" if assessed else "unresolved","scope":"目标拆分与证据解释由模型负责，存在关联不证明目标已经达到。"})
+        if not assessed: pending.append("objective:"+key)
+    return rows,pending
 
 
 def final_review(specification, evidence, claims, observations, assessment):

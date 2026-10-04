@@ -15,9 +15,18 @@ GEM_FIELDS = {"skill_id": "skillId", "level": "level", "quality": "quality", "en
 GROUP_FIELDS = {"enabled": "enabled", "slot": "slot", "label": "label", "include_in_full_dps": "includeInFullDPS", "main_active_skill": "mainActiveSkill", "group_count": "groupCount"}
 
 
-def require(condition, message):
+class ContractError(ValueError):
+    """An input error with a concrete field and observable repair information."""
+    def __init__(self, message, *, code="invalid_input", location=None, expected=None, actual=None, input_file=None):
+        super().__init__(message)
+        self.diagnostic={"code":code,"message":message,"action":"edit_input","retryable":False}
+        for key,value in (("location",location),("expected",expected),("actual",actual),("input_file",input_file)):
+            if value is not None: self.diagnostic[key]=value
+
+
+def require(condition, message, **details):
     if not condition:
-        raise ValueError(message)
+        raise ContractError(message, **details)
 
 
 def digest(data: bytes | str) -> str:
