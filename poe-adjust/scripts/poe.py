@@ -18,7 +18,7 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -573,11 +573,13 @@ def evaluate(args):
     root = engine.resolve_root(args.pob or state["pob_path"])
     bx.require(engine.version(root) == state["engine_version"], "此会话期间引擎版本发生变化，请重新建立会话。")
     base_path = run / "baseline.json"
-    if base_path.exists() and read_json(base_path).get("intent_hash") == state["intent_hash"]:
-        baseline = read_json(base_path)
+    cached_baseline = read_json(base_path) if base_path.exists() else {}
+    if cached_baseline.get("intent_hash") == state["intent_hash"] and cached_baseline.get("skill_version") == VERSION:
+        baseline = cached_baseline
     else:
         baseline = engine.calculate(root, bx.serialise(prepared(original, intent, baseline=True)))
         baseline["intent_hash"] = state["intent_hash"]
+        baseline["skill_version"] = VERSION
         write_json(base_path, baseline)
     source = original
     if plan.get("template_xml"):
@@ -608,6 +610,8 @@ def evaluate(args):
         comparison_notes.append("原始方案带有引擎诊断提示，原面板不是已验证的实战基准。")
     if baseline["level"] != result["level"]:
         comparison_notes.append("前后等级不同。")
+    if baseline["main_skill"] != result["main_skill"]:
+        comparison_notes.append("前后主技能不同，覆盖范围、操作与伤害口径需逐项核对。")
     baseline_flasks = [item["slot"] for item in baseline["equipped"] if item["slot"].startswith("Flask ") and item.get("active")]
     if bool(baseline["stats"].get("GuardSkillActive")) != audit["conditions"]["guard_active"] or baseline_flasks != audit["conditions"]["active_flasks"]:
         comparison_notes.append("前后守护/药剂开启条件不同。")
@@ -631,7 +635,8 @@ def evaluate(args):
     write_json(run / "run.json", state)
     return {"candidate": str(destination), "status": outcome["status"], "errors": outcome["errors"], "warnings": outcome["warnings"], "budget": budget,
             "baseline_warnings": outcome["baseline_warnings"],
-            "comparison": outcome["comparison"], "readiness": audit, "roundtrip_verified": True}
+            "comparison": outcome["comparison"], "readiness": audit, "roundtrip_verified": True,
+            "next": "读取 evaluation.json 中实际技能/触发/伤害分项及计划说明，审查是否达到用户目标。有辅助选择空间时用 probe 比较，再将选定方案 evaluate/export。" if not errors else "先解决 errors；保持已确认的目标、进度和下限，修改方案后重新 evaluate。"}
 
 
 def report_html(state, outcome):
@@ -856,6 +861,7 @@ def parser():
             cmd.add_argument("--batch")
             cmd.add_argument("--query", default="")
             cmd.add_argument("--input")
+            cmd.add_argument("--out", help="将完整查询保存到工作区 JSON，终端只返回索引")
             cmd.add_argument("--limit", type=int, default=20)
         if name == "route":
             cmd.add_argument("--invoked", action="store_true")
@@ -893,7 +899,18 @@ def main(argv=None):
         elif args.command == "export": result = export(args)
         elif args.command == "catalog":
             bx.require(1 <= args.limit <= 100, "limit 应在 1–100。")
+            if args.out:
+                output = Path(args.out).resolve()
+                bx.require(output.suffix.lower() == ".json", "catalog --out 请指定工作区 JSON 文件。")
+                bx.require(all(output != Path(value).resolve() for value in (args.input, args.batch) if value), "查询结果不能覆盖输入角色或查询参数文件。")
             result = catalog(args)
+            if args.out:
+                write_json(output, result)
+                queries = result.get("queries", [{"kind": args.kind, "query": args.query, **result}])
+                result = {"catalog_file": str(output), "queries": [{"kind": query["kind"], "query": query["query"], "returned": len(query["entries"]), "total": query.get("total")} for query in queries],
+                          "next": "完整结果已保存到工作区。按 queries[].entries 或单项 entries 读取需要的字段；不要一次输出整份大 JSON。"}
+            else:
+                bx.require(len(json.dumps(result, ensure_ascii=False)) <= 12000, "查询结果较大；请加 --out '<工作区>/查询结果.json' 保存完整结果，再按相关字段读取，避免 TeleAgent 截断或转存至额外授权目录。")
         elif args.command == "route":
             bx.require(args.invoked, "仅在用户明确调用技能后规划开荒路线。")
             route = read_json(args.file)

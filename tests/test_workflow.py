@@ -7,8 +7,9 @@ import argparse
 import base64
 import copy
 from datetime import date, datetime, timedelta, timezone
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -491,6 +492,24 @@ class RealEngineTests(unittest.TestCase):
         poe.set_intent(args(run=str(self.run_dir), file=str(path)))
         with self.assertRaisesRegex(ValueError, "意图"): poe.export(args(run=str(self.run_dir), name="old-intent"))
 
+    def test_22_updated_skill_refreshes_old_baseline_metadata(self):
+        self.evaluate_plan(self.refine, "baseline-before-upgrade")
+        path = self.run_dir / "baseline.json"
+        baseline = poe.read_json(path)
+        self.assertEqual(baseline["skill_version"], poe.VERSION)
+        baseline.pop("skill_version")
+        baseline.pop("active_skills")
+        baseline["stats"]["CombinedDPS"] = -12345
+        poe.write_json(path, baseline)
+        result = self.evaluate_plan(self.rebuild, "baseline-after-upgrade")
+        refreshed = poe.read_json(path)
+        self.assertEqual(refreshed["skill_version"], poe.VERSION)
+        self.assertTrue(refreshed["active_skills"])
+        self.assertGreater(refreshed["stats"]["CombinedDPS"], 0)
+        record = poe.read_json(self.run_dir / "candidates/baseline-after-upgrade/evaluation.json")
+        self.assertTrue(any("主技能不同" in note for note in record["comparison_notes"]))
+        self.assertIsNone(result["comparison"]["CombinedDPS"]["percent"])
+
     def test_07_catalog_route_can_be_allocated_without_losing_nodes(self):
         result = engine.calculate(self.pob, bx.serialise(self.original), catalog="nodes", query="life", limit=100)
         route = next(node for node in result["catalog"] if not node["allocated"] and node["reachable"]
@@ -759,6 +778,29 @@ class RealEngineTests(unittest.TestCase):
         exported = poe.export(args(run=str(self.run_dir), name="minion-context"))
         self.assertIn("召唤物单体综合 DPS", exported["user_summary"])
         self.assertNotIn("主技能综合 DPS 0.0", exported["user_summary"])
+
+    def test_23_large_catalog_output_is_saved_and_inputs_are_protected(self):
+        query = Path(self.temp.name) / "queries.json"
+        output = Path(self.temp.name) / "查询结果.json"
+        poe.write_json(query, {"queries": [{"kind": "gems", "query": "", "limit": 40}, {"kind": "classes", "query": "Templar", "limit": 1}]})
+        command = ["catalog", "--batch", str(query), "--pob", str(self.pob)]
+        with redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(poe.main(command), 2)
+        self.assertIn("--out", error.getvalue())
+        with redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(poe.main(command + ["--out", str(output)]), 0)
+        response = json.loads(stdout.getvalue())
+        self.assertEqual(response["catalog_file"], str(output))
+        self.assertEqual([row["returned"] for row in response["queries"]], [40, 1])
+        self.assertLess(len(stdout.getvalue()), 3000)
+        self.assertGreater(len(output.read_text(encoding="utf-8")), 12000)
+        data = poe.read_json(output)
+        self.assertEqual(len(data["queries"][0]["entries"]), 40)
+        digest = bx.digest(query.read_bytes())
+        with redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(poe.main(command + ["--out", str(query)]), 2)
+        self.assertIn("不能覆盖", error.getvalue())
+        self.assertEqual(bx.digest(query.read_bytes()), digest)
 
 
 if __name__ == "__main__": unittest.main()

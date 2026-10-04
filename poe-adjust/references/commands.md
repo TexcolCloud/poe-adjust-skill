@@ -41,12 +41,14 @@ python $entry catalog --kind classes --query 'Duelist' --limit 1
 python $entry catalog --kind links --query 'ShieldCrush,SupportBrutality,SupportMeleePhysicalDamage' --limit 1
 python $entry catalog --kind bases --query 'Two-Toned Boots' --limit 8
 python $entry catalog --kind affixes --query 'Two-Toned Boots (Armour/Energy Shield)|maximum Life' --limit 15
-python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
+python $entry catalog --batch '<queries.json>' --input '<角色.xml>' --out '<工作区>/catalog-results.json'
 ```
 
 一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的角色等级需求 `level_requirements`、`min_level`、`special_variant`、`vaal`，开荒时据此核对而非猜等级。
 
 `classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 compatible/incompatible。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
+
+批量查询和较大的单项查询使用 `--out` 保存到当前任务工作区，命令仅返回文件路径和每项条数；单项完整结果在 entries，批量在 queries[].entries。未指定 --out 且超过 12000 字符时会提示重新指定，完整结果不会截断后冒充齐全。用 `Get-Content -Raw -Encoding UTF8 '<结果.json>' | ConvertFrom-Json` 后选择相关 queries、宝石或字段输出，避免一次读取整个大文件触发 TeleAgent 的工具输出目录授权。输出路径不得与输入 XML/queries.json 相同。
 
 技能返回 `skill_id` 才是操作字段；`id` 可能是游戏物品路径。查询天赋时带输入文件，使用其版本与当前已点天赋。结果按本机引擎计算的所需新增点数排序；`allocated` 表示已点，`reachable` 表示有可分配路线，`points_to_allocate` 是新增点数，`path` 包含到目标需要的节点 ID。将路线与保留节点合并后设置完整 `tree.nodes`，再评估点数和依赖；不要孤立添加远处的大点。`linked` 返回邻接节点，供调整已有路径时查看。查询只返回最多 100 条；细化关键词，不反复截断全库。
 
