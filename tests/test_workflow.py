@@ -427,19 +427,17 @@ class RouteTests(unittest.TestCase):
             routes.validate(self.route, self.gems)
 
     def test_route_keeps_unverified_version_and_does_not_invent_dps(self):
+        self.route["notes"] = "说明保持完整；不按标点猜测拆分"
+        self.route["stages"][0]["transition"] = "核心物资备齐后进入下一阶段"
         checked, warnings = routes.validate(self.route, self.gems)
+        self.assertEqual(checked["notes"], [self.route["notes"]])
+        self.assertEqual(checked["stages"][0]["transition"], [self.route["stages"][0]["transition"]])
         self.assertTrue(any("国服赛季" in warning for warning in warnings))
         report = routes.render(checked, warnings, "2.67.2", "3_29")
         self.assertIn("尚未使用完整阶段装备", report)
         self.assertIn("宝石练级目标", report)
         self.route["version_status"] = "verified"
         with self.assertRaisesRegex(ValueError, "version_source"):
-            routes.validate(self.route, self.gems)
-
-    def test_five_link_has_an_obtainable_four_link_fallback(self):
-        group = self.route["stages"][-1]["skill_groups"][0]
-        group["gems"] *= 5
-        with self.assertRaisesRegex(ValueError, "基础路线每组使用 1–4 连"):
             routes.validate(self.route, self.gems)
 
     def test_route_attributes_cover_utility_and_optional_links_without_summing(self):
@@ -471,6 +469,9 @@ class RouteTests(unittest.TestCase):
         group["upgrade_gems"] = copy.deepcopy(group["gems"]) + [{"skill_id": f"SupportFixture{i}", "level": 1} for i in (3, 4)]
         checked, _ = routes.validate(self.route, self.gems)
         self.assertEqual(len(checked["stages"][-1]["skill_groups"][0]["upgrade_gems"]), 6)
+        group["gems"] = group.pop("upgrade_gems")
+        checked, _ = routes.validate(self.route, self.gems)
+        self.assertEqual(len(checked["stages"][-1]["skill_groups"][0]["gems"]), 6)
         other = copy.deepcopy(group)
         other["use"], other["slot"] = "utility", "Weapon 1"
         self.route["stages"][-1]["skill_groups"].append(other)
@@ -499,9 +500,10 @@ class RouteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "未来"):
             routes.validate(self.route, self.gems)
         self.route["sources"][0]["checked_at"] = date.today().isoformat()
-        self.route["notes"] = "应为数组"
-        with self.assertRaisesRegex(ValueError, "数组"):
-            routes.validate(self.route, self.gems)
+        for malformed in ("", "   ", None, {"note": "wrong shape"}, ["正常文字", 7]):
+            self.route["notes"] = malformed
+            with self.assertRaisesRegex(ValueError, "数组"):
+                routes.validate(self.route, self.gems)
 
 
 @unittest.skipUnless(os.name == "nt", "需要 Windows 本机引擎")

@@ -15,8 +15,10 @@ ATTRIBUTES = {"strength": "力量", "dexterity": "敏捷", "intelligence": "智�
 
 
 def strings(value, label, *, required=True):
-    bx.require(isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value), label + " 应为非空文字组成的数组。")
+    if isinstance(value, str): value = [value]
+    bx.require(isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value), label + " 应为文字或非空文字组成的数组。")
     bx.require(not required or value, label + " 不能为空。")
+    return value
 
 
 def gem_ids(route):
@@ -69,7 +71,7 @@ def validate_group(group, stage, gems, library, compatibility, capacity, warning
     bx.require(set(group) <= {"name", "slot", "use", "gems", "upgrade_gems"} and isinstance(group.get("name"), str) and group["name"].strip(), label + "技能组需要 name/slot/use/gems，可选 upgrade_gems。")
     bx.require(group.get("use") in USAGES, label + "技能组 use 应为 main/movement/utility/aura。")
     base = group.get("gems")
-    bx.require(isinstance(base, list) and 1 <= len(base) <= 4, label + "基础路线每组使用 1–4 连；五/六连放入可选 upgrade_gems，保留可执行基础连线。")
+    bx.require(isinstance(base, list) and base, label + "基础路线每组需要至少一颗宝石。")
     used = set()
     for key in ("gems", "upgrade_gems"):
         if key not in group: continue
@@ -180,7 +182,7 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
         bx.require(not (set(stage) - stage_allowed), "阶段存在未知字段：" + ", ".join(sorted(set(stage) - stage_allowed)))
         label = f"{stage['level']} 级阶段"
         bx.require(isinstance(stage.get("name"), str) and stage["name"].strip(), label + "需要名称。")
-        for key in ("gear", "passives", "checks", "transition"): strings(stage.get(key), label + "." + key)
+        for key in ("gear", "passives", "checks", "transition"): stage[key] = strings(stage.get(key), label + "." + key)
         bx.require(isinstance(stage.get("resources"), str) and stage["resources"].strip(), label + "需要 resources。")
         bx.require(stage.get("weapon_setup") in WEAPONS, label + "需要 weapon_setup：one_hand_shield/dual_wield/two_hand/bow/unarmed_shield。")
         weapon_slots = WEAPONS[stage["weapon_setup"]]
@@ -225,7 +227,7 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
             if item["acquisition"] in {"drop", "trade", "lab"}:
                 bx.require(isinstance(item.get("fallback"), str) and item["fallback"].strip(), label + "随机获取的核心物品需要替代路线。")
     bx.require(used_gems == set(library), "宝石表有未安排到任何阶段的条目；删除闲置条目或落实使用位置：" + ", ".join(sorted(set(library)-used_gems)))
-    for key in ("risks", "notes"): strings(result.get(key, []), key, required=False)
+    for key in ("risks", "notes"): result[key] = strings(result.get(key, []), key, required=False)
     return result, list(dict.fromkeys(warnings))
 
 
