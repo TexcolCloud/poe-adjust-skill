@@ -16,7 +16,11 @@ claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertaintie
 
 用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项解释实现、依据、条件、代价与未解决项。`objective_coverage` 只核对用户来源及关联，不独立证明目标拆分完整或已经达到。整体 goal 判断仍说明总体取舍。
 
+关联写在 **claim.subjects**，不是 claim_id。例如 objective_id 为 `user-X`，解释该目标的 claim 可以用 claim_id:`explain-X`、subjects:`["objective:user-X","goal"]`。一个判断可以关联多个真实适用的对象，不必为每个字段写重复文字。objective_coverage.required_subject 和 diagnostics 给出缺少的关系；claims[].diagnostics 指向失败引用和实际来源原因。先修这些协议/引用遗漏，再决定哪些确实无法核实。
+
 数值判断优先使用原生占位引用，例如 `text:"生命 {{value:native:candidate#/stats/Life}}"`。程序生成 rendered_text，引用也自动纳入 evidence_refs；缺字段保持 unresolved，不能替换为零。HTML 使用同一 rendered_text，最终聊天沿用 export.facts/facts_summary；自由文字中的因果和替代方案排除仍需复核。
+
+“测得某值”“机制导致某值”“实际覆盖该条件”“满足用户目标”分别需要对应依据。引用一个面板数值不证明自己的因果解释。与解释冲突时，先检查当前支付资源、主体、实际装备、配置和明细；必要时只改一个输入探测，再说明其影响范围。模型可以选择不同使用条件或接受代价，但须把条件落进对应候选/阶段，不用假想实战效果覆盖当前值，也不以无依据的“引擎问题”解释异常。
 
 常用 subject：`goal`、`progress:normal`、`progress:ascendancy`、`progress:secondary_ascendancy`、`condition:guard`、`condition:Flask 1`、`config:<字段>`、`skill:<skill_ref>`、`dependency:<skill_ref>`、`count:<组>:<宝石位置>`、`resource:Mana:leech`、`resource:EnergyShield:recharge`、`transformation:<槽位>`、`legality:item:<物品ID>`、`migration`、`template_source`。以实际 pending 为索引说明问题；permission、缺失原生量和 capability 缺口不能靠填理由转成程序通过。
 
@@ -42,6 +46,8 @@ requirements 从实际 XML 差异产生，包含仍装备的禁用/备用宝石�
 
 evaluate 保存 candidate.xml、requested.xml、plan.json、evaluation.json、review.json。读取 result 的实际技能、装备、配置、统计与伤害分项，readiness 的资源、errors/pending、budget、claims/evidence 和逐类 validation。diagnostics 带 code/category/subject/evidence_refs/affects/message/status；未知能力不改写成游戏非法。默认值等价性按本机 ConfigTab.GetDefaultState/Save 语义检查，同时核对统计；没有一律丢弃 false。config_values 记录最终保存文件的实际输入，config_saved_values 是省略原生默认值后的保存语义。
 
+delivery_brief 从全部 errors/pending 生成状态与缺口类别，终端只显示部分 pending 时仍包含全部类别；按 details_file 查看受影响对象。actual_changes/equipment_changes 来自当前原生对象和 XML 规格，普通/主升华/次级升华点数分别计数。解释装备和点数改动时沿用这些结果，不从“新增节点总数”再次加算升华。
+
 最终复核使用现有 TeleAgent 模型，不增加另一模型服务。先完成方案/claims 修订并 evaluate，再阅读 review.json 的 facts/claims：核对数字与技能/主体/阶段、因果证据、替代方案排除理由、切换进入条件以及 summary/迁移说明/最终回答的范围。发现问题就修改并重新 evaluate，直到可以如实记录本轮复核。填写源 plan 的 `assessment.review`，再 evaluate：
 
 ```json
@@ -55,5 +61,7 @@ token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源
 probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。返回各变体原生快照、差异与未评审依赖；不继承旧宝石的使用结论，最终选择仍写完整 plan/evaluate。批量大小为进程资源保护，自动分批比较。
 
 export 再复算并重核来源和复核 token。blocked 只输出诊断 HTML；draft 输出明确命名的配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json、review.json、delivery.json。只有 XML 与 HTML 均落盘后 delivery.file_exported 才为 true，清除同候选旧状态的另一 XML 文件；失败中断时保持 preparing/会话 exporting，处理错误后重试 export。无 URL 的本地证据仍正常展示。最后交付两份用户文件，以 facts_summary 为事实基础解释取舍；“已回读”不代表全部机制、预算和实战已证实。
+
+直接交付返回路径，避免另做未经绑定的复制/改名/说明。draft 不改名为改进配装；聊天先说明 delivery_brief 的真实状态与全部剩余类别，再说明已有收益、代价和用户下一步。原生能力缺口可以保留为条件规划；已知非法输入、可修复字段遗漏和来源404不能靠填写复核 token 变成成品。
 
 历史输入迁移：calculation_mode、resource_mode、unused_points_reason、config_evidence、burst_seconds、upgrade_gems、fallback_skill_id、version_status、verified_cn。分别迁入具体 usage、claims、阶段或来源；旧字段显式报错，不保留双套运行路径。

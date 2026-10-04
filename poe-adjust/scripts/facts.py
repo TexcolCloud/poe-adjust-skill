@@ -117,6 +117,14 @@ def source_record(page, **extra):
     return {key: page[key] for key in ("url", "checked_at", "sha256")} | extra
 
 
+def web_template(page, excerpt):
+    """Expose a real source span as input, without assigning a conclusion or ID."""
+    body = text_of(page["html"], article=urlsplit(page["url"]).hostname == "poe.qq.com")
+    if isinstance(excerpt, str) and excerpt.strip() and excerpt in body:
+        return {"kind": "web", "url": page["url"], "excerpt": excerpt, "checked_at": page["checked_at"]}
+    return None
+
+
 def pointer(value, locator):
     """Resolve a JSON pointer as data, without evaluating model expressions."""
     bx.require(isinstance(locator, str) and (not locator or locator.startswith("/")), "locator 使用 JSON pointer，例如 /stats/Life。")
@@ -201,7 +209,7 @@ def resolve_reference(reference, evidence, native=None):
 def assess_claims(claims, evidence, native=None):
     bx.require(isinstance(claims, list), "claims 应为数组。")
     result, seen = [], set()
-    for entry in claims:
+    for index, entry in enumerate(claims):
         bx.require(isinstance(entry, dict) and set(entry) <= {"claim_id", "text", "subjects", "evidence_refs", "conditions", "uncertainties"}, "claim 字段无效，判断状态由程序标注。")
         key = entry.get("claim_id")
         bx.require(isinstance(key, str) and key and key not in seen, "claim_id 应唯一且非空。")
@@ -212,16 +220,21 @@ def assess_claims(claims, evidence, native=None):
             row[field] = entry.get(field, [])
             bx.require(isinstance(row[field], list) and all(isinstance(v, str) and v.strip() for v in row[field]), field + " 应为非空字符串数组。")
         bx.require(row["subjects"], "claim 需要关联具体 subjects。")
-        missing = []
+        missing, diagnostics = [], []
         embedded=re.findall(r"\{\{value:([^{}]+)\}\}",row["text"])
         references=list(dict.fromkeys(row["evidence_refs"]+embedded))
         row["evidence_refs"]=references
         for reference in references:
             try:
                 observed = resolve_reference(reference, evidence, native)
-                if observed["status"] == "unresolved": missing.append(reference)
+                if observed["status"] == "unresolved":
+                    missing.append(reference)
+                    diagnostics.append({"code":"unresolved_source","location":f"/claims/{index}/evidence_refs","reference":reference,
+                                        "action":"repair_evidence","message":observed.get("reason","来源尚未观测。")})
             except ValueError as exc:
                 missing.append(str(exc))
+                diagnostics.append({"code":"missing_reference","location":f"/claims/{index}/evidence_refs","reference":reference,
+                                    "action":"repair_evidence","message":str(exc)})
         def substitute(match):
             ref=match.group(1)
             observed=evidence.get(ref,{})
@@ -233,6 +246,7 @@ def assess_claims(claims, evidence, native=None):
         row["rendered_text"]=re.sub(r"\{\{value:([^{}]+)\}\}",substitute,row["text"])
         row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] else "unresolved"
         row["missing_evidence"] = missing
+        row["diagnostics"] = diagnostics
         row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
                                for ref in row["evidence_refs"] if ref in evidence and evidence[ref].get("status") != "unresolved"]
         row["scope"] = "model_assessed 表示有引用的模型判断，程序仅核对引用存在及状态；数值见 observations，文字蕴含关系与因果并未自动证明。最终复核另按当前 review token 绑定。"
@@ -261,10 +275,38 @@ def objective_coverage(objectives, evidence, claims):
         basis=bool(refs) and all(evidence.get(ref,{}).get("kind")=="user_statement" and evidence[ref].get("status")=="user_declared" for ref in refs)
         linked=[c for c in claims if "objective:"+key in c["subjects"]]
         assessed=basis and any(c["status"]=="model_assessed" for c in linked)
-        rows.append({**entry,"basis_status":"user_declared" if basis else "unresolved","claim_ids":[c["claim_id"] for c in linked],
+        diagnostics=[]
+        if not basis: diagnostics.append({"code":"objective_basis_missing","location":path+"/evidence_refs","action":"record_user_basis","message":"关联实际 user_statement；模型建议不冒充用户要求。"})
+        if not linked: diagnostics.append({"code":"objective_subject_missing","location":"/claims","action":"link_claim","required_subject":"objective:"+key,
+                                          "message":"在说明本目标的 claim.subjects 中加入 objective:"+key+"；claim_id 只是标识，不能代替 subjects。"})
+        rows.append({**entry,"required_subject":"objective:"+key,"diagnostics":diagnostics,"basis_status":"user_declared" if basis else "unresolved","claim_ids":[c["claim_id"] for c in linked],
                      "status":"model_assessed" if assessed else "unresolved","scope":"目标拆分与证据解释由模型负责，存在关联不证明目标已经达到。"})
         if not assessed: pending.append("objective:"+key)
     return rows,pending
+
+
+def delivery_brief(status, errors, pending):
+    """Summarize all observed gaps; no game targets or inferred success here."""
+    labels={"blocked":"存在已知错误，尚不能按方案执行", "draft":"待核实草案", "scoped_result":"已完成所列范围的评审"}
+    bx.require(status in labels,"未知交付状态。")
+    categories={}
+    for subject in dict.fromkeys(pending):
+        parts=subject.split(":")
+        if parts[0]=="stage" and len(parts)>2: parts=parts[2:]
+        category=parts[0]
+        categories[category]=categories.get(category,0)+1
+    names={"objective":"目标覆盖","goal_assessment":"总体目标评审","config":"计算条件","condition":"效果覆盖条件",
+           "resource":"资源安排","native":"原生测量","capability":"尚未支持的测量","material":"取得与规格","budget":"预算",
+           "legality":"物品合法性","skill":"技能使用","progress":"角色进度","version":"版本来源","final_review":"最终复核",
+           "acquisition":"获取与成长","entry_condition":"阶段进入条件","entry_check":"阶段数值条件","stage_assessment":"阶段评审",
+           "snapshot_assumptions":"快照假设","permission":"用户意图","migration":"迁移步骤","trial_progress":"试炼进度"}
+    categories=dict(sorted(categories.items()))
+    message=labels[status]+"。"
+    if errors: message+=f"已知错误 {len(errors)} 项。"
+    if categories: message+="未解决："+"、".join(names.get(k,k)+f"（{v}项）" for k,v in categories.items())+"。"
+    return {"status":status,"label":labels[status],"errors_total":len(errors),"pending_total":len(set(pending)),
+            "unresolved_categories":categories,"message":message,
+            "scope":"仅汇总实际校验状态；计算/回读成功与方案合法、可取得、可执行、满足目标分别判断。"}
 
 
 def final_review(specification, evidence, claims, observations, assessment):
@@ -351,7 +393,7 @@ def quest_rows(raw, name, classes=()):
         if not kind or not allowed_classes or not quest: continue
         rows.append({"acquisition": kind, "available_from_act": int(act), "quest": quest,
                      "npc": npc if kind == "vendor" else "Quest Reward", "class_ids": allowed_classes,
-                     "basis": "gem_quest_table"})
+                     "basis": "gem_quest_table", "source_excerpt":text_of(row)})
     return rows
 
 
@@ -395,7 +437,9 @@ def trial_facts(folder,context,game_version):
                 if not name or not level.isdigit(): continue
                 locations=locations.splitlines()
                 acts=[int(m[1]) for loc in locations if (m:=re.match(r"Act\s+(\d+)\s+\S",loc))]
-                found.append({"name":name,"trial_locations":locations,"observed_acts":acts,"area_level":int(level),"excerpt":text_of(row)})
+                excerpt=text_of(row)
+                found.append({"name":name,"trial_locations":locations,"observed_acts":acts,"area_level":int(level),"excerpt":excerpt,
+                              "evidence_template":web_template(page,excerpt)})
         bx.require(found,"未识别当前页面的试炼表结构。")
         result.update(status="source_checked",labyrinths=found)
     except (OSError,ValueError) as exc: result["reason"]="试炼依据未核实："+str(exc)
@@ -425,6 +469,9 @@ def gem_facts(gems, folder, context, game_version=None, classes=()):
         try:
             page = fetch(url, folder, context)
             rows = quest_rows(page["html"], page_name, classes)
+            for row in rows:
+                template=web_template(page,row["source_excerpt"])
+                row["evidence_templates"]=[template] if template else []
             result["source_game_version"] = page_version(page["html"])
             result["sources"].append(source_record(page, role="gem_quest_table"))
             if game_version and result["source_game_version"] != game_version:
@@ -434,6 +481,9 @@ def gem_facts(gems, folder, context, game_version=None, classes=()):
             else:
                 if general and (not game_version or page_version(general["html"]) == game_version) and not entry.get("special_variant") and not entry.get("vaal"):
                     extra = universal_rows(rows, general["html"], classes)
+                    for row in extra:
+                        template=web_template(general,row["condition"])
+                        if template: row["evidence_templates"]=row.get("evidence_templates",[])+[template]
                     if extra:
                         rows = [row for row in rows if not any(all(row[k] == extra_row[k] for k in ("acquisition", "quest", "npc", "available_from_act")) for extra_row in extra)] + extra
                         result["sources"].append(source_record(general, role="universal_vendor_rule"))
@@ -508,6 +558,7 @@ def version_fact(url, game_version, league, folder, context):
             result.update(status="source_observed", excerpt=passage[max(0, offset-110):offset+170],
                           article_heading=lines[0] if lines else "",
                           scope="官方正文中发现对应版本，命名与上下文仍须阅读核对；不代表所有机制已经验证。")
+            result["evidence_template"]=web_template(page,result["excerpt"])
         else:
             result["reason"] = "未找到同时支持所填版本/赛季的正文行，不能凭 URL 或页面标题认证。"
     except (OSError, ValueError) as exc:

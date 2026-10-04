@@ -38,4 +38,6 @@ start 返回原始 overview 与检查文件路径；`inspect --calculate` 返回
 
 失败返回 error 与 diagnostic；有 location 时先修对应 JSON 路径，input_file 指出源文件。native/capability 缺口不能通过填理由消除。不要盲目原样重试；输入问题修改源文件，平台/能力问题核实新信息。
 
+大结果用现有 --out 保存到任务工作区，再用 `view --file <结果.json> --pointer <JSON路径> --fields <直接字段名>` 按需读，具体示例见资料协议。delivery_brief 汇总全部缺口；stage_summary 和 errors 不能因为摘要中只显示部分 pending 而略过。
+
 配装使用 `status --run`，读取 candidate_records 的完整性、待办及源 plan/review 文件路径，按 next_actions 继续。开荒使用 `status --route-state <输出名.state.json>`，检查输入/输出/引擎是否一致；恢复重跑同一 route，已有效阶段自动复用，资料与模型判断重新核对。

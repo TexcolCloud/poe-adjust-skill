@@ -37,6 +37,18 @@ python $entry research --trials --out '<工作区>/trial-facts.json'
 - 完整升华目录可按 linked 与起点核对路径；完整单次查询另含 ascendancy_path/path_cost，截断页不认证整张图。授予天赋在 granted_passives；已在树上分配不能再算一份收益。anoint_recipe 按本机清单保留重复材料和本机译名，不猜固定配方。
 - research 保留原生事实与网页事实的不同范围。宝石 choices 是当前页面实际任务/NPC/章节/职业行，不代表角色已完成或国服无差异。试炼只返回观测位置/区域等级，不按表格顺序推导奖励点数、解锁或玩家进度。版本正文未确认即 unverified；历史链接只是查询种子，不能从赛季编号推算版本。
 
+research 同时给出真实原文模板：宝石在 choices[].evidence_templates，试炼在 labyrinths[].evidence_template，版本在 version_evidence.evidence_template。沿用返回的完整 url/excerpt/checked_at，补 evidence_id 和本次具体 subject，放入 plan/route.evidence；不要凭名称重拼 URL，尤其辅助宝石的来源页。模板证明实际读到了对应片段，领取、国服差异、成长和目标效果仍由模型评审。
+
+## 已保存 JSON 的按需读取
+
+```powershell
+python $entry view --file '<工作区>/catalog.json' --pointer '/entries' --fields 'skill_id,display_name,min_level,tags' --limit 8
+python $entry view --file '<工作区>/route.evidence.json' --pointer '/checked_route/stages/0/calculation' --fields 'status,errors,pending,stats,active_skills'
+python $entry view --file '<工作区>/gem-facts.json' --pointer '/gems/<实际ID>/choices' --limit 3
+```
+
+view 复用证据的 JSON pointer，数组按 offset/limit 翻页；fields 选择当前对象的直接字段，缺字段列在 missing_fields，零与false保持原值。不重新启动引擎或刷新网页，不改文件。先看目录概要、错误/缺口和所需来源模板，再进入某个实际对象或等级；无需另写 Python 读取片段。所选内容仍太大时继续缩小字段、行数或指针。只读获准任务工作区的普通结果文件，不能用于平台内部目录；PoECharm 原文使用 data。
+
 doctor/start 的指纹覆盖计算代码、数据、适配器和译名；data_version_basis 说明本机规则版本依据。version_source_hint 只是未核实的历史公告搜索线索，不证明当前赛季或用户区服；research --version 实际读取正文后才返回 version_evidence。软件版本相同但内容变化仍使旧结果失效。接口不兼容明确报告，不自动修改 PoECharm。操作只要求自己需要的能力，不以守护接口缺失否定职业目录。
 
 ## 本机原文只读查询

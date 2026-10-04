@@ -20,13 +20,15 @@ description_cn: 聊清目标，复用本机 PoECharm 设计配装或开荒路线
 - 查询对象、合法值、描述/机制或外部事实：读取 [资料协议](references/data.md)。先 catalog；缺信息再 data；国服当前规则、取得和行情联网核实。
 - 写 claims、usage、库存/报价或准备交付：读取 [证据协议](references/evidence.md)。首次可以先计算草案，依据返回的引用、规格和待办完善输入。
 
+开始写 intent/plan/route JSON 前，同时读取证据协议的对应字段。技能版本以本次 doctor/start 返回为准；不沿用记忆中的版本标签。
+
 ## 设计与完成
 
 1. 逐轮聊清实际目标、改动范围、预算/交易、保留项目、进度与操作负担。复用用户已表达的信息，缺什么才问什么。归纳 goal，并将各项实际要求写成有用户原话依据的 objectives；假设与建议放方案。重大职业/升华/主技能变更需要明确意图。
 2. 按目标选择场景、候选和比较方式。共同场景写 plan.scenario，候选差异写 operations.config；核对最终实际 config_values。查询描述解释机制，具体效果用完整角色计算。比较组合时整体复算，不相加单项收益。
-3. 配装 evaluate，开荒 route；根据实际错误和缺口修订源 JSON。每项 objective 对应实现、证据、条件、代价和未解决项。用本次 skill_ref、物资规格和 evidence_template，不自行重算摘要或猜引用。
-4. 阅读当前 review.json，逐项核对数字的技能/主体/阶段、因果、替代方案排除、切换条件和结论范围。数值说明使用 `{{value:native:candidate#/stats/Life}}` 等实际引用，由程序生成 rendered_text；自由文字仍由模型审查。修订后重算，再填写本次 assessment.review 的 token/findings/unresolved。
-5. 配装 export 最终复算；路线查看 state.file_exported。交付实际生成的 XML/HTML，最终回答使用同一 facts/facts_summary 与 rendered_text。blocked 交诊断，draft 明示缺口，scoped_result 说明所评审范围；文件完成和目标满足分别表述。
+3. 配装 evaluate，开荒 route。先读 delivery_brief、errors 和 stage_summary，已知矛盾先修；按 diagnostics.location/required_subject 修协议遗漏，按来源 reason 重新取真实片段，不能把可修复遗漏说成不可验证条件。每项 objective 对应 claim.subjects 中的 `objective:<id>`，解释实现、证据、条件和代价。用本次 skill_ref、物资规格及 evidence_template，不猜引用。
+4. 阅读当前 review.json，逐项核对数字的技能/主体/阶段、因果、替代方案排除、切换条件和结论范围。数值用 `{{value:native:candidate#/stats/Life}}` 等实际引用生成 rendered_text。若解释与原生值冲突，先用现有 inspect/data/probe 查主体和条件；单项影响不能冒充整体因果。未知保持未知，不无依据归咎引擎。修订重算后填写本次 assessment.review。
+5. 配装 export 最终复算；路线同时看 state.status/stage_summary 和 file_exported。直接交付生成文件并保留草案文件名，最终回答沿用 delivery_brief、facts_summary 与 rendered_text 的状态、全部缺口类别及事实。blocked 继续修正或交诊断；draft 明示未解决项和切换前条件；scoped_result 说明所评审范围。token、计算完成、回读和文件落盘各有自己的含义，不能作为目标全部达成的证明。
 
 ## 核验与恢复
 

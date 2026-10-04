@@ -1,6 +1,6 @@
 # POE 配装 skill：模型决策与程序校验的设计收束
 
-状态：2026-10-05 当前 2.3.0 / schema_version 2 已完成 129 项全量离线验证并安装，进入新动态任务实测。最近完整对话评分仍是 2.1.0 的角色 67/100、路线 54/100；程序回归不代替配装质量。当前用户授权持续迭代至今天中午 12:00，完成当时已开始的一轮再暂停。1.7.6 / `3dd76b5` 是下列审查清单的历史基准；活动命令以 skill 内按任务分流的参考文档为准，旧行号只用于追溯设计发现。
+状态：2026-10-05 2.4.0 基于2.3.0冻结首份交付实际问题完成通用反馈修改，138项完整离线通过并安装；新版实测待进行。2.3.0角色60/100、开荒49/100；离线129项通过不代表模型质量。当前用户授权持续迭代至今天中午12:00，完成已开始一轮再暂停。1.7.6 / `3dd76b5`是下列设计清单历史基准，活动协议以skill参考文档为准。
 
 用户要求每轮基于实际暴露问题修改、先离线通过再实机，并注重复用、泛化与维护。当前主线程执行与心跳恢复共享 WORKLOG.md 的轮次状态，不同时重复实验；验证与冻结证据见 TEST-REPORT.md。
 
@@ -103,9 +103,9 @@ ABI、原生结构或 XML 保存契约变化需要维护者更新适配器；新
 | [buildxml.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/buildxml.py) | 解析、结构校验、稳定引用、应用修改、保留扩展。保留明确的输入类型/操作字段，移出需要当前游戏数据才能判断的约束 |
 | [pob.lua](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/pob.lua) | 从已安装引擎读取能力、目录、原生事实、计算及保存结果，不选择流派、不判断用户偏好 |
 | [engine.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/engine.py) | 进程、发现、指纹、按操作检查契约、缓存与回读；不维护赛季玩法答案 |
-| [facts.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/facts.py) | 来源获取、片段/行/版本/时间记录及结构化匹配；解析失败与事实冲突分开 |
+| [facts.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/facts.py) | 来源获取、可复用原文模板、字段诊断和绑定评审；交付摘要汇总实际状态，不规定游戏目标 |
 | [resources.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/resources.py) | 每技能支付、当前原生频率、使用与恢复窗口；不能覆盖的混合时序保留缺口 |
-| [poe.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/poe.py) | 编排会话、用户约束、证据绑定、条件账目、导出状态与事实摘要。现有函数原位替换，不新增 policy engine |
+| [poe.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/poe.py) | 编排会话、用户约束、唯一装备差异计算、条件账目、按需结果读取、导出状态与事实摘要。现有函数原位替换，不新增 policy engine |
 | [routes.py](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/routes.py) | 阶段结构及原生约束检查、路线报告；不规定唯一阶段形状或必用过渡技能 |
 | [headless.lua](D:/CodingProjects/poe-adjust-skill/poe-adjust/scripts/headless.lua) | 保留只读原生运行封装；只有确需适配新接口才修改，不为策略改造复制启动器 |
 

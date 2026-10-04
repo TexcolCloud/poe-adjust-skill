@@ -87,7 +87,7 @@ def validate_group(group,stage,gems,library,compatibility,capacity,warnings,pend
 
 def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=None,*,bases=None,slots=None,evidence=None,claims=None):
     allowed={"schema_version","name","confirmed","goal","objectives","league","game_version","class_id","ascendancy","trade_mode","budget","version_source","scope","gems","stages","risks","notes","allow_minions","allow_mule","constraint_sources","evidence","claims","assessment","inventory","shopping"}
-    bx.require(isinstance(route,dict) and set(route)<=allowed,"路线含旧字段或未知字段；按 leveling.md 的 schema_version=2 迁移。")
+    bx.require_keys(route,allowed,"/","路线含旧字段或未知字段；按 leveling.md 的 schema_version=2 迁移。")
     bx.require(route.get("schema_version")==2 and route.get("confirmed") is True,"先确认路线方向，再使用 schema_version=2。")
     for key in ("name","goal","league","scope"):
         bx.require(isinstance(route.get(key),str) and route[key].strip(),"路线需要 "+key)
@@ -123,8 +123,9 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     if not data_version: pending.append("version:data")
     resolve_gem_levels(stages,gems)
     asc_nodes,paths=engine.ascendancy_paths(route["ascendancy"],nodes or []) if route.get("ascendancy") else ({},{})
-    for stage in stages:
-        bx.require(set(stage)<={"stage_id","name","level","act","completed_act","entry_conditions","entry_checks","weapon_setup","bases","skill_groups","gear","passives","ascendancy_points","ascendancy_nodes","resources","checks","transition","required_items","key_transition","snapshot"},"阶段存在旧策略字段或未知字段。")
+    for stage_index,stage in enumerate(stages):
+        stage_path=f"/stages/{stage_index}"
+        bx.require_keys(stage,{"stage_id","name","level","act","completed_act","entry_conditions","entry_checks","weapon_setup","bases","skill_groups","gear","passives","ascendancy_points","ascendancy_nodes","resources","checks","transition","required_items","key_transition","snapshot"},stage_path,"阶段存在旧策略字段或未知字段。")
         sid=stage.get("stage_id")
         bx.require(isinstance(sid,str) and sid and sid not in stage_ids,"stage_id 需要唯一且稳定。")
         stage_ids.add(sid)
@@ -132,7 +133,7 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
         if stage.get("key_transition") and not stage.get("snapshot"): pending.append("snapshot:"+sid)
         if "snapshot" in stage:
             snap=stage["snapshot"]
-            bx.require(isinstance(snap,dict) and set(snap)<={"template_xml","operations","assumptions","usage","metrics"},"snapshot 使用 template_xml/operations/assumptions/usage/metrics。")
+            bx.require_keys(snap,{"template_xml","operations","assumptions","usage","metrics"},stage_path+"/snapshot","snapshot 使用 template_xml/operations/assumptions/usage/metrics。")
             strings(snap.get("assumptions",[]),sid+" snapshot.assumptions",required=False)
             valid={c["claim_id"] for c in claims if c["status"]=="model_assessed" and "snapshot:"+sid in c["subjects"]}
             if not snap.get("assumptions") or not set(snap["assumptions"])<=valid: pending.append("snapshot_assumptions:"+sid)
@@ -234,14 +235,32 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     return result,list(dict.fromkeys(warnings))
 
 
-def render(route,warnings,engine_version,tree_version):
+def render(route,warnings,engine_version,tree_version,*,evidence_file=None):
     esc=lambda v:html.escape(str(v))
     bullets=lambda rows:"<ul>"+"".join("<li>"+esc(r)+"</li>" for r in rows)+"</ul>"
+    claims={c["claim_id"]:c for c in route["claims"]}
+    def judgment(key):
+        claim=claims.get(key,{})
+        return claim.get("rendered_text",claim.get("text",key))+" ["+claim.get("status","未找到判断")+"]"
+    brief=route.get("delivery_brief") or facts.delivery_brief(route.get("delivery_status","draft"),route.get("errors",[]),route["pending"])
+    labels={"blocked":"存在已知错误，不能按本快照执行","draft":"条件草案，依赖仍待核实","calculated":"原生计算完成，是否可执行仍看条件与评审",
+            "unsupported":"未完成原生计算","not_calculated":"未提供完整阶段快照，不报告精确效果"}
     sections=[]
     for stage in route["stages"]:
+        calculation=stage.get("calculation",{})
+        status=calculation.get("status","not_calculated")
         groups=[]
         for group in stage["skill_groups"]:
             links=" — ".join(g["name"]+f" {g['level']}/{g.get('quality',0)} ["+g["instance_id"]+"]" for g in group["gems"])
             groups.append(f"<h3>{esc(group['name'])} · {esc(group['slot'] or '未装备')}</h3><p>{esc(group['use'])}：{esc(links)}</p>")
-        sections.append(f"<section><h2>{esc(stage['name'])} [{esc(stage['stage_id'])}]</h2><p>等级 {esc(stage.get('level','未知'))} · 前往第 {esc(stage.get('act','未知'))} 章；已完成进度 {esc(stage.get('completed_act','未声明'))}</p><p>进入条件：{esc(', '.join(stage.get('entry_conditions',[])))}</p>{''.join(groups)}<p>所列宝石属性需求：{esc(stage['attribute_requirements'])}。实际装备效果见本阶段计算记录。</p>{bullets(stage['gear']+stage['passives']+stage['transition']+stage['checks'])}<p>{esc(stage.get('resources','资源使用安排尚未说明'))}</p><details><summary>本阶段物资与原生核对</summary><pre>{esc(json.dumps({'materials':stage.get('required_items',[]),'sockets':stage['socket_evidence'],'ascendancy_nodes':stage['ascendancy_allocated_nodes'],'calculation':stage.get('calculation',{'status':'not_calculated','scope':'未提供完整阶段快照，不报告精确效果'})},ensure_ascii=False,indent=2))}</pre></details></section>")
-    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(route['name'])}</title><style>body{{font:16px/1.7 system-ui;max-width:1050px;margin:auto;padding:28px;background:#f5f6f8;color:#202a38}}section{{background:white;margin:18px 0;padding:24px;border-radius:12px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}</style><h1>{esc(route['name'])}</h1><p>{esc(route.get('delivery_status','draft'))} · {esc(route['class_display_name'])} · {esc(route['ascendancy_display_name'])}</p><p>{esc(route['goal'])}</p><p>范围：{esc(route['scope'])}。这是一条有进入条件的路线；仅有 calculation 记录的阶段按所声明装备、技能、天赋与配置实算；其余阶段不报告精确效果。</p>{bullets(route['pending']+warnings)}{''.join(sections)}<section><h2>判断、来源与风险</h2>{bullets(route['risks']+route['notes'])}<pre>{esc(json.dumps({'claims':route['claims'],'evidence':route['evidence'],'facts':route.get('fact_evidence',{})},ensure_ascii=False,indent=2))}</pre></section><p>本机引擎 {esc(engine_version)}；天赋数据 {esc(tree_version)}。</p></html>'''
+        conditions=bullets([judgment(key) for key in stage["entry_conditions"]]) if stage.get("entry_conditions") else "<p>尚未评审进入条件。</p>"
+        stats="".join(f"<tr><td>{esc(key)}</td><td>{esc(format(value,'.10g') if type(value) in (int,float) else value if value is not None else '未知')}</td></tr>" for key,value in calculation.get("stats",{}).items())
+        numbers=f"<h3>当前条件下的原生数值</h3><table>{stats}</table><p>这些是实际装入对象的计算值。被忽略的装备/节点或未满足的需求见已知错误，不能把当前值当所声明完整配装已经生效。</p>" if stats else ""
+        material_rows=[f"{facts.material_ref(item)} ×{item['quantity']}：{item.get('acquisition','取得方式未定')} · {item.get('evidence_status','未核对')}" for item in stage.get("required_items",[])]
+        details={"sockets":stage["socket_evidence"],"ascendancy_nodes":stage["ascendancy_allocated_nodes"],
+                 **{k:v for k,v in calculation.items() if k in {"xml_path","config_values","readiness","material_specs","entry_checks","diagnostic"}}}
+        sections.append(f"<section><h2>{esc(stage['name'])} [{esc(stage['stage_id'])}]</h2><p><b>阶段校验：{esc(labels.get(status,status))}</b></p><p>等级 {esc(stage.get('level','未知'))} · 前往第 {esc(stage.get('act','未知'))} 章；已完成进度 {esc(stage.get('completed_act','未声明'))}</p><h3>已知错误</h3>{bullets(calculation.get('errors',[]))}<p>{esc(calculation.get('reason',''))}</p><h3>进入条件</h3>{conditions}{''.join(groups)}<p>所列宝石属性需求：{esc(stage['attribute_requirements'])}。实际装备效果见本阶段计算记录。</p>{numbers}{bullets(stage['gear']+stage['passives']+stage['transition']+stage['checks'])}<p>模型资源安排（未核实部分见缺口）：{esc(stage.get('resources','资源使用安排尚未说明'))}</p><h3>新增物资</h3>{bullets(material_rows)}<details><summary>本阶段待核实项与原生条件</summary>{bullets(calculation.get('pending',[]))}<pre>{esc(json.dumps(details,ensure_ascii=False,indent=2))}</pre></details></section>")
+    objectives=bullets([row["text"]+" ["+row["status"]+"]："+"；".join(judgment(key) for key in row["claim_ids"]) for row in route.get("objective_coverage",[])])
+    conclusions=bullets([judgment(key) for key in claims])
+    source=f'<p>完整数值、资料原文与引用索引：<a href="{esc(evidence_file)}">核对记录</a></p>' if evidence_file else ""
+    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(route['name'])}</title><style>body{{font:16px/1.7 system-ui;max-width:1050px;margin:auto;padding:28px;background:#f5f6f8;color:#202a38}}section{{background:white;margin:18px 0;padding:24px;border-radius:12px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}td{{padding:6px;border-bottom:1px solid #ddd}}</style><h1>{esc(route['name'])}</h1><p>{esc(brief['message'])} · {esc(route['class_display_name'])} · {esc(route['ascendancy_display_name'])}</p><p>{esc(route['goal'])}</p>{objectives}<p>范围：{esc(route['scope'])}。这是一条有进入条件的路线；仅有 calculation 记录的阶段按实际装入的装备、技能、天赋与配置实算；其余阶段不报告精确效果。计算完成不代表输入合法、物资取得或阶段就绪。</p><h2>已知错误</h2>{bullets(route.get('errors',[]))}<details><summary>全部待核实项与警告</summary>{bullets(route['pending']+warnings)}</details>{''.join(sections)}<section><h2>判断、来源与风险</h2>{bullets(route['risks']+route['notes'])}{conclusions}{source}</section><p>本机引擎 {esc(engine_version)}；天赋数据 {esc(tree_version)}。</p></html>'''

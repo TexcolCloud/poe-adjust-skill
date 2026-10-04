@@ -36,6 +36,8 @@ python '<技能目录>/scripts/poe.py' route --invoked --file '<工作区>/route
 
 route 自动分批读取当前宝石、连线、基底和完整升华目录，并核对证据。输出 HTML 及同名 `.evidence.json`。按照 pending 修订；最终 status 是 draft/scoped_result 或预算已知矛盾的 blocked。阶段是否实算以 calculation 及对应 XML/证据记录为准，路线状态不代替实算范围。用 TeleAgent 文件工具交付 HTML，简要说明范围和缺口；可解释已引用 claims，不另造一套收益数字。
 
+先读取返回的 errors、stage_summary 和 delivery_brief。阶段 `native_calculated:true` 仅证明计算完成，最终 `status:blocked` 仍有已知机械错误；先修到 errors 消失再把 XML 作为路线配装交付。unsupported 的 diagnostic.location/expected/actual 给具体字段；不要逐次猜协议。HTML 直接显示阶段校验、已知错误、原生数值及进入条件，完整资料留 evidence.json，按需读字段。
+
 顶层字段：
 
 | 字段 | 内容 |
@@ -104,6 +106,8 @@ assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[
 
 - `template_xml` 可选，指向真实角色模板；省略时复用当前原生职业空角色。程序生成内部 XML，不要求玩家先有角色，也不要手写最小 XML。
 - `operations` 复用配装协议的 items/equip/tree/config/main_group/weapon_set。角色等级与基础技能组来自本阶段。gems 仅补计数、技能部位等状态；groups 仅补 main_active_skill/include_in_full_dps/group_count，不能在快照偷偷换掉阶段列出的宝石、等级或位置。
+
+  例如 snapshot.operations.groups 使用 `{index:1,main_active_skill:1}`，组启用写 stage.skill_groups[].enabled；等级写 stage.level。职业/升华由路线和本阶段分配推导，不需要在快照重复填写。
 - `assumptions` 为 claim_id 数组，对应 claim.subjects 含 `snapshot:<stage_id>`。说明实际假设的装备词缀/孔连、天赋、操作和何时取得；资料只证明某物品存在时，不能说用户已经拥有。
 - `usage` 与配装协议相同，引用阶段实际 skill_ref；需要时先运行 route，读取该阶段 calculation.active_skills 后补全。
 - `metrics` 可选指标名数组。只取实际原生输出，不在当前结果中的指标保持未知。
@@ -113,6 +117,8 @@ assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[
 内部文件位于输出 HTML 同级 `<输出名>.calculations/<阶段摘要>/snapshot.xml` 和 evaluation.json；snapshot.json 保存已回读的阶段计算，输入/结果/文件摘要和实际引擎指纹一致才复用。`.state.json` 记录计算阶段与交付是否完成，失败后重跑同一 route 命令即可；损坏或失效的阶段重算，来源与判断仍重新核对。`calculation` 分开列明完整装备条件、数值、孔位/属性/天赋检查和资源缺口；没有完整输入或计算失败的阶段不生成虚构统计。现有模板遗留的装备/节点也会进入实算，核对它们是否属于本阶段。
 
 本阶段实际装备需与 bases 一致，具体物品及规格摘要需出现在截至此阶段的 required_items 中。程序在 calculation.material_specs 返回可直接引用的 item_id/spec_sha256/quantity，不必手工计算摘要。快照是条件规划，已回读不代表装备可得、剧情完成或目标达到。HTML 和 evidence.json 的状态仍取决于各阶段与来源缺口。
+
+所有实际基底从当前 catalog 查询，不只查武器；不能凭熟悉的名称造盔甲或靴。被引擎忽略的物品、未满足需求或丢失节点都是已知错误，不把忽略后的面板当完整假设成功。逐阶段核对环境配置和已完成进度；终点条件不能自动沿用到前面阶段。声明某任务可选奖励不代表同任务多颗奖励都免费；说明选择、商店费用和宝石成长的可执行路径。资料模板可以直接从 research 的 choices[].evidence_templates 取得，再关联具体实例和 claim。
 
 route 同时生成 `<输出名>.review.json`，集中列出每阶段事实、物资、引用及缺口。用同一 TeleAgent 模型核对数字/对象、因果、替代方案排除、进入条件和结论范围；在原 route.assessment.review 填 token/findings/unresolved 后重跑。格式和失效规则与配装相同。改动阶段、说明、来源或本机数据后旧复核失效，不自动将旧文本绑定新数值；完整交付以 state.file_exported 为准。
 

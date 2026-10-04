@@ -29,6 +29,14 @@ def require(condition, message, **details):
         raise ContractError(message, **details)
 
 
+def require_keys(value, allowed, location, message="包含未知字段。"):
+    """Report the contract at the failing object, rather than guessing a repair."""
+    require(isinstance(value, dict), "需要 JSON 对象。", location=location, expected="object", actual=type(value).__name__)
+    unknown = sorted(set(value) - set(allowed))
+    require(not unknown, message + " 未知：" + ", ".join(unknown), location=location,
+            expected=sorted(allowed), actual=unknown)
+
+
 def digest(data: bytes | str) -> str:
     return hashlib.sha256(data.encode("utf-8") if isinstance(data, str) else data).hexdigest()
 
@@ -161,8 +169,8 @@ def index_one(sequence, number, label):
     return sequence[number - 1]
 
 
-def update_gem(gem, values):
-    require(not (set(values) - set(GEM_FIELDS) - {"group", "index"}), "宝石修改包含未知字段。")
+def update_gem(gem, values, *, location="/gems"):
+    require_keys(values,set(GEM_FIELDS)|{"group","index"},location,"宝石修改包含未知字段。")
     if "skill_id" in values:
         require(isinstance(values["skill_id"], str) and values["skill_id"], "skill_id 不能为空。")
         for key in ("gemId", "variantId", "nameSpec"):
@@ -190,13 +198,12 @@ def update_group(group, values):
 
 def apply_plan(source, plan, native=None):
     allowed = {"schema_version", "name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "inventory", "assumptions", "migration_steps", "legality_notes", "scenario", "claims", "usage", "assessment", "evidence"}
-    require(not (set(plan) - allowed), "计划包含未知字段：" + ", ".join(sorted(set(plan) - allowed)))
+    require_keys(plan,allowed,"/","计划包含未知字段。")
     require(plan.get("mode") in {"refine", "rebuild"}, "mode 应为 refine 或 rebuild。")
     require(isinstance(plan.get("summary"), str) and plan["summary"].strip(), "请说明方案目的。")
     root = copy.deepcopy(source)
     operations = plan.get("operations", {})
-    require(isinstance(operations, dict), "operations 应是对象。")
-    require(not (set(operations) - {"gems", "groups", "replace_skills", "items", "equip", "tree", "level", "main_group", "config", "weapon_set"}), "operations 包含未知操作。")
+    require_keys(operations,{"gems", "groups", "replace_skills", "items", "equip", "tree", "level", "main_group", "config", "weapon_set"},"/operations","operations 包含未知操作。")
     build = root.find("Build")
     if "level" in operations:
         require(type(operations["level"]) is int and operations["level"] > 0, "level 应为正整数。")
@@ -208,23 +215,24 @@ def apply_plan(source, plan, native=None):
         parent = active_set(root, "Skills", "SkillSet", "activeSkillSet")
         for element in parent.findall("Skill"):
             parent.remove(element)
-        for data in new_groups:
-            require(not (set(data) - set(GROUP_FIELDS) - {"gems"}), "技能组包含未知字段。")
+        for group_index,data in enumerate(new_groups):
+            path=f"/operations/replace_skills/{group_index}"
+            require_keys(data,set(GROUP_FIELDS)|{"gems"},path,"技能组包含未知字段。")
             group = ET.SubElement(parent, "Skill", {"enabled": "true", "includeInFullDPS": "false", "mainActiveSkill": "1"})
             update_group(group,data)
             require(data.get("gems"), "每个新技能组都需要 gems。")
-            for values in data["gems"]:
+            for gem_index,values in enumerate(data["gems"]):
                 require(values.get("skill_id"), "新宝石需要 skill_id。")
                 gem = ET.SubElement(group, "Gem", {"level": "1", "quality": "0", "enabled": "true", "enableGlobal1": "true", "enableGlobal2": "false"})
-                update_gem(gem, values)
-    for data in operations.get("groups", []):
-        require(not (set(data) - set(GROUP_FIELDS) - {"index"}), "技能组修改包含未知字段。")
+                update_gem(gem, values,location=path+f"/gems/{gem_index}")
+    for group_index,data in enumerate(operations.get("groups", [])):
+        require_keys(data,set(GROUP_FIELDS)|{"index"},f"/operations/groups/{group_index}","技能组修改包含未知字段。")
         group = index_one(groups(root), data.get("index"), "技能组")
         update_group(group,data)
-    for data in operations.get("gems", []):
+    for gem_index,data in enumerate(operations.get("gems", [])):
         group = index_one(groups(root), data.get("group"), "技能组")
         gem = index_one(group.findall("Gem"), data.get("index"), "宝石")
-        update_gem(gem, data)
+        update_gem(gem, data,location=f"/operations/gems/{gem_index}")
     changed_item_ids = set()
     for data in operations.get("items", []):
         require(set(data) <= {"id", "text"}, "装备包含未知字段。")
@@ -316,6 +324,10 @@ def apply_plan(source, plan, native=None):
 
 def normal_item(text):
     return "\n".join(line.strip() for line in text.strip().splitlines() if line.strip())
+
+
+def item_texts(document):
+    return {int(item.get("id")):normal_item(text_item(item)) for item in document.findall("Items/Item")}
 
 
 def preserve_extensions(source, output):

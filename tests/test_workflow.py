@@ -813,6 +813,86 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_view_large_saved_json_reads_only_requested_rows_fields_without_engine(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'catalog.json'
+            poe.write_json(path,{'entries':[{'id':str(i),'cost':0,'active':False,'large_levels':'x'*20000} for i in range(5)]})
+            original=bx.digest(path.read_bytes());stdout=io.StringIO()
+            with patch.object(engine,'calculate',side_effect=AssertionError('view is read only')),redirect_stdout(stdout):
+                code=poe.main(['view','--file',str(path),'--pointer','/entries','--fields','id,cost,active','--limit','2','--offset','1'])
+            response=json.loads(stdout.getvalue())
+            self.assertEqual(code,0);self.assertEqual(response['total'],5);self.assertEqual(response['next_offset'],3)
+            self.assertEqual(response['value'][0],{'id':'1','cost':0,'active':False})
+            self.assertLess(len(stdout.getvalue()),2000);self.assertEqual(bx.digest(path.read_bytes()),original)
+
+    def test_view_missing_pointer_and_oversized_selection_do_not_return_fabricated_value(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'evidence.json';poe.write_json(path,{'large':'x'*20000})
+            for pointer in ('/missing','/large'):
+                stderr=io.StringIO()
+                with redirect_stderr(stderr):code=poe.main(['view','--file',str(path),'--pointer',pointer])
+                response=json.loads(stderr.getvalue());self.assertEqual(code,2);self.assertFalse(response['ok'])
+                self.assertNotIn('value',response)
+
+    def test_objective_id_cannot_replace_subject_and_diagnosis_names_field(self):
+        objectives=[{'objective_id':'custom','text':'User chosen goal','evidence_refs':['user']}]
+        claims=[{'claim_id':'objective:custom','subjects':['goal'],'status':'model_assessed'}]
+        rows,pending=facts.objective_coverage(objectives,{'user':{'kind':'user_statement','status':'user_declared'}},claims)
+        self.assertIn('objective:custom',pending)
+        self.assertEqual(rows[0]['required_subject'],'objective:custom')
+        self.assertEqual(rows[0]['diagnostics'][0]['location'],'/claims')
+        self.assertIn('subjects',rows[0]['diagnostics'][0]['message'])
+
+    def test_unresolved_source_diagnosis_keeps_claim_field_and_fetch_reason(self):
+        evidence={'source':{'kind':'web','status':'unresolved','reason':'HTTP Error 404'}}
+        rows=facts.assess_claims([{'claim_id':'a','text':'Conditional decision','subjects':['stage:custom'],'evidence_refs':['source']}],evidence)
+        diagnostic=rows[0]['diagnostics'][0]
+        self.assertEqual(diagnostic['location'],'/claims/0/evidence_refs')
+        self.assertEqual(diagnostic['reference'],'source')
+        self.assertIn('404',diagnostic['message'])
+
+    def test_delivery_brief_counts_all_gaps_including_late_objective_and_stage(self):
+        pending=['config:'+str(i) for i in range(30)]+['objective:later','stage:custom:material:item:1','capability:new_native_feature']
+        brief=facts.delivery_brief('draft',[],pending)
+        self.assertEqual(brief['pending_total'],33)
+        self.assertEqual(brief['unresolved_categories']['objective'],1)
+        self.assertEqual(brief['unresolved_categories']['material'],1)
+        self.assertEqual(brief['unresolved_categories']['capability'],1)
+        self.assertIn('草案',brief['label'])
+
+    def test_shared_equipment_changes_detect_same_id_new_spec_and_report_point_budgets(self):
+        original=bx.parse(SAMPLE);changed=copy.deepcopy(original)
+        changed.find('Items/Item').text+='\n+10 to maximum Life'
+        before={'nodes':[1,2],'gems':[],'equipped':[{'slot':'Boots','id':1,'base':'Iron Greaves','name':'Boots'}],'points':2,'ascendancy_points':0}
+        after={**copy.deepcopy(before),'nodes':[1,2,3,4],'points':3,'ascendancy_points':1}
+        changes=poe.equipment_changes(original,changed,before,after)
+        self.assertEqual(changes['changed_slots'],['Boots'])
+        self.assertFalse(changes['replaced_items'])
+        summary=poe.actual_changes(before,after,changes)
+        self.assertTrue(any('Boots' in row for row in summary))
+        self.assertTrue(any('普通天赋' in row and '2' in row and '3' in row for row in summary))
+        self.assertTrue(any('升华' in row and '0' in row and '1' in row for row in summary))
+
+    def test_snapshot_key_error_returns_exact_field_and_allowed_keys(self):
+        with self.assertRaises(bx.ContractError) as caught:
+            bx.require_keys({'index':1,'enabled':True},{'index','group_count'},'/stages/2/snapshot/operations/groups/0')
+        diagnostic=caught.exception.diagnostic
+        self.assertEqual(diagnostic['location'],'/stages/2/snapshot/operations/groups/0')
+        self.assertEqual(diagnostic['actual'],['enabled'])
+        self.assertEqual(diagnostic['expected'],['group_count','index'])
+
+    def test_research_returns_source_templates_using_observed_row_not_guessed_url(self):
+        raw='<title>Example Support - PoEDB</title><h5>Quest /1</h5><table><tr><td>7</td><td>Observed quest</td><td><i title="Quest Vendor"></i>Observed NPC</td><td>Witch</td></tr></table>'
+        record={'html':raw,'url':'https://poedb.tw/us/Example_Support','checked_at':'2026-10-04','sha256':'fixture'}
+        with patch.object(facts,'fetch',return_value=record):
+            result=facts.gem_facts({'SupportExample':{'skill_id':'SupportExample','name':'Example','tags':{'support':True}}},'.unused','fixture',classes=FACT_CLASSES)
+            template=result['SupportExample']['choices'][0]['evidence_templates'][0]
+            self.assertEqual(template['url'],record['url'])
+            self.assertIn(template['excerpt'],facts.text_of(raw))
+            declared={**template,'evidence_id':'observed','subject':'gem:SupportExample:1:0'}
+            resolved=facts.load_evidence([declared],ROOT/'.work','fixture')
+        self.assertEqual(resolved['observed']['status'],'source_observed')
+
     def test_objective_coverage_tracks_each_user_requirement(self):
         objectives=[{'objective_id':'recover','text':'停手恢复','evidence_refs':['user']},
                     {'objective_id':'easy','text':'减少操作','evidence_refs':['user']}]
@@ -1735,6 +1815,24 @@ class RealEngineTests(unittest.TestCase):
         item.update(active=False,unparsed=["Future unsupported modifier"])
         _,_,pending=poe.mechanical_issues(self.original,result,{})
         self.assertIn("item:"+str(item["id"])+":unparsed",pending)
+
+    def test_38_route_surfaces_stage_errors_and_never_labels_blocked_snapshot_ready(self):
+        route=route_fixture();route.update(class_id=3,ascendancy=None,gems={'Fireball':{}})
+        route['evidence']=[{'evidence_id':'user','kind':'user_statement','subject':'intent','text':'Offline fixture only'}]
+        route['stages']=[{'stage_id':'custom','name':'Diagnostic phase','level':12,'bases':{'Gloves':'Wool Gloves'},
+            'skill_groups':[{'name':'Fireball','slot':'Gloves','use':'fixture','gems':[{'instance_id':'one','skill_id':'Fireball','level':1,'quality':0}]}],
+            'snapshot':{'operations':{'items':[{'id':201,'text':'Rarity: NORMAL\nUnrecognized fixture base'}],'equip':[{'slot':'Gloves','item_id':201}],'main_group':1},'metrics':['Life']}}]
+        path=Path(self.temp.name)/'diagnostic-route.json';output=path.with_suffix('.html');poe.write_json(path,route)
+        with patch.object(facts,'gem_facts',return_value={}):response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        self.assertEqual(response['status'],'blocked')
+        self.assertTrue(response['errors'])
+        self.assertEqual(response['stage_summary'][0]['status'],'blocked')
+        state=poe.read_json(output.with_suffix('.state.json'))
+        self.assertEqual(state['stages']['custom']['status'],'blocked')
+        self.assertTrue(state['stages']['custom']['native_calculated'])
+        html=output.read_text(encoding='utf8')
+        self.assertIn('已知错误',html)
+        self.assertIn(response['errors'][0].split('：',1)[-1],html)
 
     def test_38_native_default_omission_is_equivalent_but_real_changes_fail(self):
         document=copy.deepcopy(self.original)
