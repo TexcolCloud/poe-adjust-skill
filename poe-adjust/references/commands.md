@@ -65,7 +65,7 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 
 一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的 `level_requirements`（gem_level/character_level/strength/dexterity/intelligence）、`min_level`、`special_variant`、`vaal`，开荒时据此核对等级与属性，而非猜测。
 
-`classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 compatible/incompatible。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
+`classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 valid、errors、compatible/incompatible。未知 ID 或主辅位置错误只使该条查询无效，不中断整批；必须处理 errors，不能把空 incompatible 当作通过。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
 
 批量查询和较大的单项查询使用 `--out` 保存到当前任务工作区，命令仅返回文件路径和每项条数；单项完整结果在 entries，批量在 queries[].entries。未指定 --out 且超过 12000 字符时会提示重新指定，完整结果不会截断后冒充齐全。用 `Get-Content -Raw -Encoding UTF8 '<结果.json>' | ConvertFrom-Json` 后选择相关 queries、宝石或字段输出，避免一次读取整个大文件触发 TeleAgent 的工具输出目录授权。输出路径不得与输入 XML/queries.json 相同。
 

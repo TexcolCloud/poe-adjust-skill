@@ -395,6 +395,9 @@ class RouteTests(unittest.TestCase):
         links = {"ShieldCrush": {"incompatible": ["SupportGreaterMultipleProjectiles"]}}
         with self.assertRaisesRegex(ValueError, "以下辅助不支持"):
             routes.validate(self.route, self.gems, "3.29", classes, links)
+        links["ShieldCrush"] = {"incompatible": [], "errors": ["Fixture native query failure"], "valid": False}
+        with self.assertRaisesRegex(ValueError, "原生连线查询无效"):
+            routes.validate(self.route, self.gems, "3.29", classes, links)
 
     def test_route_enforces_recorded_acquisition_chapter_class_and_player_preferences(self):
         acquisition = self.route["gems"]["ShieldCrush"]
@@ -1009,10 +1012,20 @@ class RealEngineTests(unittest.TestCase):
         result = engine.calculate(self.pob, queries=[{"kind": "links", "query": query, "limit": 1},
                                                    {"kind": "classes", "query": "Duelist", "limit": 1},
                                                    {"kind": "classes", "query": "Templar", "limit": 1},
-                                                   {"kind": "nodes", "query": "39790", "limit": 1}])
+                                                   {"kind": "nodes", "query": "39790", "limit": 1},
+                                                   {"kind": "links", "query": "Fireball,FreezingPulse", "limit": 1},
+                                                   {"kind": "links", "query": "SupportMeleePhysicalDamage,NonexistentFixture", "limit": 1},
+                                                   {"kind": "links", "query": "", "limit": 1},
+                                                   {"kind": "gems", "query": "id:Fireball", "limit": 1}])
         links = result["catalog_batch"][0]["entries"][0]
         self.assertEqual(links["compatible"], ["SupportMeleePhysicalDamage"])
         self.assertEqual(links["incompatible"], ["SupportGreaterMultipleProjectiles"])
+        self.assertFalse(links["valid"])
+        invalid = [query["entries"][0] for query in result["catalog_batch"][4:7]]
+        self.assertTrue(all(not entry["valid"] and entry["errors"] for entry in invalid))
+        self.assertIn("Expected support gem: FreezingPulse", invalid[0]["errors"])
+        self.assertEqual(len(invalid[1]["errors"]), 2)
+        self.assertEqual(result["catalog_batch"][7]["entries"][0]["skill_id"], "Fireball")
         self.assertIn("Champion", [a["name"] for a in result["catalog_batch"][1]["entries"][0]["ascendancies"]])
         templar = result["catalog_batch"][2]["entries"][0]
         self.assertEqual(templar["name_cn"], "圣堂武僧")

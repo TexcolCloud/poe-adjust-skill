@@ -106,6 +106,7 @@ def validate_group(group, stage, gems, library, compatibility, capacity, warning
         if compatibility is not None:
             checked = compatibility.get(",".join(ids))
             bx.require(checked, label + "缺少原生辅助兼容性结果。")
+            bx.require(not checked.get("errors"), label + "原生连线查询无效：" + "; ".join(checked.get("errors", [])))
             bx.require(not checked["incompatible"], label + "以下辅助不支持该组主技能：" + ", ".join(checked["incompatible"]))
     return used
 

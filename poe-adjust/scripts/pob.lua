@@ -258,23 +258,28 @@ local function queryCatalog(kind, query, limit)
   elseif kind == "links" then
     local ids = {}
     for id in string.gmatch(query or "", "[^,%s]+") do table.insert(ids, id) end
-    assert(#ids >= 1 and #ids <= 6, "links query needs main skill ID and up to five supports")
-    local main = assert(data.skills[ids[1]], "Unknown main skill: " .. ids[1])
-    assert(not main.support, "Main skill must be active")
-    local supports = {}
+    local errors, supports = {}, {}
+    if #ids < 1 or #ids > 6 then table.insert(errors, "links query needs main skill ID and up to five supports") end
+    local main = ids[1] and data.skills[ids[1]]
+    if not main then table.insert(errors, "Unknown main skill: " .. tostring(ids[1]))
+    elseif main.support then table.insert(errors, "Main skill must be active: " .. ids[1]) end
     for i = 2, #ids do
-      local skill = assert(data.skills[ids[i]], "Unknown support: " .. ids[i])
-      assert(skill.support, "Expected support gem: " .. ids[i])
-      table.insert(supports, {grantedEffect = skill})
+      local skill = data.skills[ids[i]]
+      if not skill then table.insert(errors, "Unknown support: " .. ids[i])
+      elseif not skill.support then table.insert(errors, "Expected support gem: " .. ids[i])
+      else table.insert(supports, {grantedEffect = skill}) end
     end
-    local active = build.calcsTab.calcs.createActiveSkill({grantedEffect = main, gemData = data.gems[data.gemForSkill[ids[1]]]}, supports, build.calcsTab.mainEnv.player)
     local compatible, incompatible = {}, {}
-    for _, support in ipairs(supports) do
-      local found = false
-      for _, effect in ipairs(active.effectList) do if effect == support then found = true end end
-      table.insert(found and compatible or incompatible, support.grantedEffect.id)
+    if #errors == 0 then
+      local active = build.calcsTab.calcs.createActiveSkill({grantedEffect = main, gemData = data.gems[data.gemForSkill[ids[1]]]}, supports, build.calcsTab.mainEnv.player)
+      for _, support in ipairs(supports) do
+        local found = false
+        for _, effect in ipairs(active.effectList) do if effect == support then found = true end end
+        table.insert(found and compatible or incompatible, support.grantedEffect.id)
+      end
     end
-    table.insert(entries, {id = query, skill_id = ids[1], compatible = compatible, incompatible = incompatible,
+    table.insert(entries, {id = query, skill_id = ids[1], compatible = compatible, incompatible = incompatible, errors = errors,
+      valid = #errors == 0 and #incompatible == 0,
       scope = "Native skill-type compatibility only; excludes actual equipment, trigger level/cooldown, resources and damage conversion."})
   elseif kind == "classes" then
     for _, class in ipairs(result.classes) do
