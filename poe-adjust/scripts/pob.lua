@@ -38,6 +38,7 @@ local function scalarTable(tbl)
   return values
 end
 local result = {stats = scalarTable(output), minion = scalarTable(output.Minion), warnings = {}, gems = {}, equipped = {}, nodes = {}, errors = {}}
+if output.Minion then result.stats.MinionCombinedDPS = output.Minion.CombinedDPS end
 result.resource_rules = {energy_shield_protects_mana = build.calcsTab.mainEnv.modDB:Flag(nil, "EnergyShieldProtectsMana") or false}
 result.level = build.characterLevel
 result.class = build.spec.curClassName
@@ -58,6 +59,27 @@ table.sort(result.classes, function(a,b) return a.id < b.id end)
 result.main_group = build.mainSocketGroup
 result.main_skill = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.id
 result.main_skill_name = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.name
+-- Keep the native Full DPS contributors and each active skill's operating context.
+-- A scalar-only output loses this distinction for minions, mirages and triggers.
+result.damage_sources, result.active_skills = {}, {}
+for _, row in ipairs(output.SkillDPS or {}) do table.insert(result.damage_sources, scalarTable(row)) end
+local mainEnv = build.calcsTab.mainEnv
+local costKeys = {"ManaCost", "LifeCost", "ESCost", "ManaPerSecondCost", "LifePerSecondCost", "ESPerSecondCost", "Cooldown", "Speed", "SkillTriggerRate"}
+for _, skill in ipairs(mainEnv.player.activeSkillList) do
+  local cached = GlobalCache.cachedData[mainEnv.mode][cacheSkillUUID(skill, mainEnv)]
+  local computed = cached and cached.Env.player.mainSkill or skill
+  local costs = {}
+  for _, key in ipairs(costKeys) do costs[key] = cached and cached.Env.player.output[key] or nil end
+  local groupIndex
+  for index, group in ipairs(build.skillsTab.socketGroupList) do if skill.socketGroup == group then groupIndex = index; break end end
+  table.insert(result.active_skills, {id = skill.activeEffect.grantedEffect.id, name = skill.activeEffect.grantedEffect.name,
+    group = groupIndex, slot = skill.socketGroup and skill.socketGroup.slot,
+    is_main = skill == mainEnv.player.mainSkill, disabled = computed.skillFlags.disable or false,
+    minion = computed.skillFlags.minion or false, trigger = computed.infoTrigger,
+    info = computed.infoMessage, info_secondary = computed.infoMessage2,
+    generals_cry = computed.skillData.triggeredByGeneralsCry or false,
+    costs = scalarTable(costs)})
+end
 result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet
 result.config_keys = {}
 for _, entry in ipairs(LoadModule("Modules/ConfigOptions")) do
@@ -77,6 +99,7 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
     table.sort(supported)
     table.insert(result.gems, {group = groupIndex, index = gemIndex, id = gem.skillId, name = gem.nameSpec,
       enabled = gem.enabled, group_enabled = group.enabled, slot = group.slot, source = group.source, level = gem.level, quality = gem.quality,
+      count = gem.count or 1, group_count = group.groupCount or 1,
       max_base_level = gem.gemData and ((gem.gemData.naturalMaxLevel or 20) + 1),
       color = grantedEffect and ({"R", "G", "B", "W"})[grantedEffect.color] or "W",
       support = grantedEffect and grantedEffect.support or false,

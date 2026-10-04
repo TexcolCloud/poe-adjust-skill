@@ -18,9 +18,9 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 METRICS = {
-    "CombinedDPS": "主技能综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
+    "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
     "LifeRegenRecovery": "生命秒回", "ManaRegenRecovery": "魔力秒回",
     "EnergyShieldRegenRecovery": "能量护盾秒回", "EnergyShieldRecharge": "能量护盾充能速率（需启动充能）",
@@ -166,7 +166,7 @@ def active_slot(name, result):
 
 
 def active_gems(result):
-    return [gem for gem in result["gems"] if gem.get("enabled") and gem.get("group_enabled") and active_slot(gem.get("slot", ""), result)]
+    return [gem for gem in result.get("gems", []) if gem.get("enabled") and gem.get("group_enabled") and active_slot(gem.get("slot", ""), result)]
 
 
 def release_inactive_sockets(document):
@@ -305,19 +305,47 @@ def readiness(result, intent, plan):
     if duration is not None:
         bx.require(type(duration) in (int, float) and math.isfinite(duration) and duration > 0, "burst_seconds 应为有限正数。")
     eb = result.get("resource_rules", {}).get("energy_shield_protects_mana", False)
+    active = [skill for skill in result.get("active_skills", []) if not skill.get("disabled")]
+    automatic = [skill for skill in active if not skill.get("is_main") and skill.get("trigger") and skill.get("costs", {}).get("SkillTriggerRate", 0) > 0]
+    mirage_main = any(skill.get("is_main") and skill.get("generals_cry") for skill in active)
+    multiplied = [gem for gem in active_gems(result) if not gem.get("support") and max(gem.get("count", 1), gem.get("group_count", 1)) > 1]
+    if multiplied:
+        count_evidence = plan.get("config_evidence", {}).get("skill_counts")
+        if not isinstance(count_evidence, str) or not count_evidence.strip():
+            errors.append("多个召唤物/重叠技能数量需要 config_evidence.skill_counts：逐组说明可维持数量、取得/施放速率与持续时间，不能直接填理论上限抬高 Full DPS。")
+        warnings.append("Full DPS 使用了手动设置的多实例数量，实际覆盖依赖 skill_counts 中的依据；查看报告分项，不能把数量视为引擎已证明可维持。")
+    if any(skill.get("generals_cry") for skill in active):
+        evidence = plan.get("config_evidence", {}).get("generals_cry")
+        if not isinstance(evidence, str) or not evidence.strip():
+            errors.append("将军之吼方案需要 config_evidence.generals_cry：说明尸体取得、战吼触发/冷却、幻影数量及玩家自身回复来源；幻影攻击不等于本人攻击。")
+        corpse_sources = [skill for skill in active if skill["id"] in {"Desecrate", "Unearth", "CorpseWalk"}]
+        if not corpse_sources and mode == "steady":
+            errors.append("将军之吼缺少已装入的稳定尸体生成技能（亵渎/亵渎之矛/装备给予的 Corpse Walk）；怪物尸体不能保证无小怪首领启动。补齐来源，特殊外部来源须用 conditional 并在 generals_cry 依据中解释。")
+        warnings.append("将军之吼按幻影攻击计算；尸体生成、接近目标和战吼循环会影响实际覆盖，不能描述成本人无条件自动施放。")
+    if automatic:
+        warnings.append("持续消耗额外计入启用的自动触发技能：" + "、".join(skill.get("display_name", skill["name"]) for skill in automatic) + "。")
+    if any(not skill.get("is_main") and not skill.get("trigger") and any(skill.get("costs", {}).get(key, 0) > 0 for key in ("ManaCost", "LifeCost", "ESCost")) for skill in active):
+        warnings.append("主技能与已识别自动触发的持续消耗已核对；位移、手动诅咒、尸体生成或补召唤的额外频率未自动假定。按 active_skills 的单次消耗留出余量，不能将该结果当作所有技能同时满速的续航。")
     for resource, cost_key, label in (("Mana", "Mana", "魔力"), ("Life", "Life", "生命"), ("EnergyShield", "ES", "能量护盾")):
         cost = stats.get(cost_key + "PerSecondCost", 0)
         single = stats.get(cost_key + "Cost", 0)
+        automatic_cost = sum(skill.get("costs", {}).get(cost_key + "PerSecondCost", 0) for skill in automatic)
+        cost += automatic_cost
+        single = max([single] + [skill.get("costs", {}).get(cost_key + "Cost", 0) for skill in automatic])
         raw_regen = stats.get(resource + "RegenRecovery", 0)
         regen = stats.get("Net" + resource + "Regen", raw_regen)
-        leech = stats.get(resource + "LeechGainRate", 0)
+        native_leech = stats.get(resource + "LeechGainRate", 0)
+        leech = 0 if mirage_main else native_leech
+        if mirage_main and native_leech:
+            warnings.append(f"将军之吼主技能面板的{label}吸取/击回 {native_leech:.1f}/秒属于幻影攻击，未计作玩家自身回复；另行使用本人攻击时需核实其命中与频率。")
         pool = stats.get(resource + "Unreserved", stats.get(resource, 0))
         recharge = 0
         if resource == "Mana" and eb:
             single = 0
         if resource == "EnergyShield":
             pool = min(pool, stats.get("EnergyShieldRecoveryCap", pool))
-            if eb: single += stats.get("ManaCost", 0)
+            if eb:
+                single += max([stats.get("ManaCost", 0)] + [skill.get("costs", {}).get("ManaCost", 0) for skill in automatic])
             if cost <= 0 and single <= 0 and regen >= 0:
                 continue
             safe_eb_recharge = eb and not stats.get("TotalBuildDegen", 0) and not any(stats.get(key, 0) for key in ("sharedMindOverMatter", "PhysicalMindOverMatter", "FireMindOverMatter", "ColdMindOverMatter", "LightningMindOverMatter", "ChaosMindOverMatter"))
@@ -335,13 +363,14 @@ def readiness(result, intent, plan):
                 warnings.append("能盾充能未计入持续回复；伤害可能打断充能。需要条件计算时用 conditional，并在 config_evidence.energy_shield_recharge 说明启动、打断与覆盖依据。")
         net = cost - regen - leech - recharge
         if single > 0 and (pool < single or resource == "Life" and pool <= single):
-            errors.append(f"可用{label} {pool:.1f} 不能支付主技能单次消耗 {single:.1f}。")
+            errors.append(f"可用{label} {pool:.1f} 不能支付主技能/自动触发技能的单次消耗 {single:.1f}。")
         record = {"resource": label, "pool": pool, "cost_per_second": cost, "regeneration": regen, "raw_regeneration": raw_regen, "leech_on_hit": leech, "recharge": recharge,
+                  "automatic_cost_per_second": automatic_cost, "native_leech_on_hit": native_leech,
                   "net_cost": net, "sustainable_while_hitting": net <= 0.01,
                   "seconds_without_hits": max(pool - (1 if resource == "Life" else 0), 0) / (cost - regen - recharge) if cost > regen + recharge else None}
         if net > 0.01:
             record["maximum_burst_seconds"] = max(pool - (1 if resource == "Life" else 0), 0) / net
-            message = f"主技能满速施放每秒消耗{label} {cost:.1f}，扣除自身持续伤害后净秒回 {regen:.1f}、命中吸取 {leech:.1f}、计入充能 {recharge:.1f}，净缺口 {net:.1f}；不能持续满速使用。"
+            message = f"主技能满速及已识别自动触发每秒消耗{label} {cost:.1f}，扣除自身持续伤害后净秒回 {regen:.1f}、命中吸取 {leech:.1f}、计入充能 {recharge:.1f}，净缺口 {net:.1f}；不能持续满速使用。"
             if intent.get("resource_mode", "sustained") == "sustained":
                 errors.append(message + "请修复续航。只有用户明确接受爆发/停手玩法时才改用 resource_mode=burst。")
             elif duration is None or duration > record["maximum_burst_seconds"]:
@@ -355,7 +384,8 @@ def readiness(result, intent, plan):
             warnings.append(f"{label}续航依赖命中吸取；空挥、无敌阶段和转场不保证满速持续。")
         resources.append(record)
     return {"errors": errors, "warnings": warnings, "unused_points": unused,
-            "conditions": {"mode": mode, "guard_active": guard, "active_flasks": flasks}, "resources": resources}
+            "conditions": {"mode": mode, "guard_active": guard, "active_flasks": flasks}, "resources": resources,
+            "automatic_costs": automatic}
 
 
 def material_requirements(original, document, before, after):
@@ -640,9 +670,25 @@ def report_html(state, outcome):
     resources = []
     for item in audit.get("resources", []):
         note = f"{item['resource']}：每秒消耗 {item['cost_per_second']:.2f}，扣除自身持续伤害后净秒回 {item['regeneration']:.2f}，命中吸取 {item['leech_on_hit']:.2f}，计入充能 {item.get('recharge', 0):.2f}。"
+        if item.get("automatic_cost_per_second"):
+            note += f"其中自动触发额外消耗 {item['automatic_cost_per_second']:.2f}/秒。"
         if item.get("maximum_burst_seconds") is not None:
             note += f"静态净消耗估算最多连续 {item['maximum_burst_seconds']:.2f} 秒；不代表可持续。"
         resources.append(note)
+    active_skill_rows = []
+    for skill in outcome["result"].get("active_skills", []):
+        if skill.get("disabled"): continue
+        costs = skill.get("costs", {})
+        active_skill_rows.append("<tr>" + "".join("<td>" + esc(value) + "</td>" for value in (
+            skill.get("display_name", skill["name"]), "主技能" if skill.get("is_main") else "其他启用技能",
+            skill.get("trigger") or skill.get("info") or "按操作说明使用",
+            " / ".join(f"{costs[key]:g}" if key in costs else "—" for key in ("ManaCost", "LifeCost", "ESCost")))) + "</tr>")
+    skill_table = '<h3>主动技能与单次资源</h3><p>单次消耗依次为魔力 / 生命 / 直接能盾；EB 会改变实际支付池。表格不把手动技能全部假定为同时满速使用。</p><table><tr><th>技能</th><th>作用</th><th>引擎触发/使用信息</th><th>单次消耗</th></tr>' + ''.join(active_skill_rows) + '</table>'
+    damage_rows = []
+    for source in outcome["result"].get("damage_sources", []):
+        damage_rows.append("<tr>" + "".join("<td>" + esc(value) + "</td>" for value in (
+            source.get("display_name", source.get("name", "")), source.get("count", 1), f"{source.get('dps',0):,.1f}", source.get("skillPart", ""), source.get("trigger", ""))) + "</tr>")
+    damage_table = ('<h3>原生 Full DPS 分项</h3><p>仅包含 XML 中勾选计入总伤害的技能，数量与覆盖须结合实际玩法。主技能综合 DPS 不是所有已装技能的总和。</p><table><tr><th>技能/来源</th><th>计入数量</th><th>分项 DPS</th><th>技能部分</th><th>触发</th></tr>' + ''.join(damage_rows) + '</table>') if damage_rows else '<p>本方案没有原生 Full DPS 分项；不要把主技能面板解释为所有已装技能的总伤害。</p>'
     scenario = json.dumps(intent["scenario"], ensure_ascii=False)
     changes = json.dumps(plan.get("operations", {}), ensure_ascii=False, indent=2)
     condition_notes = json.dumps(plan.get("config_evidence", {}), ensure_ascii=False, indent=2)
@@ -660,7 +706,7 @@ def report_html(state, outcome):
 <section><h2>前后对比</h2><p>原角色：{esc(state.get('baseline_label','用户导入角色'))}；候选：{esc(outcome['result']['main_skill_name'])}。总 DPS 只汇总勾选计入的技能，不能代替实际刷图速度。</p>{baseline_note}<table><thead><tr><th>指标</th><th>原方案</th><th>新方案</th><th>变化</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
 <section><h2>技能与插槽安排</h2><p>按下列顺序镶嵌，连线以 XML 中装备为准。3.29 允许宝石插入不同颜色的普通孔；颜色匹配时有品质加成。表内品质加成为本机按孔位计算的部分，其他装备或辅助的品质影响以 PoECharm 最终面板为准。</p><table><tr><th>位置与顺序</th><th>宝石</th><th>基础等级 / 品质</th><th>匹配孔色加成</th><th>状态</th></tr>{''.join(skill_rows)}</table></section>
 <section><h2>购买与准备</h2><p>已列成本：{b['low']:g}–{b['high']:g} {esc(b['currency'])}。待核实项目未计入这个范围；原 XML 也不代表游戏仓库盘点。</p><h3>程序从前后 XML 检测到的物品准备</h3>{listing(materials)}<h3>采购、制作和其他步骤</h3>{listing(shopping)}{crafted_note}<h2>切换顺序</h2>{listing(plan.get('migration_steps',[]))}</section>
-<section><h2>计算条件与待核实项</h2><p>{esc(condition_summary)}</p><p>共同场景：<code>{esc(scenario)}</code></p>{listing(resources)}{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
+<section><h2>计算条件与待核实项</h2><p>{esc(condition_summary)}</p><p>共同场景：<code>{esc(scenario)}</code></p>{listing(resources)}{skill_table}{damage_table}{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
 <section><h2>资料依据</h2><ul>{''.join(sources)}</ul><details><summary>具体改动及条件依据</summary><pre>{esc(changes)}</pre><pre>{esc(condition_notes)}</pre></details></section>
 <section><h2>如何使用</h2><p>在 PoECharm 中打开同目录的“改进配装.xml”，核对当前主技能、装备与天赋；按照上面的准备顺序在游戏内调整。它不会修改服务器角色。</p></section></html>'''
 
@@ -701,7 +747,8 @@ def probe(args):
     original = bx.read_document(run / "original.xml")
     before = read_json(run / "baseline.json")
     rows = []
-    keys = ("CombinedDPS", "FullDPS", "HitChance", "Life", "EnergyShield", "ManaCost", "ManaPerSecondCost", "ManaRegenRecovery", "ManaLeechGainRate", "LifePerSecondCost", "LifeRegenRecovery", "LifeLeechGainRate", "ESCost", "ESPerSecondCost", "EnergyShieldRegenRecovery", "EnergyShieldLeechGainRate", "NetLifeRegen", "NetEnergyShieldRegen")
+    keys = ("CombinedDPS", "MinionCombinedDPS", "FullDPS", "HitChance", "Life", "EnergyShield", "ManaCost", "ManaPerSecondCost", "ManaRegenRecovery", "ManaLeechGainRate", "LifePerSecondCost", "LifeRegenRecovery", "LifeLeechGainRate", "ESCost", "ESPerSecondCost", "EnergyShieldRegenRecovery", "EnergyShieldLeechGainRate", "NetLifeRegen", "NetEnergyShieldRegen")
+    dps_metric = "MinionCombinedDPS" if any(skill.get("is_main") and skill.get("minion") for skill in baseline.get("active_skills", [])) else "CombinedDPS"
     for skill_id, document, result in zip(ids, documents, calculations[1:]):
         errors, warnings = mechanical_issues(document, result, state["intent"])
         errors.extend(check_constraints(original, document, before, result, state["intent"], outcome["plan"]))
@@ -711,7 +758,7 @@ def probe(args):
         gem = next(gem for gem in result["gems"] if gem["group"] == args.group and gem["index"] == args.index)
         rows.append({"skill_id": skill_id, "name": gem.get("display_name", gem.get("name")), "level": gem.get("level"), "quality": gem.get("quality"),
                      "stats": {key: result["stats"].get(key) for key in keys},
-                     "dps_delta": result["stats"].get("CombinedDPS", 0) - baseline["stats"].get("CombinedDPS", 0),
+                     "dps_metric": dps_metric, "dps_delta": result["stats"].get(dps_metric, 0) - baseline["stats"].get(dps_metric, 0),
                      "errors": list(dict.fromkeys(errors)), "warnings": list(dict.fromkeys(warnings))})
     return {"status": "screened", "baseline": {key: baseline["stats"].get(key) for key in keys}, "alternatives": rows,
             "next": "这是同一配装中单个宝石的比较，不改文件。结合清图/首领、资源和操作选取，不只取最高 DPS。选定后写回完整 plan 并重新 evaluate/export；获取成本及最终 XML 回读尚未在此验证。"}
@@ -736,16 +783,21 @@ def export(args):
     state["updated_at"] = now()
     write_json(run / "run.json", state)
     stats = verification["stats"]
+    damage_keys = ("MinionCombinedDPS", "FullDPS") if any(skill.get("is_main") and skill.get("minion") for skill in verification.get("active_skills", [])) else ("CombinedDPS",)
     user_summary = [f"配装 XML 已通过本机 PoECharm 计算及保存回读。目标：{state['intent']['league']} / {state['intent']['game_version']}。",
-                    "当前计算场景下：" + "；".join(f"{METRICS[key]} {stats[key]:,.1f}" for key in ("CombinedDPS", "Life", "EnergyShield", "HitChance", "ChaosResist") if key in stats) + "。"]
+                    "当前计算场景下：" + "；".join(f"{METRICS[key]} {stats[key]:,.1f}" for key in damage_keys + ("Life", "EnergyShield", "HitChance", "ChaosResist") if key in stats) + "。"]
     if outcome.get("comparison_notes"):
         user_summary.append("前后计算存在条件或有效性差异，不提供同条件提升百分比；原面板仅供诊断，比较限制见说明。")
+    user_summary.append("DPS 已包含引擎的命中计算。以上是当前主技能口径，其他技能的贡献见说明中实际计入的 Full DPS 分项；实战操作与机制覆盖仍需核实。")
     if outcome["budget"]["status"] in {"unknown", "estimate"}:
         user_summary.append("国服完整采购成本尚未核实，不能承诺预算内买齐。先备齐核心装备和宝石，再按说明切换。")
     if any(resource.get("leech_on_hit", 0) for resource in outcome["readiness"]["resources"]):
         user_summary.append("吸取回复依赖命中；空挥、无敌阶段与转场的续航请看说明中的资源明细。")
+    if any(skill.get("is_main") and skill.get("generals_cry") for skill in verification.get("active_skills", [])):
+        user_summary.append("此方案由将军之吼幻影攻击，依赖尸体来源与战吼循环；幻影吸取未计入玩家回复。")
+    user_summary.append("先打开“配装说明.html”查看准备与切换顺序，再在 PoECharm 中打开“改进配装.xml”。这是规划文件，原角色保持不变。")
     return {"status": "exported", "files": [str(output / "改进配装.xml"), str(output / "配装说明.html")],
-            "user_summary": "\n".join(user_summary), "budget_status": outcome["budget"]["status"], "warnings": outcome["warnings"]}
+            "user_summary": "\n\n".join(user_summary), "final_reply_policy": "交付文件后原样发送 user_summary 作为聊天结论；具体机制、对比和采购步骤已在 HTML，不另行补算或扩写收益。", "budget_status": outcome["budget"]["status"], "warnings": outcome["warnings"]}
 
 
 def catalog(args):

@@ -164,7 +164,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
                 names.update({row[0]: row[1] for row in csv.reader(stream) if len(row) >= 2})
     for calculation in result.get("calculations", [result]):
         calculation["engine_version"] = result["engine_version"]
-        entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", [])
+        entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", [])
         for query_result in calculation.get("catalog_batch", []):
             entries += query_result["entries"]
         entries += [ascendancy for entry in entries for ascendancy in entry.get("ascendancies", [])]

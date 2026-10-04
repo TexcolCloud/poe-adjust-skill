@@ -99,6 +99,12 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 
 只有用户接受停手恢复才用 `burst`，计划给出 `burst_seconds`；程序校验时间不超过资源池并报告停手仅靠净秒回所需的恢复时间。吸取值仍依赖命中，不能当转场回复。资料及 verified_cn 价格的 checked_at 记录本机实际日期或带时区 ISO 时间，未来时间会被拒绝。
 
+原生输出 `active_skills` 包含每个启用主动技能的 id/name/group、is_main、trigger、info、costs；`damage_sources` 是 PoB 原生 Full DPS 计入项目及数量，空数组表示没有这项汇总。召唤技能的本人 CombinedDPS 可能为零，单只召唤物看 MinionCombinedDPS，合计看 FullDPS 与实际计入数量；probe 会在这类主技能上使用 MinionCombinedDPS，并返回 dps_metric，不能把单体数字擅自乘最大数量。程序在主技能消耗之外加入其他已识别自动触发技能的持续消耗，不重复加主技能；手动位移、诅咒、尸体生成等按真实频率另留余量，不能把主技能通过理解为所有按键同时满速通过。
+
+将军之吼须填写 `config_evidence.generals_cry`，说明尸体生成、战吼触发/冷却、实际幻影数量与玩家恢复；常态方案要装入亵渎/亵渎之矛或 Corpse Walk 等已核对来源。依赖场景尸体或特殊外部来源的方案使用 conditional 并解释限制。该机制在本机技能原文和 [官方介绍](https://www.pathofexile.com/forum/view-thread/2870970) 中均要求尸体，幻影攻击不等于本人攻击。
+
+主动技能 count 或 group_count 大于 1 时，填写 `config_evidence.skill_counts`：按技能组说明可同时维持的数量、施放/召唤速率、持续时间与取得条件。该文字只是可审查依据，程序不宣称数量已经被独立证明；Full DPS 分项会显示实际使用数量。
+
 ## 候选 plan.json
 
 ```json
@@ -211,6 +217,6 @@ evaluate 会计算原方案与候选、检查约束、输出候选 XML，然后�
 
 仍需 agent 结合证据审查：改色/连线的可行性与成本、插槽顺序对特殊装备的作用、触发循环、药剂覆盖率、条件持续性、特殊机制、所有装备词缀组合的游戏内合法性、国服可获得性和价格、用户目标是否实际改善。不能把“计算通过”写成“全部游戏机制与市场均保证”。
 
-export 只接收当前意图下的有效候选；会检查文件摘要并最终复算。输出可直接交付，不把内部 run.json、计划或临时文件作为最终成果。
+export 只接收当前意图下的有效候选；会检查文件摘要并最终复算。输出可直接交付，聊天结论原样使用 user_summary。将军之吼幻影主技能的吸取/击回未计作玩家自身回复；原生面板值保留在 native_leech_on_hit 供诊断，本人额外攻击的收益需另行验证。不把内部 run.json、计划或临时文件作为最终成果。
 
 `evaluate.readiness` 返回实际常态/条件开关、剩余点数和资源明细。原方案诊断失效或条件不同时，`comparison.*.percent` 为 null，不能自己重新计算百分比并称为同条件实战提升。`status` 返回已发现的 pob_path/engine_version，后续查询无需反复 doctor。新技能版本会要求旧候选重新 evaluate。

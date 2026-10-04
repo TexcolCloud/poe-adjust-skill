@@ -244,6 +244,36 @@ class DocumentTests(unittest.TestCase):
         self.assertIsNone(poe.compare(before, after, False)["CombinedDPS"]["percent"])
         self.assertEqual(poe.compare(before, after)["CombinedDPS"]["percent"], 200)
 
+    def test_automatic_trigger_costs_are_added_once_and_corpse_dependencies_explained(self):
+        result = {"level": 86, "points": 108, "ascendancy_points": 8, "equipped": [],
+                  "stats": {"ManaUnreserved": 100, "ManaCost": 10, "ManaPerSecondCost": 20, "ManaRegenRecovery": 30},
+                  "active_skills": [{"id": "FixtureMain", "name": "Main", "is_main": True, "trigger": "Fixture", "costs": {"ManaPerSecondCost": 20, "SkillTriggerRate": 2}},
+                                    {"id": "FixtureTrigger", "name": "Auto", "trigger": "Fixture", "costs": {"ManaCost": 30, "ManaPerSecondCost": 60, "SkillTriggerRate": 2}},
+                                    {"id": "FixtureDisabled", "name": "Disabled", "disabled": True, "trigger": "Fixture", "costs": {"ManaPerSecondCost": 999, "SkillTriggerRate": 2}}]}
+        intent = intent_for(self.root)
+        audit = poe.readiness(result, intent, {})
+        self.assertEqual(audit["resources"][0]["cost_per_second"], 80)
+        self.assertEqual(audit["resources"][0]["automatic_cost_per_second"], 60)
+        self.assertTrue(any("净缺口 50.0" in error for error in audit["errors"]))
+        result["stats"]["ManaRegenRecovery"] = 100
+        result["active_skills"][0]["generals_cry"] = True
+        audit = poe.readiness(result, intent, {})
+        self.assertTrue(any("config_evidence.generals_cry" in error for error in audit["errors"]))
+        self.assertTrue(any("尸体生成" in error for error in audit["errors"]))
+        result["active_skills"].append({"id": "Desecrate", "name": "Desecrate", "costs": {"ManaCost": 20}})
+        plan = {"config_evidence": {"generals_cry": "先手动亵渎备尸，再自动战吼；按实际尸体与冷却维持幻影。本人依靠回复，额外施放需预留魔力。"}}
+        self.assertEqual(poe.readiness(result, intent, plan)["errors"], [])
+        result["gems"] = [{"id": "FixtureMain", "enabled": True, "group_enabled": True, "count": 20}]
+        self.assertTrue(any("skill_counts" in error for error in poe.readiness(result, intent, plan)["errors"]))
+        plan["config_evidence"]["skill_counts"] = "测试数量依据；实际路线需按持续时间、召唤速率与资源计算。"
+        self.assertEqual(poe.readiness(result, intent, plan)["errors"], [])
+        result["stats"].update({"ManaRegenRecovery": 0, "ManaLeechGainRate": 100})
+        audit = poe.readiness(result, intent, plan)
+        self.assertEqual(audit["resources"][0]["leech_on_hit"], 0)
+        self.assertEqual(audit["resources"][0]["native_leech_on_hit"], 100)
+        self.assertTrue(any("净缺口 80.0" in error for error in audit["errors"]))
+
+
 
 def route_fixture():
     return {"name": "离线开荒路线测试", "confirmed": True, "goal": "验证分阶段推荐的限制", "league": "测试赛季", "class_id": 4,
@@ -677,6 +707,58 @@ class RealEngineTests(unittest.TestCase):
             routes.validate(route, gems, nodes=nodes)
         stage["ascendancy_respec_reason"] = "先准备后悔石，退还忏悔之兆与连接小点，再分配廉简之途。"
         routes.validate(route, gems, nodes=nodes)
+
+    def test_20_native_general_cry_context_and_automatic_costs(self):
+        plan = copy.deepcopy(self.rebuild)
+        plan["operations"]["replace_skills"][0] = {"slot": "Gloves", "include_in_full_dps": True, "gems": [
+            {"skill_id": "ShieldCrush", "level": 19}, {"skill_id": "GeneralsCry", "level": 19},
+            {"skill_id": "Autoexertion", "level": 19}, {"skill_id": "SupportBrutality", "level": 19}]}
+        outcome = self.evaluate_plan(plan, "gc-no-corpses")
+        self.assertEqual(outcome["status"], "invalid")
+        self.assertTrue(any("尸体生成" in error for error in outcome["errors"]), outcome["errors"])
+        plan["operations"]["replace_skills"].append({"slot": "Helmet", "gems": [{"skill_id": "Desecrate", "level": 1}]})
+        plan["config_evidence"] = {"generals_cry": "测试夹具：手动亵渎生成尸体，自动增助按冷却触发将军之吼；幻影攻击，玩家不依靠幻影吸取。"}
+        outcome = self.evaluate_plan(plan, "gc-costs")
+        result = poe.read_json(self.run_dir / "candidates/gc-costs/evaluation.json")["result"]
+        cry = next(skill for skill in result["active_skills"] if skill["id"] == "GeneralsCry")
+        main = next(skill for skill in result["active_skills"] if skill["is_main"])
+        self.assertTrue(main["generals_cry"])
+        self.assertEqual(cry["trigger"], "Autoexertion")
+        self.assertGreater(cry["costs"]["ManaPerSecondCost"], 0)
+        mana = next(row for row in outcome["readiness"]["resources"] if row["resource"] == "魔力")
+        self.assertAlmostEqual(mana["cost_per_second"], cry["costs"]["ManaPerSecondCost"] + result["stats"].get("ManaPerSecondCost", 0))
+        self.assertTrue(result["damage_sources"])
+        self.assertEqual(outcome["status"], "validated", outcome["errors"])
+        exported = poe.export(args(run=str(self.run_dir), name="gc-costs"))
+        report = Path(exported["files"][1]).read_text(encoding="utf-8")
+        self.assertIn("原生 Full DPS 分项", report)
+        self.assertIn("自动触发额外消耗", report)
+        self.assertIn("19 级 / 0 品质", report)
+        self.assertIn("原样发送 user_summary", exported["final_reply_policy"])
+        self.assertIn("幻影吸取未计入玩家回复", exported["user_summary"])
+        for resource in outcome["readiness"]["resources"]:
+            self.assertEqual(resource["leech_on_hit"], 0)
+
+    def test_21_minion_damage_is_separate_and_probe_uses_minion_output(self):
+        plan = copy.deepcopy(self.rebuild)
+        plan["operations"]["replace_skills"] = [{"slot": "Gloves", "include_in_full_dps": True, "gems": [
+            {"skill_id": "SummonRagingSpirit", "level": 12}, {"skill_id": "SupportMinionDamage", "level": 19},
+            {"skill_id": "SupportLifetap", "level": 19}]}]
+        outcome = self.evaluate_plan(plan, "minion-context")
+        self.assertEqual(outcome["status"], "validated", outcome["errors"])
+        result = poe.read_json(self.run_dir / "candidates/minion-context/evaluation.json")["result"]
+        self.assertEqual(result["stats"]["CombinedDPS"], 0)
+        self.assertGreater(result["stats"]["MinionCombinedDPS"], 0)
+        self.assertEqual(result["stats"]["MinionCombinedDPS"], result["minion"]["CombinedDPS"])
+        self.assertTrue(any(row["name"] == "Summon Raging Spirit" for row in result["damage_sources"]))
+        result = poe.probe(args(run=str(self.run_dir), name="minion-context", group=1, index=2,
+                                ids="SupportMinionDamage,SupportMeleePhysicalDamage", level=19, quality=0))
+        self.assertEqual(result["alternatives"][0]["dps_metric"], "MinionCombinedDPS")
+        self.assertAlmostEqual(result["alternatives"][0]["dps_delta"], 0)
+        self.assertNotEqual(result["alternatives"][1]["dps_delta"], 0)
+        exported = poe.export(args(run=str(self.run_dir), name="minion-context"))
+        self.assertIn("召唤物单体综合 DPS", exported["user_summary"])
+        self.assertNotIn("主技能综合 DPS 0.0", exported["user_summary"])
 
 
 if __name__ == "__main__": unittest.main()
