@@ -186,7 +186,7 @@ def validate_contract(result):
     """Reject missing evidence instead of silently treating absent fields as zero."""
     required = {"stats": dict, "resource_rules": dict, "gems": list, "equipped": list,
                 "active_skills": list, "damage_sources": list, "classes": list, "excluded_guard_checks": list,
-                "nodes": list, "config_keys": list, "config_lists": dict, "config_values": dict, "config_labels": dict,
+                "nodes": list, "granted_passives": list, "config_keys": list, "config_lists": dict, "config_values": dict, "config_labels": dict,
                 "warnings": list, "xml": str,
                 "tree_version": str, "latest_tree_version": str, "tree_context": dict, "socket_limits": dict, "capabilities": dict}
     for key, kind in required.items():
@@ -290,7 +290,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         calculation.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
         if info["available_tree_versions"] and calculation["latest_tree_version"] not in info["available_tree_versions"]:
             raise EngineError("运行中的天赋数据与安装元数据不一致，请等更新完成后重试。")
-        entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", [])
+        entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", []) + calculation["granted_passives"]
         for query_result in calculation.get("catalog_batch", []):
             entries += query_result["entries"]
         entries += [ascendancy for entry in entries for ascendancy in entry.get("ascendancies", [])]

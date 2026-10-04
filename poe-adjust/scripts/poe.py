@@ -192,7 +192,9 @@ def active_gems(result):
 def release_inactive_sockets(document):
     """Keep alternate groups but do not let them shift active native socket quality."""
     for group in bx.groups(document):
-        if group.get("enabled", "true") == "false":
+        # Native granted groups are matched by source AND slot. Clearing their
+        # slot makes the engine replace them with newly enabled groups.
+        if group.get("enabled", "true") == "false" and not group.get("source"):
             group.set("slot", "")
 
 
@@ -235,6 +237,9 @@ def socket_layout_issues(document, result):
 
 def mechanical_issues(document, result, intent):
     errors, warnings = [], list(result.get("warnings", []))
+    for node in result["granted_passives"]:
+        if node["allocated_on_tree"]:
+            warnings.append(f"本机节点 {node['id']} {node.get('display_name', node['name'])} 已在树上分配，同时又被额外授予；原生计算按同一节点计入，不能解释为两份叠加收益。是否调整天赋或授予来源由方案目标决定。")
     engine.validate_game_version(intent.get("game_version"), intent["league"], engine.require_data_version(result), intent.get("version_source"))
     for capability in ("matching_socket_quality", "native_resource_costs", "native_gem_requirements"):
         if not result.get("capabilities", {}).get(capability):
@@ -273,6 +278,15 @@ def mechanical_issues(document, result, intent):
     requested_nodes = {int(n) for n in bx.active_spec(document).get("nodes", "").split(",") if n}
     missing = requested_nodes - set(result["nodes"])
     if missing: errors.append("引擎未保留部分天赋节点：" + ",".join(map(str, sorted(missing))))
+    for group in bx.groups(document):
+        if not group.get("source"):
+            continue
+        for gem in group.findall("Gem"):
+            retained = [entry for entry in result["gems"] if entry.get("source") == group.get("source") and entry.get("id") == gem.get("skillId")]
+            # A removed item/node may legitimately remove its granted group.
+            if retained and not any(entry.get("slot", "") == group.get("slot", "") and
+                                    entry["group_enabled"] == (group.get("enabled", "true") != "false") for entry in retained):
+                errors.append(f"引擎改变了授予技能状态：{group.get('source')} / {gem.get('skillId')}；槽位与启用状态必须和方案一致，不能将重建后默认开启的技能当作已关闭。")
     for skill in result.get("active_skills", []):
         if skill.get("trigger_target_required_level") and skill.get("trigger_level_limit") is not None:
             if skill["trigger_target_required_level"] > skill["trigger_level_limit"]:
@@ -564,7 +578,7 @@ def semantics(result):
     return {"class": result["class"], "ascendancy": result["ascendancy"], "level": result["level"], "tree_version": result["tree_version"],
             "config_values": result["config_values"],
             "nodes": result["nodes"], "main_skill": result["main_skill"], "main_group": result["main_group"],
-            "gems": [{key: gem.get(key) for key in ("group", "index", "id", "level", "quality", "enabled", "group_enabled", "slot", "matches_socket", "socket_quality_bonus")} for gem in result["gems"]],
+            "gems": [{key: gem.get(key) for key in ("group", "index", "id", "source", "level", "quality", "enabled", "group_enabled", "slot", "matches_socket", "socket_quality_bonus")} for gem in result["gems"]],
             "equipped": [{key: item.get(key) for key in ("slot", "id", "name", "base", "active")} for item in result["equipped"]]}
 
 

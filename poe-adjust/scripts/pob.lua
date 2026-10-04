@@ -106,6 +106,13 @@ result.main_skill_name = build.calcsTab.mainEnv.player.mainSkill.activeEffect.gr
 result.damage_sources, result.active_skills = {}, {}
 for _, row in ipairs(output.SkillDPS or {}) do table.insert(result.damage_sources, scalarTable(row)) end
 local mainEnv = build.calcsTab.mainEnv
+result.granted_passives = setmetatable({}, {__jsontype = "array"})
+for id in pairs(assert(mainEnv.grantedPassives, "Native granted-passive evidence is unavailable")) do
+  local node = assert(mainEnv.allocNodes[id], "Granted passive is missing from native allocated nodes")
+  table.insert(result.granted_passives, {id = id, name = node.name, stats = node.sd,
+    allocated_on_tree = build.spec.allocNodes[id] ~= nil})
+end
+table.sort(result.granted_passives, function(a, b) return a.id < b.id end)
 local costKeys = {"ManaCost", "LifeCost", "ESCost", "ManaPerSecondCost", "LifePerSecondCost", "ESPerSecondCost", "Cooldown", "Speed", "SkillTriggerRate"}
 local function supportLevelLimit(effect)
   if not effect or not effect.grantedEffect then return nil end
@@ -361,6 +368,7 @@ local function queryCatalog(kind, query, limit)
           is_ascendancy_start = node.isAscendancyStart or false}
         if hasTreeContext then
           entry.allocated = node.alloc or false
+          entry.granted = mainEnv.grantedPassives[id] or false
           entry.reachable = node.path ~= nil
           entry.points_to_allocate = node.pathDist
           entry.path = path

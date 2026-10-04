@@ -209,6 +209,15 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(bx.groups(changed)[0].get("slot"), "")
         self.assertEqual(poe.socket_layout_issues(changed, result), [])
 
+    def test_disabled_granted_group_keeps_native_source_identity(self):
+        group = bx.groups(self.root)[0]
+        group.set("source", "Item:1:Fixture")
+        group.set("enabled", "false")
+        poe.release_inactive_sockets(self.root)
+        self.assertEqual(group.get("slot"), "Boots")
+        self.assertEqual(group.get("source"), "Item:1:Fixture")
+        self.assertEqual(group.get("enabled"), "false")
+
     def test_season_and_engine_version_mismatch_cannot_be_certified(self):
         intent = intent_for(self.root)
         for league in ("国服 S29", "国服S29", "第29赛季", "沙海幻境"):
@@ -791,6 +800,16 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("不提供同条件提升百分比", output["user_summary"])
         self.assertIn("不能承诺预算内买齐", output["user_summary"])
         evidence = poe.read_json(self.run_dir / "candidates/refine/evaluation.json")
+        granted = [gem for gem in evidence["result"]["gems"] if gem.get("source")]
+        self.assertTrue(granted)
+        self.assertTrue(all(not gem["group_enabled"] for gem in granted), granted)
+        saved = bx.read_document(Path(output["files"][0]))
+        self.assertTrue(all(group.get("enabled") == "false" and group.get("slot")
+                            for group in bx.groups(saved) if group.get("source")))
+        drifted = copy.deepcopy(evidence["result"])
+        next(gem for gem in drifted["gems"] if gem.get("source"))["group_enabled"] = True
+        errors, _ = poe.mechanical_issues(saved, drifted, poe.read_json(self.run_dir / "run.json")["intent"])
+        self.assertTrue(any("授予技能状态" in error for error in errors), errors)
         report = Path(output["files"][1]).read_text(encoding="utf-8")
         self.assertTrue(evidence["actual_changes"])
         self.assertIn("实际改动", report)
@@ -921,6 +940,32 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", report)
         self.assertIn(recorded["xml_sha256"], report)
         self.assertIn(recorded["engine_fingerprint"], report)
+
+    def test_31_granted_passives_distinguish_existing_and_new_tree_nodes(self):
+        original = engine.calculate(self.pob, bx.serialise(self.original), catalog="nodes", query="life", limit=200)
+        notables = [node for node in original["catalog"] if node["type"] == "Notable" and not node["ascendancy_name"]]
+        allocated = next(node for node in notables if node["allocated"])
+        unallocated = next(node for node in notables if not node["allocated"])
+        amulet_id = next(item["id"] for item in original["equipped"] if item["slot"] == "Amulet")
+        documents = []
+        for node in (allocated, unallocated):
+            document = copy.deepcopy(self.original)
+            item = document.find(f"Items/Item[@id='{amulet_id}']")
+            self.assertNotIn("Allocates ", item.text)
+            item.text += "\nAllocates " + node["name"] + "\n"
+            documents.append(document)
+        results = engine.calculate(self.pob, xml_batch=[bx.serialise(doc) for doc in documents])["calculations"]
+        for result, node, on_tree in zip(results, (allocated, unallocated), (True, False)):
+            evidence = next(entry for entry in result["granted_passives"] if entry["id"] == node["id"])
+            self.assertEqual(evidence["allocated_on_tree"], on_tree)
+            self.assertEqual(evidence["name"], node["name"])
+            self.assertEqual(result["points"], original["points"])
+        self.assertEqual(results[0]["stats"], original["stats"])
+        intent = poe.read_json(self.run_dir / "run.json")["intent"]
+        _, warnings = poe.mechanical_issues(documents[0], results[0], intent)
+        self.assertTrue(any(str(allocated["id"]) in warning and "不能解释为两份" in warning for warning in warnings))
+        _, warnings = poe.mechanical_issues(documents[1], results[1], intent)
+        self.assertFalse(any("不能解释为两份" in warning for warning in warnings))
 
     def test_09_resource_shortfall_and_local_sources_remain_visible(self):
         plan = copy.deepcopy(self.refine)

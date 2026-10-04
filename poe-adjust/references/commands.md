@@ -57,6 +57,8 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 
 查询结果 `tree_context` 明示依据、职业及起点，`engine_fingerprint` 绑定本机数据。未传角色也未指定职业时，basis=unspecified，仅提供节点 ID/stats/linked，不提供 path/allocated/points_to_allocate，防止默认职业路径被误用。有上下文的 path 从目标回溯到现有连接处，反序才是加点顺序；多个目标各自的路径不能直接把点数相加，也不证明组合是最佳分配。
 
+有角色上下文时，节点 `allocated` 表示树上分配，`granted` 表示原生额外授予。完整计算结果 `granted_passives` 列出本机实际授予的节点 ID、原文与 `allocated_on_tree`。同一节点同时在树上分配会提示，不算两份收益；是否释放路径、改授予来源或保持现状，由模型结合实际连接与代价决定并重新计算。
+
 用完整升华英文名查询且结果未截断时，节点还提供 `ascendancy_path`、`ascendancy_path_names`、`ascendancy_path_cost`，表示从该升华起点实际经过的大小点及总点数。它与相对于载入角色的 path/points_to_allocate 不同。route 合并各分支计数并展示必经大点；不能省略前置、虚构连接或在已用八点之外追加升华。
 
 `nodes` 的 `id:数字` 精确查询节点；裸数字仍可能匹配名称/说明。evaluate 遇到未保留节点时自动返回最多 8 项 `tree_diagnostics`，含是否在当前树/珠宝配置中找到、升华归属及相对已保留树的连接路径。不存在于当前树不等于游戏中不存在，可能缺珠宝、错误职业或数据版本；找到但未保留时先查连接，不归咎引擎兼容。路径含目标节点，合并后仍需核对总点数和保留限制。
@@ -105,7 +107,7 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
   "keep_skill_ids": [],
   "baseline_main_group": 1,
   "scenario": {"enemyLevel": 83},
-  "minimum_stats": {"FireResist": 75, "ColdResist": 75, "LightningResist": 75},
+  "minimum_stats": {},
   "quest_passive_points": 23,
   "ascendancy_points": 8,
   "calculation_mode": "steady",
@@ -115,6 +117,8 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 ```
 
 示例数值不是默认事实，按对话填写。`target_level`、`baseline_main_group`、`quest_passive_points`、`ascendancy_points` 均须明确填写，脚本不默认满任务或满升华。用户未回答时先分轮询问。`mode` 为 refine/rebuild/both。预算 amount/currency 必填，金额是本次可投入预算；自力模式可写 0 并将确认已有的物品记为 owned。没有预算时先问。
+
+`minimum_stats` 只放用户明确要求或认可的数值下限，未约定时为空。模型的参考目标写入 notes 并标明是设计假设，按候选证据解释调整和剩余短板；调整预期本身不是目标达成证据。用户已经确认的限制不能为了通过计算而放宽。
 
 `game_version` 是已联网核实的游戏主版本，不是 PoB 版本、XML targetVersion 或国服赛季编号。`version_source` 为实际官方网页 URL，`version_checked_at` 为查阅日期。历史 [S30 官方公告](https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml) 明确说明 3.29.0；它不能证明其他赛季。旧文件名不证明用户目标，旧树也不切换机制/宝石规则。本机版本由 doctor 检测，不固定版本号。intent/evaluate/export 的 `target_version_evidence` 来自实际官方正文；抓取或匹配失败时保留 unverified，导出标记 exported_draft，不能宣布赛季适用性已经核实。
 
@@ -183,7 +187,7 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 
 宝石的 `count`、技能组 `group_count` 与层数仅在真实机制支持时设置，解释实际持续数量。克隆物品或换词缀要确认前后缀、基底、物等、势力、腐化和赛季限制。程序不替代完整游戏物品合法性数据库。
 
-3.29 起宝石不受普通插槽颜色限制，匹配红/绿/蓝提供 +10 品质；不应为插入异色宝石强制增加改色成本。`gems[].quality` 是宝石自身品质，不能把插槽加成再加进去。原生计算按同装备各组和组内宝石的先后顺序分配物理孔位，输出 `matches_socket` / `socket_quality_bonus`。程序保留未启用组并清除其 slot，避免其挤占在用组的品质位置。真实不相连的孔必须拆组；同一连线上含辅助的技能不能拆成独立组来漏算保留/消耗。新 XML 与说明包含实际镶嵌顺序。
+3.29 起宝石不受普通插槽颜色限制，匹配红/绿/蓝提供 +10 品质；不应为插入异色宝石强制增加改色成本。`gems[].quality` 是宝石自身品质，不能把插槽加成再加进去。原生计算按同装备各组和组内宝石的先后顺序分配物理孔位，输出 `matches_socket` / `socket_quality_bonus`。程序保留未启用的普通宝石组并清除其 slot，避免其挤占在用组的品质位置；带 source 的装备/天赋授予技能必须保留 source 与 slot，原生引擎靠两者匹配开关状态。计算后出现保留技能状态漂移会被拒绝。真实不相连的孔必须拆组；同一连线上含辅助的技能不能拆成独立组来漏算保留/消耗。新 XML 与说明包含实际镶嵌顺序。
 
 ### 普通稀有目标装
 
