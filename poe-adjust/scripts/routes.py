@@ -215,24 +215,32 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
                 capacity = base.get("sockets")
             else:
                 limit = (socket_limits or {}).get(category, {})
-                bx.require(type(limit.get("min")) is int and type(limit.get("max")) is int, label + "本机孔位数据缺失：" + category)
-                bx.require(limit["min"] == limit["max"], label + "本机 " + category + f" 基底孔数为 {limit['min']}–{limit['max']}，不能统一假设；用 catalog bases 查询并在 bases 中为 {slot} 指定具体基底。")
-                capacity = limit["max"]
+                bx.require(type(limit.get("min")) is int and type(limit.get("max")) is int and 0 <= limit["min"] <= limit["max"], label + "本机孔位数据缺失或无效：" + category)
+                # An unspecified base can safely use the smallest native limit.
+                # Empty or smaller groups need no arbitrary equipment choice.
+                capacity = limit["min"]
             bx.require(type(capacity) is int and capacity >= 0, label + "本机基底缺少合法孔数：" + str(name or category))
             capacities[slot] = capacity
             stage["socket_evidence"][slot] = {"capacity": capacity, "category": category, "base": name}
+            if not name:
+                stage["socket_evidence"][slot]["category_range"] = [limit["min"], limit["max"]]
         groups = stage.get("skill_groups")
         bx.require(isinstance(groups, list) and 1 <= len(groups) <= 16, label + "需要 1–16 个 skill_groups。")
         bx.require(any(group.get("use") == "main" for group in groups), label + "至少一组 use=main 输出技能。")
         usage, upgraded_usage = {}, {}
         for group in groups:
             slot = group.get("slot")
-            bx.require(slot in capacities and capacities[slot] > 0, label + "武器配置不能在此位置放宝石：" + str(slot))
+            bx.require(slot in capacities, label + "武器配置不能在此位置放宝石：" + str(slot))
+            bounds = stage["socket_evidence"].get(slot, {}).get("category_range")
+            if bounds and bounds[0] != bounds[1]:
+                bx.require(all(not isinstance(group.get(key), list) or len(group[key]) <= capacities[slot] for key in ("gems", "upgrade_gems")),
+                           label + "所需孔数超过未指定基底时的共同容量；用 catalog bases 查询并在 bases 中为 " + slot + " 指定具体基底。")
+            bx.require(capacities[slot] > 0, label + "武器配置不能在此位置放宝石：" + str(slot))
             used_gems.update(validate_group(group, stage, gems, library, compatibility, capacities[slot], warnings, route["allow_minions"]))
             usage[slot] = usage.get(slot, 0) + len(group["gems"])
             upgraded_usage[slot] = upgraded_usage.get(slot, 0) + len(group.get("upgrade_gems", group["gems"]))
         for slot in capacities:
-            bx.require(max(usage.get(slot, 0), upgraded_usage.get(slot, 0)) <= capacities[slot], label + "在 " + slot + " 分配的总孔数超过容量；基础与升级都必须能同时装备。")
+            bx.require(max(usage.get(slot, 0), upgraded_usage.get(slot, 0)) <= capacities[slot], label + "在 " + slot + " 分配的总孔数超过容量；基础与升级都必须能同时装备。若本机同类基底孔数不同，需要查询并指定具体基底才能使用较大容量。")
         stage["attribute_requirements"] = {
             key: {attribute: max(gem["attribute_requirements"][attribute]
                                  for group in groups for gem in group.get(key, group["gems"]))
@@ -285,7 +293,11 @@ def render(route, warnings, engine_version, tree_version):
     for stage in route["stages"]:
         chapter = f"第 {stage['act']} 章" if stage["act"] <= 10 else "异界"
         groups = [f"<p>剧情进度：{chapter}。等级里程碑不代表已经完成本章任务，先满足本段列出的领取和切换条件。</p>"]
-        socket_notes = [f"{slot}：{proof['capacity']} 孔（{proof['base'] or proof['category']}）" for slot, proof in stage["socket_evidence"].items()]
+        socket_notes = []
+        for slot, proof in stage["socket_evidence"].items():
+            bounds = proof.get("category_range")
+            detail = f"类别范围 {bounds[0]}–{bounds[1]} 孔，未指定基底时按共同容量规划" if bounds and bounds[0] != bounds[1] else proof["base"] or proof["category"]
+            socket_notes.append(f"{slot}：规划上限 {proof['capacity']} 孔（{detail}）")
         groups.append("<details><summary>本机装备孔位依据</summary>" + listing(socket_notes) + "<p>当前本机基底上限，不证明已取得连线、满足物等或具备制作费用；特殊物品效果与实际装备仍须核对。</p></details>")
         if stage.get("trial_requirements"):
             requirements = [f"{lab['name']}：" + "；".join(lab["trial_locations"]) for lab in stage["trial_requirements"]]

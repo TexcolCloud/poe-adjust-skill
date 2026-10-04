@@ -530,15 +530,28 @@ class RouteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "以下辅助不支持"):
             validate_route(self.route, self.gems, compatibility=compatibility)
 
-    def test_route_socket_ambiguity_needs_actual_base_and_never_guesses_capacity(self):
+    def test_route_socket_range_requires_base_only_above_common_capacity(self):
         limits = copy.deepcopy(FIXTURE_SOCKETS)
         limits["one_hand"] = {"min": 2, "max": 3}
+        checked, _ = validate_route(self.route, self.gems, socket_limits=limits)
+        self.assertEqual(checked["stages"][0]["socket_evidence"]["Weapon 1"]["capacity"], 2)
+        self.assertIn("类别范围 2–3 孔", routes.render(checked, [], "fixture", "fixture"))
+        utility = {"name": "孔位验证", "use": "utility", "slot": "Weapon 1", "gems": [{"skill_id": "ShieldCrush", "level": 1}]}
+        too_large = copy.deepcopy(utility)
+        too_large["gems"] *= 3
+        self.route["stages"][0]["skill_groups"].append(too_large)
+        with self.assertRaisesRegex(ValueError, "共同容量"):
+            validate_route(self.route, self.gems, socket_limits=limits)
+        self.route["stages"][0]["skill_groups"].pop()
+        self.route["stages"][0]["skill_groups"] += [copy.deepcopy(utility) for _ in range(2)]
+        validate_route(self.route, self.gems, socket_limits=limits)
+        self.route["stages"][0]["skill_groups"].append(copy.deepcopy(utility))
         with self.assertRaisesRegex(ValueError, "指定具体基底"):
             validate_route(self.route, self.gems, socket_limits=limits)
         for stage in self.route["stages"]: stage["bases"] = {"Weapon 1": "Fixture Sword"}
-        bases = {"Fixture Sword": {"socket_category": "one_hand", "sockets": 2}}
+        bases = {"Fixture Sword": {"socket_category": "one_hand", "sockets": 3}}
         checked, _ = validate_route(self.route, self.gems, socket_limits=limits, bases=bases)
-        self.assertEqual(checked["stages"][0]["socket_evidence"]["Weapon 1"]["capacity"], 2)
+        self.assertEqual(checked["stages"][0]["socket_evidence"]["Weapon 1"]["capacity"], 3)
         self.assertEqual(routes.base_names(self.route), ["Fixture Sword"])
         self.assertIn("Fixture Sword", routes.render(checked, [], "fixture", "fixture"))
         bases["Fixture Sword"]["socket_category"] = "bow"
@@ -966,6 +979,21 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(any(str(allocated["id"]) in warning and "不能解释为两份" in warning for warning in warnings))
         _, warnings = poe.mechanical_issues(documents[1], results[1], intent)
         self.assertFalse(any("不能解释为两份" in warning for warning in warnings))
+
+    def test_32_native_anoint_recipes_keep_quantities_and_local_translations(self):
+        import re
+        result = engine.calculate(self.pob, queries=[{"kind": "nodes", "query": "id:" + str(node), "limit": 1}
+                                                  for node in (55485, 2225, 27604)])
+        native_tree = (self.pob / "TreeData" / result["tree_version"] / "tree.lua").read_text(encoding="utf-8-sig")
+        for row in result["catalog_batch"][:2]:
+            node = row["entries"][0]
+            stanza = re.search(r"\[" + str(node["id"]) + r"\]\s*=\s*\{.*?\[\"recipe\"\]\s*=\s*\{([^}]+)\}", native_tree, re.S)
+            self.assertIsNotNone(stanza)
+            self.assertEqual([part["id"] for part in node["anoint_recipe"]], re.findall(r'"([^\"]+)"', stanza[1]))
+            self.assertTrue(all(part.get("name_cn") and part.get("display_name") for part in node["anoint_recipe"]))
+        oils = result["catalog_batch"][1]["entries"][0]["anoint_recipe"]
+        self.assertGreater(len(oils), len({part["id"] for part in oils}))
+        self.assertNotIn("anoint_recipe", result["catalog_batch"][2]["entries"][0])
 
     def test_09_resource_shortfall_and_local_sources_remain_visible(self):
         plan = copy.deepcopy(self.refine)

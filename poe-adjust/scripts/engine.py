@@ -104,7 +104,7 @@ def fingerprint(root: Path) -> str:
     for name in ("Classes", "Modules", "Data", "TreeData", "lua"):
         paths += [path for path in (root / name).rglob("*") if path.suffix.lower() in {".lua", ".json", ".dll"}]
     translations = root.parent / "Data/Translate/zh-rCN"
-    paths += [translations / name for name in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv")]
+    paths += [translations / name for name in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv", "Items_Oils.csv")]
     paths += list(SCRIPTS.glob("*.py")) + [SCRIPTS / name for name in ("headless.lua", "pob.lua")]
     digest = hashlib.sha256()
     def label(path):
@@ -279,12 +279,15 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     if fingerprint(root) != info["engine_fingerprint"]:
         raise EngineError("计算期间引擎或数据文件发生变化。本次结果已作废，请等待 PoECharm 更新完成后重试。")
     result.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
-    names = {}
-    for filename in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv"):
+    names, oil_names = {}, {}
+    for filename in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv", "Items_Oils.csv"):
         translations = root.parent / "Data/Translate/zh-rCN" / filename
         if translations.is_file():
             with translations.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
-                names.update({row[0]: row[1] for row in csv.reader(stream) if len(row) >= 2})
+                rows = [row for row in csv.reader(stream) if len(row) >= 2]
+                names.update({row[0]: row[1] for row in rows})
+                if filename == "Items_Oils.csv":
+                    oil_names.update({row[0].replace(" ", ""): row[0] for row in rows})
     for calculation in result.get("calculations", [result]):
         validate_contract(calculation)
         calculation.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
@@ -294,6 +297,10 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         for query_result in calculation.get("catalog_batch", []):
             entries += query_result["entries"]
         entries += [ascendancy for entry in entries for ascendancy in entry.get("ascendancies", [])]
+        ingredients = [ingredient for entry in entries for ingredient in entry.get("anoint_recipe", [])]
+        for ingredient in ingredients:
+            ingredient["name"] = oil_names.get(ingredient["id"], ingredient["id"])
+        entries += ingredients
         for entry in entries:
             if entry.get("name") in names:
                 entry["name_cn"] = names[entry["name"]]

@@ -366,6 +366,12 @@ local function queryCatalog(kind, query, limit)
           ascendancy_name = ascendancyName, ascendancy_internal_name = node.ascendancyName or "",
           no_tree_connection = ascendancyName ~= "" and not node.isAscendancyStart and #links == 0,
           is_ascendancy_start = node.isAscendancyStart or false}
+        if node.recipe then
+          entry.anoint_recipe = setmetatable({}, {__jsontype = "array"})
+          for _, ingredient in ipairs(node.recipe) do
+            table.insert(entry.anoint_recipe, {id = ingredient, name = ingredient})
+          end
+        end
         if hasTreeContext then
           entry.allocated = node.alloc or false
           entry.granted = mainEnv.grantedPassives[id] or false

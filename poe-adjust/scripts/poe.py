@@ -19,7 +19,7 @@ import engine
 import facts
 import routes
 
-VERSION = "1.7.5"
+VERSION = "1.7.6"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
