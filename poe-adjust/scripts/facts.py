@@ -20,7 +20,6 @@ from urllib.request import Request, urlopen
 import buildxml as bx
 
 HOSTS = {"poedb.tw", "poe.qq.com", "www.pathofexile.com", "pathofexile.com"}
-CLASS_IDS = {name: key for key, name in bx.CLASSES.items()}
 
 
 class PageText(HTMLParser):
@@ -116,46 +115,155 @@ def source_record(page, **extra):
     return {key: page[key] for key in ("url", "checked_at", "sha256")} | extra
 
 
-def quest_rows(raw, name):
+def pointer(value, locator):
+    """Resolve a JSON pointer as data, without evaluating model expressions."""
+    bx.require(isinstance(locator, str) and (not locator or locator.startswith("/")), "locator 使用 JSON pointer，例如 /stats/Life。")
+    for token in locator.split("/")[1:]:
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(value, list):
+            bx.require(token.isdigit() and int(token) < len(value), "证据数组索引不存在：" + locator)
+            value = value[int(token)]
+        else:
+            bx.require(isinstance(value, dict) and token in value, "证据字段不存在：" + locator)
+            value = value[token]
+    return value
+
+
+def load_evidence(declarations, folder, context):
+    """Observe source artifacts; caller-written verification flags are not inputs."""
+    bx.require(isinstance(declarations, list), "evidence 应为数组。")
+    base = Path(folder).resolve()
+    result = {}
+    for entry in declarations:
+        bx.require(isinstance(entry, dict) and set(entry) <= {"evidence_id", "kind", "subject", "text", "url", "path", "excerpt", "context", "checked_at", "message_ref"}, "证据字段无效；status/digest/origin 由程序生成。")
+        key, kind = entry.get("evidence_id"), entry.get("kind")
+        bx.require(isinstance(key, str) and key and "#" not in key and not key.startswith("native:") and key not in result, "evidence_id 需要唯一普通标识，native: 留给计算结果。")
+        bx.require(kind in {"user_statement", "web", "artifact"}, "证据 kind 为 user_statement/web/artifact。原生字段使用 native:candidate#/stats/Life 等引用。")
+        bx.require(isinstance(entry.get("subject"), str) and entry["subject"], "证据需要具体 subject。")
+        record = {"evidence_id": key, "kind": kind, "subject": entry["subject"], "context": entry.get("context", {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        bx.require(isinstance(record["context"], dict), "证据 context 应为对象。")
+        if entry.get("checked_at"):
+            import engine
+            engine.validate_checked_at(entry["checked_at"])
+        try:
+            if kind == "user_statement":
+                text = entry.get("text")
+                bx.require(isinstance(text, str) and text.strip(), "用户声明需要实际表达原文。")
+                record.update(text=text, status="user_declared", origin="agent_recorded_user_statement", message_ref=entry.get("message_ref"))
+                record["scope"] = "记录用户表达；本程序未独立读取对话、仓库或游戏服务器。"
+            elif kind == "web":
+                page = fetch(entry.get("url", ""), base / ".poe-evidence", context)
+                text = text_of(page["html"], article=urlsplit(page["url"]).hostname == "poe.qq.com")
+                excerpt = entry.get("excerpt")
+                bx.require(isinstance(excerpt, str) and excerpt.strip() and excerpt in text, "网页证据需实际存在于正文的 excerpt，链接本身不是结论依据。")
+                record.update(source_record(page), text=excerpt, status="source_observed", origin="program_fetch")
+            else:
+                path = (base / entry.get("path", "")).resolve()
+                bx.require(path.is_relative_to(base) and path.is_file() and path.stat().st_size <= 2_000_000, "资料必须是本任务工作区内不超过 2 MB 的文本文件；不读取平台内部输出目录。")
+                text = path.read_text(encoding="utf-8-sig")
+                excerpt = entry.get("excerpt")
+                bx.require(isinstance(excerpt, str) and excerpt.strip() and excerpt in text, "artifact.excerpt 必须对应实际文件内容。")
+                record.update(path=str(path), text=excerpt, content_sha256=bx.digest(path.read_bytes()), url=entry.get("url"), checked_at=entry.get("checked_at"),
+                              status="artifact_observed", origin="agent_supplied_artifact", scope="文件片段可追溯，网站真实性及语义匹配仍需模型审查。")
+            record["digest"] = bx.digest(text)
+        except (OSError, ValueError) as exc:
+            record.update(status="unresolved", reason=str(exc))
+        result[key] = record
+    return result
+
+
+def resolve_reference(reference, evidence, native=None):
+    bx.require(isinstance(reference, str) and reference, "证据引用应为非空字符串。")
+    if reference.startswith("native:"):
+        name, separator, locator = reference[len("native:"):].partition("#")
+        bx.require(separator and locator and name in (native or {}), "原生引用须指定本次结果及字段，例如 native:candidate#/stats/Life。")
+        calculation = native[name]
+        value = pointer(calculation, locator)
+        record = {"evidence_id": reference, "kind": "native", "subject": name, "locator": locator, "value": value,
+                  "status": "native_observed", "origin": "program_calculation", "digest": bx.digest(json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)),
+                  "context": {"engine_fingerprint": calculation.get("engine_fingerprint"), "xml_sha256": calculation.get("xml_sha256") or calculation.get("input_xml_sha256") or (bx.digest(calculation["xml"]) if calculation.get("xml") else None)}}
+        evidence[reference] = record
+    bx.require(reference in evidence, "未找到证据引用：" + reference)
+    return evidence[reference]
+
+
+def assess_claims(claims, evidence, native=None):
+    bx.require(isinstance(claims, list), "claims 应为数组。")
+    result, seen = [], set()
+    for entry in claims:
+        bx.require(isinstance(entry, dict) and set(entry) <= {"claim_id", "text", "subjects", "evidence_refs", "conditions", "uncertainties"}, "claim 字段无效，判断状态由程序标注。")
+        key = entry.get("claim_id")
+        bx.require(isinstance(key, str) and key and key not in seen, "claim_id 应唯一且非空。")
+        seen.add(key)
+        bx.require(isinstance(entry.get("text"), str) and entry["text"].strip(), "claim 需要具体 text。")
+        row = dict(entry)
+        for field in ("subjects", "evidence_refs", "conditions", "uncertainties"):
+            row[field] = entry.get(field, [])
+            bx.require(isinstance(row[field], list) and all(isinstance(v, str) and v.strip() for v in row[field]), field + " 应为非空字符串数组。")
+        bx.require(row["subjects"], "claim 需要关联具体 subjects。")
+        missing = []
+        for reference in row["evidence_refs"]:
+            try:
+                observed = resolve_reference(reference, evidence, native)
+                if observed["status"] == "unresolved": missing.append(reference)
+            except ValueError as exc:
+                missing.append(str(exc))
+        row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] else "unresolved"
+        row["missing_evidence"] = missing
+        row["scope"] = "已检查引用存在及状态；资料是否充分支持文字结论仍是模型判断。"
+        result.append(row)
+    return result
+
+
+def has_claim(claims, subject):
+    return any(row["status"] == "model_assessed" and subject in row["subjects"] for row in claims)
+
+
+def material_ref(entry):
+    kind = entry.get("kind")
+    if kind == "gem":
+        bx.require(isinstance(entry.get("skill_id"), str) and entry["skill_id"] and type(entry.get("level")) is int and entry["level"] > 0 and type(entry.get("quality")) is int and entry["quality"] >= 0, "宝石物资需要 skill_id、level、quality。")
+        return f"gem:{entry['skill_id']}:{entry['level']}:{entry['quality']}"
+    if kind == "item":
+        bx.require(type(entry.get("item_id")) is int and entry["item_id"] > 0, "装备物资需要 item_id。")
+        return "item:" + str(entry["item_id"])
+    bx.require(kind == "service" and isinstance(entry.get("service_id"),str) and entry["service_id"], "服务物资需要 kind=service 和 service_id。")
+    return "service:" + entry["service_id"]
+
+
+def quest_rows(raw, name, classes=()):
     title = re.search(r"<title[^>]*>(.*?)</title>", raw, re.I | re.S)
     if not title or not text_of(title[1]).startswith(name + " -"):
         return []  # Redirects/ambiguous variants must not inherit another gem's table.
     section = re.search(r"<h[1-6][^>]*>\s*Quest\s*/\d+\s*</h[1-6]>(.*?)</table>", raw, re.I | re.S)
     if not section: return []
     rows = []
+    class_ids = {entry["name"]: entry["id"] for entry in classes}
     for row in re.findall(r"<tr[^>]*>(.*?)</tr>", section[1], re.I | re.S):
         cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.I | re.S)
         if len(cells) != 4: continue
         act, quest, npc, characters = [text_of(cell).strip() for cell in cells]
         if not act.isdigit(): continue
-        classes = sorted(CLASS_IDS.values()) if characters == "All Classes" else sorted(value for key, value in CLASS_IDS.items() if re.search(r"\b" + re.escape(key) + r"\b", characters))
+        allowed_classes = sorted(class_ids.values()) if characters == "All Classes" else sorted(value for key, value in class_ids.items() if re.search(r"\b" + re.escape(key) + r"\b", characters))
         kind = "vendor" if 'title="Quest Vendor"' in cells[2] else "quest" if 'title="Quest Reward"' in cells[2] or not npc else None
-        if not kind or not classes or not quest: continue
+        if not kind or not allowed_classes or not quest: continue
         rows.append({"acquisition": kind, "available_from_act": int(act), "quest": quest,
-                     "npc": npc if kind == "vendor" else "Quest Reward", "class_ids": classes,
+                     "npc": npc if kind == "vendor" else "Quest Reward", "class_ids": allowed_classes,
                      "basis": "gem_quest_table"})
     return rows
 
 
-def universal_rows(gem_rows, general_raw):
-    """Use live universal-vendor text only for normal, listed quest-reward gems.
-
-    This deliberately does not infer availability for exceptional, drop-only,
-    transfigured or Vaal gems from a minimum level or a model-written label.
-    """
+def universal_rows(gem_rows, general_raw, classes=()):
+    """Corroborate a vendor row; never invent its unlock quest or chapter."""
     text = " ".join(text_of(general_raw).split())
-    rewards = [row for row in gem_rows if row["acquisition"] == "quest"]
     result = []
-    siosa = re.search(r"Siosa in Act (\d+) sells all unleveled skill gems that can be received as quest rewards for quests you've completed, across all classes", text)
-    lilly = re.search(r"Lilly Roth in Act (\d+), 10 and Karui Shores sells all unleveled skill gems after completing the Act (\d+) quest Fallen from Grace", text)
-    if siosa and any(row["available_from_act"] <= int(siosa[1]) for row in rewards):
-        result.append({"acquisition": "vendor", "available_from_act": int(siosa[1]), "quest": "A Fixture of Fate",
-                       "npc": "Siosa", "class_ids": sorted(bx.CLASSES), "basis": "quest_table_and_universal_vendor_rule",
-                       "condition": "完成图书馆 A Fixture of Fate，并完成此宝石原任务进度；普通未升级宝石。"})
-    if lilly and rewards:
-        result.append({"acquisition": "vendor", "available_from_act": int(lilly[2]), "quest": "Fallen from Grace",
-                       "npc": "Lilly Roth", "class_ids": sorted(bx.CLASSES), "basis": "quest_table_and_universal_vendor_rule",
-                       "condition": "完成第六章 Fallen from Grace；普通未升级宝石。"})
+    for row in gem_rows:
+        if row["acquisition"] != "vendor": continue
+        pattern = re.escape(row["npc"]) + r" in Act " + str(row["available_from_act"]) + r"\b[^.]*across all classes"
+        match = re.search(pattern, text)
+        if match:
+            result.append({**row, "class_ids": sorted(entry["id"] for entry in classes),
+                           "basis": "gem_vendor_row_and_observed_scope", "condition": match[0]})
     return result
 
 
@@ -168,51 +276,38 @@ def page_version(raw):
     return None
 
 
-def trial_facts(folder, context, game_version):
-    """Read campaign trial locations; area levels are not character entry levels."""
-    result = {"status": "unverified", "scope": "前三次迷宫的剧情试炼位置；不证明角色已完成试炼、通关或满足全部进入条件。"}
+def trial_facts(folder,context,game_version):
+    """Observe rows as written; do not infer rewards or completion from row order."""
+    result={"status":"unverified","scope":"网页的迷宫位置与区域等级；不推导角色已完成、奖励总点数或安全通关等级。"}
     try:
-        page = fetch("https://poedb.tw/us/The_Lords_Labyrinth", folder, context)
-        result.update(source_record(page), source_game_version=page_version(page["html"]))
-        bx.require(result["source_game_version"] == game_version, "试炼页面的当前版本不匹配本机数据。")
-        names = ("The Labyrinth", "The Cruel Labyrinth", "The Merciless Labyrinth")
-        tables = re.findall(r"<table\b[^>]*>.*?</table>", page["html"], re.I | re.S)
-        tables = [table for table in tables if all(name in table for name in names) and "<th>Area</th>" in table and "<th>Level</th>" in table]
-        bx.require(len(tables) == 1, "未识别唯一的迷宫试炼表。")
-        found = {}
-        for row in re.findall(r"<tr[^>]*>(.*?)</tr>", tables[0], re.I | re.S):
-            cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.I | re.S)
-            if len(cells) != 4: continue
-            name, locations, area_level = [text_of(cell) for cell in cells[:3]]
-            if name not in names: continue
-            trials = locations.splitlines()
-            acts = [int(match[1]) for line in trials if (match := re.match(r"Act\s+(\d+)\s+\S", line))]
-            bx.require(acts and len(acts) == len(trials) and all(1 <= act <= 10 for act in acts) and area_level.isdigit(), "试炼表的章节或区域等级格式变化。")
-            found[name] = {"name": name, "points": (names.index(name) + 1) * 2,
-                           "last_trial_act": max(acts), "trial_locations": trials, "area_level": int(area_level)}
-        bx.require(set(found) == set(names), "试炼表缺少前三次迷宫中的一项。")
-        bx.require("each reward you with two Ascendancy points" in text_of(page["html"]), "未核对到每次迷宫的升华点奖励说明。")
-        result.update(status="source_checked", labyrinths=[found[name] for name in names])
-    except (OSError, ValueError) as exc:
-        result["reason"] = "迷宫试炼依据未核实：" + str(exc)
+        page=fetch("https://poedb.tw/us/The_Lords_Labyrinth",folder,context)
+        result.update(source_record(page),source_game_version=page_version(page["html"]))
+        bx.require(game_version and result["source_game_version"]==game_version,"试炼页当前版本与目标未确认一致。")
+        tables=[t for t in re.findall(r"<table\b[^>]*>.*?</table>",page["html"],re.I|re.S) if "<th>Area</th>" in t and "<th>Level</th>" in t]
+        found=[]
+        for table in tables:
+            for row in re.findall(r"<tr[^>]*>(.*?)</tr>",table,re.I|re.S):
+                cells=re.findall(r"<td[^>]*>(.*?)</td>",row,re.I|re.S)
+                if len(cells)<3: continue
+                name,locations,level=[text_of(c) for c in cells[:3]]
+                if not name or not level.isdigit(): continue
+                locations=locations.splitlines()
+                acts=[int(m[1]) for loc in locations if (m:=re.match(r"Act\s+(\d+)\s+\S",loc))]
+                found.append({"name":name,"trial_locations":locations,"observed_acts":acts,"area_level":int(level),"excerpt":text_of(row)})
+        bx.require(found,"未识别当前页面的试炼表结构。")
+        result.update(status="source_checked",labyrinths=found)
+    except (OSError,ValueError) as exc: result["reason"]="试炼依据未核实："+str(exc)
     return result
 
+def reconcile_trial_progress(route,proof):
+    stages=[stage for stage in route["stages"] if stage.get("ascendancy_used",0)]
+    if not stages: return [],False
+    missing=[stage["stage_id"] for stage in stages if not has_claim(route.get("claims",[]),"progress:"+stage["stage_id"])]
+    warnings=["升华进度需逐段对应实际完成或进入条件，区域等级不代表角色已解锁；待审阶段："+", ".join(missing)] if missing else []
+    if proof.get("status")!="source_checked": warnings.append(proof.get("reason","试炼页面未观测，采用其他依据时查看 progress claim。"))
+    return warnings,bool(missing)
 
-def reconcile_trial_progress(route, proof):
-    if not any(stage["ascendancy_points"] for stage in route["stages"]): return [], False
-    if proof["status"] != "source_checked": return [proof.get("reason", "迷宫试炼依据未核实。")], True
-    errors = []
-    for stage in route["stages"]:
-        required = [lab for lab in proof["labyrinths"] if lab["points"] <= stage["ascendancy_points"]]
-        stage["trial_requirements"] = required
-        if required and not route.get("shared_trials", False) and stage["act"] < required[-1]["last_trial_act"]:
-            lab = required[-1]
-            errors.append(f"{stage['level']} 级/第 {stage['act']} 章阶段安排了 {stage['ascendancy_points']} 点升华，但 {lab['name']} 的最后剧情试炼在第 {lab['last_trial_act']} 章；按真实进度延后，不得把首角色改成共享进度来放行。")
-    bx.require(not errors, "迷宫进度检查失败：\n" + "\n".join(errors))
-    return [], False
-
-
-def gem_facts(gems, folder, context, game_version=None):
+def gem_facts(gems, folder, context, game_version=None, classes=()):
     try:
         general = fetch("https://poedb.tw/us/Gem", folder, context)
     except (OSError, ValueError) as exc:
@@ -227,7 +322,7 @@ def gem_facts(gems, folder, context, game_version=None):
                   "native": {key: entry[key] for key in ("display_name", "description", "min_level", "tags", "level_requirements") if key in entry}}
         try:
             page = fetch(url, folder, context)
-            rows = quest_rows(page["html"], page_name)
+            rows = quest_rows(page["html"], page_name, classes)
             result["source_game_version"] = page_version(page["html"])
             result["sources"].append(source_record(page, role="gem_quest_table"))
             if game_version and result["source_game_version"] != game_version:
@@ -236,9 +331,9 @@ def gem_facts(gems, folder, context, game_version=None):
                 result["reason"] = "页面没有可识别的同名普通宝石任务表；不能推断不存在其他获取办法。"
             else:
                 if general and (not game_version or page_version(general["html"]) == game_version) and not entry.get("special_variant") and not entry.get("vaal"):
-                    extra = universal_rows(rows, general["html"])
+                    extra = universal_rows(rows, general["html"], classes)
                     if extra:
-                        rows += extra
+                        rows = [row for row in rows if not any(all(row[k] == extra_row[k] for k in ("acquisition", "quest", "npc", "available_from_act")) for extra_row in extra)] + extra
                         result["sources"].append(source_record(general, role="universal_vendor_rule"))
                 result.update(status="source_checked", choices=rows)
             if general is None: result["universal_vendor_note"] = "通用商店规则未读取：" + general_error
@@ -251,41 +346,47 @@ def gem_facts(gems, folder, context, game_version=None):
         return dict(pool.map(one, gems.values()))
 
 
-def reconcile_acquisitions(route, evidence):
-    """Choose observed rows; replace explanatory prose with canonical facts."""
-    warnings, unresolved = [], []
-    for skill_id, acquisition in route["gems"].items():
-        proof = evidence.get(skill_id, {})
-        if acquisition.get("acquisition") not in {"quest", "vendor"}:
-            unresolved.append(skill_id)
-            acquisition["evidence_status"] = "user_or_external_confirmation_required"
-            continue
-        if proof.get("status") != "source_checked":
-            unresolved.append(skill_id)
-            acquisition["evidence_status"] = "unverified"
-            warnings.append(skill_id + " 获取未核实：" + proof.get("reason", "缺少可读来源"))
-            continue
-        choices = [row for row in proof["choices"]
-                   if row["acquisition"] == acquisition["acquisition"]
-                   and row["available_from_act"] == acquisition.get("available_from_act")
-                   and (row["npc"] == acquisition.get("npc") if acquisition.get("npc") else True)
-                   and (row["quest"] == acquisition.get("quest") if acquisition.get("quest") else True)
-                   and (route["class_id"] in row["class_ids"] or acquisition.get("via_mule"))]
-        bx.require(len(choices) == 1, skill_id + " 获取声明未对应唯一来源行。请从 research 返回的 choices 选择 acquisition/available_from_act/npc/quest，保持用户职业与小号偏好：" + json.dumps(proof["choices"], ensure_ascii=False))
-        chosen = choices[0]
-        if acquisition.get("class_ids"):
-            bx.require(set(acquisition["class_ids"]) <= set(chosen["class_ids"]), skill_id + " 的 class_ids 扩大了网页实际允许的职业范围。")
-        acquisition.update(chosen)
-        acquisition["evidence_status"] = "source_checked"
-        acquisition["source_note"] = f"第 {chosen['available_from_act']} 章 · {chosen['quest']} · {chosen['npc']}。" + chosen.get("condition", "需先完成所列任务。")
-        acquisition["source_urls"] = [source["url"] for source in proof["sources"]]
-    return warnings, unresolved
-
+def reconcile_acquisitions(route,evidence):
+    """Bind each physical instance to observed facts or an explicit held declaration."""
+    warnings,unresolved=[],[]
+    registry,claims=route.get("evidence",{}),route.get("claims",[])
+    for stage in route["stages"]:
+        sid=stage["stage_id"]
+        for need in stage.get("required_items",[]):
+            ref=material_ref(need)
+            instance=need.get("instance_id",ref)
+            subject="acquisition:"+instance
+            refs=need.get("evidence_refs",[])
+            bx.require(isinstance(refs,list) and all(isinstance(v,str) for v in refs),"获取依据 evidence_refs 无效。")
+            records=[registry[r] for r in refs if r in registry and registry[r].get("subject")==ref and registry[r].get("status")!="unresolved"]
+            status="unresolved"
+            if need.get("acquisition")=="owned":
+                declared=[r for r in records if r["kind"]=="user_statement" and r.get("context",{}).get("quantity")==need["quantity"] and (not need.get("instance_id") or r.get("context",{}).get("instance_id")==instance)]
+                if declared: status="user_declared"
+            elif need.get("kind")=="gem" and need.get("acquisition") in {"quest","vendor"}:
+                proof=evidence.get(need["skill_id"],{})
+                if proof.get("status")=="source_checked":
+                    choices=[row for row in proof["choices"] if all(need.get(k)==row.get(k) for k in ("acquisition","available_from_act","quest","npc")) and (route["class_id"] in row["class_ids"] or need.get("via_mule"))]
+                    bx.require(len(choices)==1,"实例 "+instance+" 未匹配唯一获取行；使用 research 的实际职业、任务、NPC 和章节。")
+                    row=choices[0]
+                    if need.get("class_ids"): bx.require(set(need["class_ids"])<=set(row["class_ids"]),"不得扩大任务表的职业范围。")
+                    if stage.get("completed_act") is not None:
+                        bx.require(stage["completed_act"]>=row["available_from_act"] or stage.get("act",0)>=row["available_from_act"],"此阶段声明的剧情进度早于获取章节；已持有应使用对应声明。")
+                    need["observed_source_row"]=row
+                    need["source_urls"]=[source["url"] for source in proof.get("sources",[])]
+                    status="source_observed"
+            elif records and any(c["status"]=="model_assessed" and subject in c["subjects"] and set(c["evidence_refs"]) & {r["evidence_id"] for r in records} for c in claims):
+                status="model_assessed"
+            need["evidence_status"]=status
+            if status=="unresolved" or status!="user_declared" and not has_claim(claims,subject):
+                unresolved.append(subject)
+                warnings.append(instance+" 的规格、数量、取得/成长与阶段切换条件尚需判断。")
+    return warnings,list(dict.fromkeys(unresolved))
 
 def version_fact(url, game_version, league, folder, context):
     """Capture an official version/season passage, with an explicit narrow scope."""
     result = {"status": "unverified", "url": url}
-    if urlsplit(url).hostname not in HOSTS - {"poedb.tw"}:
+    if not isinstance(game_version, str) or not isinstance(url, str) or urlsplit(url).hostname not in HOSTS - {"poedb.tw"}:
         return result | {"reason": "版本映射需要游戏官方公告；当前链接须人工核对。"}
     try:
         page = fetch(url, folder, context)

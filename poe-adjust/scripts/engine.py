@@ -11,12 +11,15 @@ from collections import deque
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import struct
 import subprocess
 import sys
+import tempfile
+import time
 import xml.etree.ElementTree as ET
 
 # Historical source records, not an engine compatibility allowlist.
@@ -25,6 +28,8 @@ VERSION_EVIDENCE = {
     "3.29": {"season": "S30", "name": "永火之咒", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml"},
 }
 SCRIPTS = Path(__file__).resolve().parent
+CACHE_DIRECTORY = Path(tempfile.gettempdir()) / "poe-adjust-cache"
+PERFORMANCE = {"requests": 0, "worker_calls": 0, "cache_hits": 0, "worker_seconds": 0.0}
 
 
 class EngineError(ValueError):
@@ -168,22 +173,20 @@ def require_data_version(info):
 
 def validate_game_version(game_version, league, data_version=None, version_source=None):
     """The installed gem/mechanics data is not selected by the XML's tree version."""
+    if game_version is None:
+        return  # Unknown target remains a delivery gap, not a catalog failure.
     if not isinstance(game_version, str) or not re.fullmatch(r"3\.\d+", game_version):
         raise EngineError("请联网确认目标赛季的 game_version（如 3.29），不能从 S29 或 XML 的 treeVersion 推断。")
-    season = re.search(r"(?<![A-Za-z0-9])S\s*(\d+)(?!\d)|第\s*(\d+)\s*赛季", league, re.I)
-    season_number = int(next(group for group in season.groups() if group)) if season else None
-    for documented_version, evidence in VERSION_EVIDENCE.items():
-        if (season_number == int(evidence["season"][1:]) or evidence["name"] in league) and game_version != documented_version:
-            raise EngineError(f"赛季与游戏版本不对应：官方 {evidence['season']}（{evidence['name']}）对应 {documented_version}，不能按 {game_version} 交付。请澄清是历史赛季、永久区还是旧文件用于当前赛季；不要擅自更改用户目标。")
     if data_version is not None and game_version != data_version:
         raise EngineError(f"目标游戏版本 {game_version} 与本机机制/宝石数据 {data_version} 不一致。仅切换旧天赋树不能还原旧版规则，需要维护者提供经过验证的对应引擎。")
-    for documented_version, evidence in VERSION_EVIDENCE.items():
-        if isinstance(version_source, str) and version_source.split("?")[0].split("#")[0] == evidence["url"] and documented_version != game_version:
-            raise EngineError(f"引用的官方公告实际为 {evidence['season']} / {documented_version}，不能作为 {game_version} 的版本依据。请打开 doctor/start 返回的 version_evidence.url 核对正文。")
 
 
-def validate_contract(result):
-    """Reject missing evidence instead of silently treating absent fields as zero."""
+def validate_contract(result, *, catalog_only=False):
+    """Check the requested interface, not unrelated gameplay capabilities."""
+    if catalog_only:
+        if not isinstance(result.get("catalog", result.get("catalog_batch")), list):
+            raise EngineError("本机未返回请求的目录结果；请检查目录接口。")
+        return
     required = {"stats": dict, "resource_rules": dict, "gems": list, "equipped": list,
                 "active_skills": list, "damage_sources": list, "classes": list, "excluded_guard_checks": list,
                 "nodes": list, "granted_passives": list, "config_keys": list, "config_lists": dict, "config_values": dict, "config_labels": dict,
@@ -195,18 +198,16 @@ def validate_contract(result):
     for key in ("points", "ascendancy_points", "secondary_ascendancy_points"):
         if type(result.get(key)) is not int or result[key] < 0:
             raise EngineError("本机接口缺少有效已分配点数：" + key)
-    if not result["capabilities"].get("excluded_guard_validation"):
-        raise EngineError("本机接口不能识别守护技能；无法核对排除短时收益后的连线与资源，请维护者检查接口变化。")
-    for key in ("Life", "Str", "Dex", "Int", "ManaUnreserved"):
-        if type(result["stats"].get(key)) not in (int, float):
-            raise EngineError("本机计算缺少核心指标：" + key)
-    if not result["classes"] or not result["config_keys"] or not result["xml"].startswith("<?xml"):
-        raise EngineError("本机目录或 XML 保存能力未通过检查。")
+    for key, value in result["stats"].items():
+        if isinstance(value, float) and not math.isfinite(value):
+            raise EngineError("本机返回非有限指标：" + key)
+    if not result["xml"].startswith("<?xml"):
+        raise EngineError("本机 XML 保存能力未通过检查。")
     ET.fromstring(result["xml"])
 
 
 def health(root: Path) -> dict:
-    result = calculate(root, queries=[{"kind": "gems", "query": "", "limit": 1}, {"kind": "config", "query": "", "limit": 1}], health_probe=True)
+    result = calculate(root, queries=[{"kind": "gems", "query": "", "limit": 1}, {"kind": "config", "query": "", "limit": 1}], health_probe=True, cache=False)
     if not result.get("health_probe", {}).get("roundtrip") or not all(row["entries"] for row in result["catalog_batch"]):
         raise EngineError("本机启动/目录查询/XML 保存回读自检未通过。")
     frontend = {"name": "未检测到 PoECharm 外壳", "file_version": None}
@@ -242,11 +243,15 @@ def ascendancy_paths(name, nodes):
     return selected, paths
 
 
-def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False, class_id: int | None = None) -> dict:
+def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, offset: int = 0, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False, class_id: int | None = None, breakdowns: list | None = None, node_probes: list | None = None, cache: bool = True) -> dict:
+    started = time.perf_counter()
+    PERFORMANCE["requests"] += 1
     if class_id is not None and (type(class_id) is not int or xml or xml_batch):
         raise EngineError("职业起点查询需要整数 class_id，且不能覆盖已有 XML 的角色上下文。")
     info = check(root)
-    request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit, "health_probe": health_probe}
+    if type(offset) is not int or offset < 0:
+        raise EngineError("目录 offset 应为非负整数。")
+    request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit, "offset": offset, "health_probe": health_probe}
     if class_id is not None: request["class_id"] = class_id
     if queries is not None:
         request["queries"] = queries
@@ -254,6 +259,23 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         request["crafts"] = crafts
     if xml_batch is not None:
         request["xml_batch"] = xml_batch
+    if breakdowns is not None: request["breakdowns"] = breakdowns
+    if node_probes is not None: request["node_probes"] = node_probes
+    if (breakdowns or node_probes) and not xml:
+        raise EngineError("计算明细和天赋筛选需要具体角色 XML。")
+    cache_key = hashlib.sha256(json.dumps({"request":request,"fingerprint":info["engine_fingerprint"]},sort_keys=True,ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
+    cache_path = CACHE_DIRECTORY / (cache_key + ".json")
+    if cache and not health_probe:
+        try:
+            stored = json.loads(cache_path.read_text(encoding="utf-8"))
+            payload = json.dumps(stored["result"],sort_keys=True,ensure_ascii=False,allow_nan=False)
+            if stored["key"] == cache_key and stored["sha256"] == hashlib.sha256(payload.encode("utf-8")).hexdigest() and fingerprint(root) == info["engine_fingerprint"]:
+                PERFORMANCE["cache_hits"] += 1
+                return {**stored["result"],"runtime":{"cache_hit":True,"worker_calls":0,"elapsed_seconds":round(time.perf_counter()-started,4),"cache_key":cache_key}}
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # Corrupt or unavailable cache is a miss, never a calculation result.
+    worker_started = time.perf_counter()
+    PERFORMANCE["worker_calls"] += 1
     try:
         process = subprocess.run(
             [sys.executable, str(SCRIPTS / "engine.py"), "--worker"],
@@ -264,6 +286,8 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         )
     except subprocess.TimeoutExpired as exc:
         raise EngineError("PoB 计算超过 120 秒，已结束本次计算。原文件没有改动。") from exc
+    finally:
+        PERFORMANCE["worker_seconds"] += time.perf_counter() - worker_started
     if process.returncode:
         detail = process.stderr.decode("utf-8", errors="replace")[-5000:]
         # The headless worker may include desktop hotkey instructions in errors.
@@ -289,11 +313,11 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
                 if filename == "Items_Oils.csv":
                     oil_names.update({row[0].replace(" ", ""): row[0] for row in rows})
     for calculation in result.get("calculations", [result]):
-        validate_contract(calculation)
+        validate_contract(calculation, catalog_only=bool(catalog or queries) and not health_probe and not xml_batch and not crafts)
         calculation.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
-        if info["available_tree_versions"] and calculation["latest_tree_version"] not in info["available_tree_versions"]:
+        if info["available_tree_versions"] and calculation.get("latest_tree_version") and calculation["latest_tree_version"] not in info["available_tree_versions"]:
             raise EngineError("运行中的天赋数据与安装元数据不一致，请等更新完成后重试。")
-        entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", []) + calculation["granted_passives"]
+        entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("secondary_ascendancies", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", []) + calculation.get("granted_passives", [])
         for query_result in calculation.get("catalog_batch", []):
             entries += query_result["entries"]
         entries += [ascendancy for entry in entries for ascendancy in entry.get("ascendancies", [])]
@@ -319,6 +343,33 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
                 for node_id, path in paths.items():
                     selected[node_id].update(ascendancy_path=path, ascendancy_path_cost=len(path),
                         ascendancy_path_names=[selected[key].get("display_name", selected[key]["name"]) for key in path])
+    result["input_xml_sha256"] = hashlib.sha256(xml.encode("utf-8")).hexdigest() if xml else None
+    for row in result.get("breakdowns",[]):
+        row["context"]={"engine_fingerprint":info["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"config_values":result.get("config_values",{})}
+    if xml_batch:
+        for calculation, source in zip(result["calculations"],xml_batch):
+            calculation["input_xml_sha256"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    if cache and not health_probe:
+        temporary = None
+        try:
+            CACHE_DIRECTORY.mkdir(parents=True,exist_ok=True)
+            payload = json.dumps(result,sort_keys=True,ensure_ascii=False,allow_nan=False)
+            with tempfile.NamedTemporaryFile(mode="w",encoding="utf-8",dir=CACHE_DIRECTORY,suffix=".tmp",delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump({"key":cache_key,"sha256":hashlib.sha256(payload.encode("utf-8")).hexdigest(),"result":result},stream,ensure_ascii=False,allow_nan=False)
+            temporary.replace(cache_path)
+            # This disposable cache owns only its direct JSON files. Bound disk use.
+            total = 0
+            for entry in sorted(CACHE_DIRECTORY.glob("*.json"),key=lambda p:p.stat().st_mtime,reverse=True):
+                total += entry.stat().st_size
+                if total > 64*1024*1024: entry.unlink(missing_ok=True)
+        except OSError:
+            pass  # Cache write failure must not invalidate a successful calculation.
+        finally:
+            if temporary is not None:
+                try: temporary.unlink(missing_ok=True)
+                except OSError: pass
+    result["runtime"] = {"cache_hit":False,"worker_calls":1,"elapsed_seconds":round(time.perf_counter()-started,4),"cache_key":cache_key}
     return result
 
 

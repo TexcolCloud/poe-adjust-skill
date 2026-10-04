@@ -1,265 +1,188 @@
-# 命令与文件协议
+# 命令与文件协议（schema_version 2）
 
-此文件用于实际调用 `scripts/poe.py`。全部 JSON 为 UTF-8；数字、布尔值和数组使用 JSON 类型。路径带空格时用 PowerShell 单引号。使用文件参数传递 JSON，不把整段 JSON 拼进命令行。
+所有 JSON 为 UTF-8，使用实际数字、布尔值和数组。文件路径用 PowerShell 单引号；通过文件参数传 JSON。每次独立工具调用重新定义变量，或直接使用绝对路径。Python 使用 TeleAgent 已注入的运行时。
 
-以下 `$entry`、`$run` 在每次独立 PowerShell 调用中重新赋值，或直接写绝对路径；不能假设前一工具调用的变量仍存在。Python 由 TeleAgent 运行时提供，不依赖 Codex。
-
-## 命令
+## 命令入口
 
 ```powershell
 $entry = '<技能目录>/scripts/poe.py'
 python $entry doctor
-python $entry inspect --input '<角色.xml>'
-python $entry start --invoked --input '<角色.xml>' --run '<工作区>/配装任务/会话'
-python $entry inspect --input '<角色.xml>' --calculate --out '<工作区>/配装任务/会话/diagnosis.json'
-python $entry intent --run '<工作区>/配装任务/会话' --file '<意图.json>'
-python $entry evaluate --run '<工作区>/配装任务/会话' --name proposal-a --plan '<计划.json>'
-python $entry export --run '<工作区>/配装任务/会话' --name proposal-a
-python $entry status --run '<工作区>/配装任务/会话'
+python $entry start --invoked --input '<角色.xml>' --run '<工作区>/会话'
+python $entry intent --run '<工作区>/会话' --file '<工作区>/intent.json'
+python $entry evaluate --run '<工作区>/会话' --name proposal-a --plan '<工作区>/plan.json'
+python $entry probe --run '<工作区>/会话' --name proposal-a --group 1 --index 2 --ids '<本机skill_id,另一个skill_id>' --level 1 --quality 0
+python $entry export --run '<工作区>/会话' --name proposal-a
+python $entry status --run '<工作区>/会话'
+python $entry inspect --input '<角色.xml>' --calculate --out '<工作区>/diagnosis.json'
+python $entry decode --input '<实际纯分享码.txt>' --out '<工作区>/template.xml'
 ```
 
-`--pob '<PoECharm 或内部 PoB 文件夹>'` 可放在任何子命令后。会话建立后通常无需重复提供。`inspect` 的结果较大，优先保存到文件并读取相关部分。
+所有子命令接受 `--pob '<PoECharm/内部PoB目录或程序>'`，正常自动发现。start 已做运行自检，目录须为空或不存在，之后始终使用同一 run。inspect/decode 不覆盖输入。网址与 HTML 不是纯分享码；有需要才从实际公开来源取得完整分享码，不抄写或拼接被截断内容。
 
-`--run` 始终指向同一个会话目录。首次 start 要求目录为空或尚不存在；原始文件和已有诊断放在其他目录也可以。`inspect --calculate --out` 仍直接返回简短的 `diagnosis_summary`，向玩家原样报告这段诊断，不再乘命中率或另造“有效 DPS”。完整文件也包含该摘要。进一步读诊断时用 `Get-Content -Raw -Encoding UTF8 ... | ConvertFrom-Json`，选取相关 `calculation.stats`、`calculation.warnings`、`calculation.active_skills` 和 `calculation.damage_sources`，不需要逐行读完整大文件。
+start 返回原始 overview 与检查文件路径；`inspect --calculate` 返回完整 calculation，保存到文件时终端只显示诊断摘要。inspection 的原 XML 字段是 `skill_groups[].gems[].skillId`；计算结果是 `gems[].id`。数字以实际 stats 为准，Build/PlayerStat 只是缓存。CountAllocNodes 的 points/ascendancy_points 已含连接小点，不能从已分配量反推已完成的任务。
 
-start 返回 overview，已含职业、等级、两个版本和技能组，不需要为了首次问询再 inspect。inspection 文件保留原 XML 字段：skill_groups[].gems[].skillId/nameSpec；计算结果则为 calculation.gems[].id/name。不要反复试猜字段名。诊断摘要中的已分配普通/升华点数直接来自原生 CountAllocNodes，包含连接小点；不要仅数大点或节点数组长度。任务点/升华进度仍由用户确认，不能从已分配点数或缓存的 unallocatedPassives 推断已完成任务数。
+旧 schema 会话只读追溯。请用新空目录 start，从旧记录提取有依据的意图，以新格式重建；不可直接 export。未确认偏好不从旧默认 false 迁移。
 
-doctor/start 自动读取本机发布记录和 GameVersions 元数据，并执行启动、查询、XML 保存与回读自检。`data_version_basis.status=corroborated` 表示两份本机依据一致；`unresolved` 时可查询，但不能认证方案。`engine_fingerprint` 覆盖实际计算代码、数据、适配器与译名，版本号相同但内容变化也会使缓存失效。升级后 evaluate 保留原始快照和已确认意图，重跑自检与基线；若规则版本变化则先重新确认目标。旧指纹候选不能直接 export。`capabilities` 是已检测接口能力，不是未来所有机制均正确的保证。历史 version_evidence 缺少新版本链接时，由联网工具寻找官方公告，不改版本数字。
-
-分享码：把实际取得的纯 PoB 分享码存成文本，运行 `decode --input '<分享码.txt>' --out '<模板.xml>'`。也可直接将纯分享码文件交给 inspect/start。网页地址和 HTML 不是分享码；用现有联网工具获取其中的真实分享内容，保留来源。大分享码从已核实的纯文本来源直接下载到工作区，只输出路径和长度；不要在思考、聊天或命令中重新抄写长串，也不要拼接截断的工具输出。仅在具体配装需要模板时才获取，不为开荒资料查询额外导入构筑。
-
-查询：
+## 按需明细、变体与效率
 
 ```powershell
-python $entry catalog --kind translations --query '盾' --limit 12
-python $entry catalog --kind gems --query 'Shield Crush' --limit 10
+python $entry inspect --input '<候选.xml>' --metrics 'Life,ManaCost,Armour' --out '<工作区>/calcs.json'
+python $entry inspect --input '<候选.xml>' --metrics 'Life,CombinedDPS' --skill-ref '<active_skills 中的完整引用>' --actor minion --out '<工作区>/minion-calcs.json'
+python $entry probe --run '<工作区>/会话' --name proposal-a --variants '<工作区>/variants.json' --metrics 'Life,CombinedDPS,ManaCost' --out '<工作区>/comparison.json'
+python $entry probe --run '<工作区>/会话' --name proposal-a --node-ids '<本机节点ID,另一个ID>' --out '<工作区>/node-screen.json'
+```
+
+`inspect --metrics` 自动计算。`calculation.breakdowns[]` 返回实际 `metric/skill_ref/actor/value/detail/context`，context 绑定输入 XML 摘要、引擎指纹和实际配置。默认当前主技能及其主体；可选 player/minion/mirage。Life 等明细直接保留原生公式文本或表格。`available_metrics` 是此主体实际提供的明细键，不是技能合法性表。
+
+Calcs 使用输入角色的主技能状态、EFFECTIVE 模式与战斗配置。`main_value` 在可匹配时给出 MAIN 观测；`matches_main_value=false` 或 `different_context` 不能用于解释 MAIN 数值。`unsupported` 表示缺少此明细/主体，`partial` 表示原生结构存在未覆盖或截断，不自行补成公式。不同主体不可互相借用回复或伤害。没有明细时，可用只改变一个明确输入的 probe 观察结果，但只能说明该输入在此角色和场景中的影响。
+
+`variants.json` 仅含 `variants` 数组，各项为 `{"id":"自定唯一标识","operations":{...}}`。operations 与 plan 共用同一套装备、宝石、天赋、配置、配方接口，不写第二套变化格式。每个变体独立应用到指定 candidate.xml；需要组合时把所有变化放在同一项，禁止将单项增益简单相加。旧 `--group/--index/--ids` 是生成同样变体的单位置简写。自动分批，没有固定候选总数。
+
+每项返回完整原生实算后的指标、分配点数、错误、资源账目与缺口；输入不合法的单项单独报错。所有结果都是 `screened` 或诊断 `blocked`，不代表预算、获取、最终目标已经通过。变体不修改候选文件；选定后写回完整 plan/evaluate/export。`--node-ids` 使用原生 getNodeCalculator，只筛未分配且未被装备授予的节点词缀，不包含连接路径/点数合法性；用完整路径组成变体再次实算。
+
+`--out` 的比较文件放在会话目录外的普通任务工作区，避免覆盖候选。模型读取需要的行，勿一次输出大矩阵导致平台转存到内部目录。
+
+引擎查询/计算自动缓存到当前用户临时目录 `poe-adjust-cache`，仅含可丢弃 JSON、总量受控；不用用户维护。键包括安装位置、所有相关引擎/适配器内容指纹、完整 XML 和参数。命中前检查结果摘要；损坏、缺失或内容更新时重算。最终导出、回读和 doctor 跳过结果缓存重新启动原生引擎。命令的 `runtime` 分别报告 requests、worker_calls、cache_hits、worker_seconds、elapsed_seconds；缓存命中不算新一次原生计算，也不刷新网页或市场报价的真实查阅日期。
+
+
+## 当前本机目录与资料
+
+```powershell
+python $entry catalog --kind classes --query '' --limit 20 --out '<工作区>/classes.json'
+python $entry catalog --kind rules --query '' --limit 30 --out '<工作区>/rules.json'
+python $entry catalog --kind gems --query 'Fireball' --limit 8 --out '<工作区>/gems.json'
 python $entry catalog --kind skills --query 'Embrace Madness' --limit 3
-python $entry catalog --kind nodes --input '<角色.xml>' --query 'life' --limit 15
-python $entry catalog --kind nodes --input '<角色.xml>' --query 'id:12345' --limit 1
-python $entry catalog --kind nodes --query 'Chieftain' --limit 30 --out '<工作区>/chieftain.json'
-python $entry catalog --kind uniques --query 'Emperor' --limit 3
+python $entry catalog --kind links --query 'Fireball,FreezingPulse,SupportAddedLightningDamage' --limit 1
+python $entry catalog --kind bases --query 'id:Iron Gauntlets' --limit 2
+python $entry catalog --kind affixes --query '<完整基底名>|maximum Life' --limit 20 --out '<工作区>/affixes.json'
+python $entry catalog --kind nodes --input '<角色.xml>' --query 'life' --limit 20 --offset 0 --out '<工作区>/nodes.json'
+python $entry catalog --kind nodes --class-id <本机职业ID> --query 'life' --limit 20 --out '<工作区>/start-nodes.json'
+python $entry catalog --kind nodes --query '<完整升华英文名>' --limit 100 --out '<工作区>/ascendancy.json'
 python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
-python $entry catalog --kind classes --query 'Duelist' --limit 1
-python $entry catalog --kind links --query 'ShieldCrush,SupportBrutality,SupportMeleePhysicalDamage' --limit 1
-python $entry catalog --kind bases --query 'Two-Toned Boots' --limit 8
-python $entry catalog --kind affixes --query 'Two-Toned Boots (Armour/Energy Shield)|maximum Life' --limit 15
-python $entry catalog --batch '<queries.json>' --out '<工作区>/catalog-results.json'
-python $entry research --gems 'Fireball,SupportMeleePhysicalDamage' --out '<工作区>/宝石依据.json'
-python $entry research --version --league '<用户确认的赛季或永久区>' --out '<工作区>/版本依据.json'
-python $entry research --trials --out '<工作区>/试炼依据.json'
+python $entry catalog --kind metrics --input '<角色.xml>' --query 'MaximumHitTaken' --limit 30 --out '<工作区>/metrics.json'
+python $entry catalog --kind uniques --query '<名字>' --limit 3 --out '<工作区>/uniques.json'
+python $entry catalog --kind translations --query '盾' --limit 12
+python $entry catalog --batch '<工作区>/queries.json' --out '<工作区>/catalog.json'
+python $entry research --gems '<skill_id,skill_id>' --out '<工作区>/gem-facts.json'
+python $entry research --version --league '<用户目标赛季>' --source '<官方公告URL>' --out '<工作区>/version.json'
+python $entry research --trials --out '<工作区>/trial-facts.json'
 ```
 
-`research --version` 根据本机数据版本读取已有官方来源，直接返回标题、相关正文摘录、抓取日期和内容摘要，无需启动计算引擎或读取整篇公告。缺少新赛季来源时返回 unverified；用联网搜索找到官方公告，再加 `--source '<URL>'` 重试。它不会把未知赛季按编号推算，也不会因为网络失败认证版本。后续 intent 的 version_source 使用本次实际取得的 URL。
+批量文件：`{"queries":[{"kind":"gems","query":"id:Fireball","limit":2,"offset":0}]}`。支持上述原生 kind，translations 单查。单页 limit=1–100，按返回 next_offset 继续；程序自动分批，不限制整体候选/路线数量。长结果使用 --out 后选择相关字段读取，不把整份大 JSON 打到工具输出。多次分批前后指纹须一致。
 
-`research --trials` 读取当前版本前三次迷宫的剧情试炼位置，返回 trial_evidence.labyrinths 的 last_trial_act、trial_locations 和 area_level。章节来自实际网页，不按固定等级推断；区域等级不等于最低进入等级。该命令不能证明玩家已通关或第四次迷宫条件已满足。
+- classes 返回当前职业与其主升华 ID；rules 含副升华目录、slots、规则来源及 `meaning/status`。observed 不一律表示游戏上限：engine_state 是本次状态，native_fact 是原生事实，engine_constraint 是接口约束，unsupported 是没读到可靠规则。不能把建议/默认值当合法上限。
+- bases 返回当前基底 `sockets/valid_slots/affix_limits/requirements`；这是基底原生容量，实际物品可能有独特改变，完整角色需实算。affixes 返回当前物品词缀池、互斥组及物品等级要求。
+- gems 的 `natural_max_level`、`level_requirements[].naturally_trainable` 与有效数据级别分开。可计算不证明对应裸宝石可获得。quality 不设复制的统一上限，取得方式仍须依据。`base_resources` 是该等级基础费用/保留/辅助倍率，不能代替完整连线续航。
+- links 接受有序宝石 ID，可以多个主动及重复 ID。relations 用 `active_index/support_index/applied` 区分输入位置；valid 仅表示类型查询成功，incompatible 是未起作用的辅助，不证明物理安装、触发、费用或冷却正确。
+- config 返回原生类型、枚举 options[].val、标签及可读取默认值；用 val 写入，不能用显示 label 替代。最终实际条件在计算结果 config_values。
+- metrics 需要真实 XML，列出当前实际数字指标。minimum_stats 和 comparison 不受中文显示名称表限制；未知指标保留缺口。
+- 普通节点 path/points_to_allocate 只有真实 XML 或 --class-id 上下文才提供，两者互斥。不带上下文时只查目录，不能用默认角色路径。当前 path 从目标回溯到既有连接处；反序是加点顺序，多个路径须合并后重新计点。
+- 完整升华目录可按 linked 与起点核对路径；完整单次查询另含 ascendancy_path/path_cost，截断页不认证整张图。授予天赋在 granted_passives；已在树上分配不能再算一份收益。anoint_recipe 按本机清单保留重复材料和本机译名，不猜固定配方。
+- research 保留原生事实与网页事实的不同范围。宝石 choices 是当前页面实际任务/NPC/章节/职业行，不代表角色已完成或国服无差异。试炼只返回观测位置/区域等级，不按表格顺序推导奖励点数、解锁或玩家进度。版本正文未确认即 unverified；历史链接只是查询种子，不能从赛季编号推算版本。
 
-**查职业、升华节点 ID/原文、宝石或辅助兼容时不需要角色 XML。** 无角色开荒直接省略 `--input`，所有职业的数据都可查。不为目录查询手写最小 XML、下载构筑或解码巨大分享码。名称搜索也可能匹配贵族的同名节点，按 ascendancy_name 筛选实际升华，取 type=Notable 的大点。已有角色加真实 `--input '<角色.xml>'`；新角色查普通天赋路线时先用 classes 查职业 ID，再加 `--class-id <整数ID>`，由本机引擎从该职业起点计算。两种上下文互斥，单项和批量查询都支持。
+doctor/start 的指纹覆盖计算代码、数据、适配器和译名；data_version_basis 说明本机规则版本依据。软件版本相同但内容变化仍使旧结果失效。接口不兼容明确报告，不自动修改 PoECharm。操作只要求自己需要的能力，不以守护接口缺失否定职业目录。
 
-查询结果 `tree_context` 明示依据、职业及起点，`engine_fingerprint` 绑定本机数据。未传角色也未指定职业时，basis=unspecified，仅提供节点 ID/stats/linked，不提供 path/allocated/points_to_allocate，防止默认职业路径被误用。有上下文的 path 从目标回溯到现有连接处，反序才是加点顺序；多个目标各自的路径不能直接把点数相加，也不证明组合是最佳分配。
-
-有角色上下文时，节点 `allocated` 表示树上分配，`granted` 表示原生额外授予。完整计算结果 `granted_passives` 列出本机实际授予的节点 ID、原文与 `allocated_on_tree`。同一节点同时在树上分配会提示，不算两份收益；是否释放路径、改授予来源或保持现状，由模型结合实际连接与代价决定并重新计算。
-
-天赋 `anoint_recipe` 来自当前本机节点的原生涂油配方，按列表中的数量保留重复材料；每项带 id 和本机可用的译名。缺字段表示本次数据未提供配方，不能猜成任意三种油。配方不证明价格、已有材料或特殊/腐化物品可涂油；这些仍须核对实际装备与当前来源。
-
-用完整升华英文名查询且结果未截断时，节点还提供 `ascendancy_path`、`ascendancy_path_names`、`ascendancy_path_cost`，表示从该升华起点实际经过的大小点及总点数。它与相对于载入角色的 path/points_to_allocate 不同。route 合并各分支计数并展示必经大点；不能省略前置、虚构连接或在已用八点之外追加升华。
-
-`nodes` 的 `id:数字` 精确查询节点；裸数字仍可能匹配名称/说明。evaluate 遇到未保留节点时自动返回最多 8 项 `tree_diagnostics`，含是否在当前树/珠宝配置中找到、升华归属及相对已保留树的连接路径。不存在于当前树不等于游戏中不存在，可能缺珠宝、错误职业或数据版本；找到但未保留时先查连接，不归咎引擎兼容。路径含目标节点，合并后仍需核对总点数和保留限制。
-
-`config` 的列表型选项返回 `options`（val/label）及能确认的 `default_value`。JSON 使用实际 val，而非显示标签；evaluate/export 会按本机选项拒绝无效值或无法核对的列表，不凭敌人等级推断首领类型，也不把默认选项当作用户确认的场景。
-
-`gems` 同时返回当前本机技能原文 `description`，以及 `level_requirements[].base_resources`：原生等级表报告的 cost、保留与辅助倍率字段。不同光环是否固定/百分比保留、降级是否减少保留，比较这些实际值，不凭名称或记忆推断。未报告字段不能当作零；它们也未计辅助、天赋、装备和其他技能修改，完整构筑仍以实算为准。缺失机制再查 `skills` 与当前来源。装备授予技能仍使用 `skills`。
-
-一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的 `level_requirements`（gem_level/character_level/strength/dexterity/intelligence）、`min_level`、`special_variant`、`vaal`，开荒时据此核对等级与属性，而非猜测。
-
-`classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和辅助 ID，数量上限读取本机装备基底最大孔数，返回 valid、errors、compatible/incompatible。未知 ID 或主辅位置错误只使该条查询无效，不中断整批；必须处理 errors，不能把空 incompatible 当作通过。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
-
-`socket_limits` 是本机各装备类别基底的孔数范围，不是当前已拥有的物资。`bases` 查询可用 `id:<完整基底英文名>` 精确匹配，返回 sockets/socket_category 和需求；未报告孔数不当作零。类别内上限不一致时，路线必须指定实际基底，不能把其中最高值套给所有装备；特殊物品效果仍用具体 XML 核查。
-
-批量查询和较大的单项查询使用 `--out` 保存到当前任务工作区，命令仅返回文件路径和每项条数；单项完整结果在 entries，批量在 queries[].entries。未指定 --out 且超过 12000 字符时会提示重新指定，完整结果不会截断后冒充齐全。用 `Get-Content -Raw -Encoding UTF8 '<结果.json>' | ConvertFrom-Json` 后选择相关 queries、宝石或字段输出，避免一次读取整个大文件触发 TeleAgent 的工具输出目录授权。输出路径不得与输入 XML/queries.json 相同。
-
-`research` 一次查询最多 60 个本机宝石 ID，再抓取对应公开页面。返回文件中的 `gems[skill_id].choices` 包含 acquisition、available_from_act、quest、npc、class_ids；任务奖励和商店分开，通用商店由额外规则交叉核对，不从宝石等级猜来源。`sources` 保留实际抓取 URL、时间与摘要，status 为 source_checked 或 unverified。只读取本任务字段即可。来源快照自动存在同目录 `.poe-evidence`，一天到期或引擎/校验代码变化后重新抓取；用户不用维护缓存。查不到时保留缺口，不能手写 checked/verified 代替来源。此处未验证国服与国际服全部差异，也未证明交易供给或随机取得。
-
-技能返回 `skill_id` 才是操作字段；`id` 可能是游戏物品路径。查询天赋时带输入文件，使用其版本与当前已点天赋。结果按本机引擎计算的所需新增点数排序；`allocated` 表示已点，`reachable` 表示有可分配路线，`points_to_allocate` 是新增点数，`path` 包含到目标需要的节点 ID。将路线与保留节点合并后设置完整 `tree.nodes`，再评估点数和依赖；不要孤立添加远处的大点。`linked` 返回邻接节点，供调整已有路径时查看。查询只返回最多 100 条；细化关键词，不反复截断全库。
-
-局部调整优先 `tree.nodes_add` / `tree.nodes_remove`，由程序保留其他节点，避免手抄整个列表遗漏连接或珠宝节点。nodes_add 要包含 catalog 返回的完整 path；nodes_remove 只接受确实已点的节点。不要与完整 nodes 混用。增量操作不自动修补移除节点造成的断路，evaluate 会拒绝丢失的节点，须按真实连接修复。换升华时也需移除不再适用的原升华节点。
-
-局部增改专精用 `tree.masteries_add: {"节点ID": 效果ID}`，其他已选专精自动保留。退掉某专精节点时用 nodes_remove，其效果也会清除。`masteries` 是整张专精表完整替换，不能仅填写本次新增的一项，也不能与 masteries_add 混用；遗漏仍已分配节点的原专精会明确拒绝。遇到多枚专精同时丢失，先检查是否误用了完整替换，不要盲目删节点或猜测为星团断路。
-
-升华节点返回界面名称 `ascendancy_name`、原生内部名 `ascendancy_internal_name` 和 `is_ascendancy_start`；用升华英文名（如 Champion）可查该升华节点，不能按节点 ID 大小猜测归属。`no_tree_connection=true` 的孤立节点没有普通树连线，须另查装备等授予来源，不能直接列为迷宫升华可点的大点。升华起点不消耗点数，分配结果以 evaluate 的 `ascendancy_points` 为准。
-
-`gems` 用于查找可装配宝石；`skills` 用于读取技能说明，也包括装备赋予的技能（`from_item=true`），不能把这些技能当成可以买到的独立宝石。`config` 同时检索配置键、标签和提示文字，可查实际增益/负面层数的解释。先用这些只读命令及网络资料查机制，通常无需搜索整个安装目录或读取引擎源码。
-
-## 意图 intent.json
+## 用户意图 intent.json
 
 ```json
 {
+  "schema_version": 2,
   "confirmed": true,
-  "goal": "当前等级刷图更稳定，尽量少按键",
-  "league": "国服 S30（由用户确认）",
-  "game_version": "3.29",
-  "version_source": "实际查阅并支持赛季对应关系的网页 URL",
-  "version_checked_at": "实际查阅的 ISO 日期",
-  "mode": "both",
-  "budget": {"amount": 20, "currency": "divine"},
-  "target_level": 86,
-  "allow_class_change": false,
-  "allow_ascendancy_change": true,
-  "allow_main_skill_change": true,
-  "keep_slots": ["Weapon 2"],
-  "keep_skill_ids": [],
-  "baseline_main_group": 1,
-  "scenario": {"enemyLevel": 83},
-  "minimum_stats": {},
-  "quest_passive_points": 23,
-  "ascendancy_points": 8,
-  "calculation_mode": "steady",
-  "resource_mode": "sustained",
-  "notes": "用户允许更换主技能；保留盾牌；不重新练号。"
+  "goal": "保留当前主技能，优先改善生存",
+  "league": "用户实际说出的国服赛季",
+  "allow_main_skill_change": false,
+  "evidence": [{
+    "evidence_id": "user-direction", "kind": "user_statement", "subject": "intent",
+    "text": "替换成用户本次实际原话，不抄此占位句", "message_ref": "可用的对话位置"
+  }],
+  "constraint_sources": {"/goal":"user-direction", "/allow_main_skill_change":"user-direction"}
 }
 ```
 
-示例数值不是默认事实，按对话填写。`target_level`、`baseline_main_group`、`quest_passive_points`、`ascendancy_points` 均须明确填写，脚本不默认满任务或满升华。用户未回答时先分轮询问。`mode` 为 refine/rebuild/both。预算 amount/currency 必填，金额是本次可投入预算；自力模式可写 0 并将确认已有的物品记为 owned。没有预算时先问。
+`confirmed` 记录流程，程序不独立读取聊天验证授权。每项已明确的限制在 constraint_sources 用 `/字段名` 关联 user_statement。可以一段原话对应多项真实表达，不把模型推断写成原话。
 
-`minimum_stats` 只放用户明确要求或认可的数值下限，未约定时为空。模型的参考目标写入 notes 并标明是设计假设，按候选证据解释调整和剩余短板；调整预期本身不是目标达成证据。用户已经确认的限制不能为了通过计算而放宽。
+可选字段：
 
-`game_version` 是已联网核实的游戏主版本，不是 PoB 版本、XML targetVersion 或国服赛季编号。`version_source` 为实际官方网页 URL，`version_checked_at` 为查阅日期。历史 [S30 官方公告](https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml) 明确说明 3.29.0；它不能证明其他赛季。旧文件名不证明用户目标，旧树也不切换机制/宝石规则。本机版本由 doctor 检测，不固定版本号。intent/evaluate/export 的 `target_version_evidence` 来自实际官方正文；抓取或匹配失败时保留 unverified，导出标记 exported_draft，不能宣布赛季适用性已经核实。
-
-`keep_slots` 锁定该插槽原物品的完整文本，而非只锁物品名字。`keep_skill_ids` 要求候选中该技能启用。未明确允许时三个 allow 字段保持 false。`baseline_main_group` 从 inspection 的 `skill_groups[].index` 选择；先确定用户真正使用的主技能。
-
-`scenario` 是共同敌人/战斗配置，实际配置名用 config 查询。空对象使用引擎默认场景，并在报告明确；不要把默认场景称为终局首领。输入里旧战斗 Input 会被重置，盗贼与万神殿信息保留。共同场景在候选中不可单独改动。
-
-`calculation_mode` 默认 `steady`：守护增益、药剂必须关闭。`conditional` 用于用户接受的条件面板，开启的守护需 `config_evidence.guard`，每个药剂需 `config_evidence["Flask 1"]` 等说明触发、时长与覆盖。
-
-守护宝石设 `enable_global1=false`，但保留组 enabled=true 和实际 slot。PoB 会从常态计算移除此效果；适配器因此另做临时原生检查，返回 `excluded_guard_checks`，给补充的主动技能标记 `benefit_excluded=true`。原 XML、DPS、承伤和回复仍来自未开守护的计算；辅助兼容/触发等级/属性需求与费用独立核对，自动触发费用仍计入资源。关闭整组意味着本方案不使用它，不能同时宣称已验证自动触发；实际受击频率也不能由理论速率证明。
-
-触发的 `trigger_level_limit` 与 `trigger_target_required_level` 对照本机原生上限 stat 和宝石角色等级需求；有触发标签不等于等级匹配。不同级别的受伤时施放具有不同上限，不能把所有宝石一律升满。规则可对照[当前宝石说明](https://poedb.tw/us/Cast_when_Damage_Taken_Support)，具体上限随本机数据读取，不固定为某级或某赛季数字。
-
-`resource_mode` 默认 `sustained`：每秒消耗超出净秒回与吸取时拒绝交付。NetLifeRegen/NetManaRegen/NetEnergyShieldRegen 已扣除正义之火等自身持续伤害；回复不能忽略这项支出。程序检查生命、魔力、能盾和异能魔力（EB）转移支付。仅在 EB、无自身持续伤害、无伤害转由魔力承受时自动计入能盾充能，且检查启动延迟的资源缓冲；其他充能依赖须用 conditional，并在 config_evidence.energy_shield_recharge 说明启动、打断与覆盖。EB 检查保守要求能盾自身足以维持，不将耗尽后魔力混用当已验证。
-
-只有用户接受停手恢复才用 `burst`，计划给出 `burst_seconds`；程序校验时间不超过资源池并报告停手仅靠净秒回所需的恢复时间。吸取值仍依赖命中，不能当转场回复。资料及 verified_cn 价格的 checked_at 记录本机实际日期或带时区 ISO 时间，未来时间会被拒绝。
-
-原生输出 `active_skills` 包含每个启用主动技能的 id/name/group、is_main、trigger、info、costs；`damage_sources` 是 PoB 原生 Full DPS 计入项目及数量，空数组表示没有这项汇总。召唤技能的本人 CombinedDPS 可能为零，单只召唤物看 MinionCombinedDPS，合计看 FullDPS 与实际计入数量；probe 会在这类主技能上使用 MinionCombinedDPS，并返回 dps_metric，不能把单体数字擅自乘最大数量。程序在主技能消耗之外加入其他已识别自动触发技能的持续消耗，不重复加主技能；手动位移、诅咒、尸体生成等按真实频率另留余量，不能把主技能通过理解为所有按键同时满速通过。
-
-将军之吼须填写 `config_evidence.generals_cry`，说明尸体生成、战吼触发/冷却、实际幻影数量与玩家恢复；常态方案要装入且启用已核对的造尸技能。程序从当前本机 `SkillType.CreatesCorpse` 生成 `active_skills[].creates_corpses`，不使用技能名白名单；该类型只证明造尸能力，实际数量、费用和供尸频率仍须论证。接口无法识别时不认证此项。依赖场景尸体或特殊外部来源的方案使用 conditional 并解释限制。该机制在本机技能原文和 [官方介绍](https://www.pathofexile.com/forum/view-thread/2870970) 中均要求尸体，幻影攻击不等于本人攻击。
-
-主动技能 count 或 group_count 大于 1 时，填写 `config_evidence.skill_counts`：按技能组说明可同时维持的数量、施放/召唤速率、持续时间与取得条件。该文字只是可审查依据，程序不宣称数量已经被独立证明；Full DPS 分项会显示实际使用数量。
-
-## 候选 plan.json
-
-```json
-{
-  "name": "保留现有盾牌的调整方案",
-  "mode": "refine",
-  "summary": "修正技能搭配与资源保留，然后比较伤害和生存。",
-  "operations": {
-    "gems": [{"group": 1, "index": 1, "skill_id": "SupportBrutality", "level": 20, "quality": 0}],
-    "groups": [{"index": 7, "enabled": false}],
-    "main_group": 1
-  },
-  "sources": [{"title": "实际查阅的机制资料", "url": "<实际支持结论的直接页面 URL>", "version": "填写实际版本", "checked_at": "填写实际查阅时间"}],
-  "shopping": [{"description": "需要准备的辅助宝石", "status": "unknown"}],
-  "assumptions": ["按用户确认的主技能和战斗场景比较；药剂覆盖率需说明。"],
-  "migration_steps": ["先准备并练好替换宝石，再按说明调整技能组。"],
-  "legality_notes": "本例不新增装备词缀。"
-}
-```
-
-链接/日期必须替换为实际证据，不能照抄占位示例。示例改动只是协议展示，并非对所有角色适用的建议。
-
-`mode` 为 refine 或 rebuild。候选名命令参数 `--name` 使用短英文，如 `proposal-a`；面向用户的中文名称放 `name`。失败候选可用同名重新评估；原角色快照不覆盖。
-
-可用普通点或升华点应完成分配。本机适配版本全部任务奖励为 23 点，盗贼等额外奖励另由引擎 ExtraPoints 计入；完整奖励不能自行减成 21。确需留点时，计划加 `"unused_points_reason":{"normal":"具体留点用途","ascendancy":"具体原因"}`，只填实际留点的类型。理由会进入最终说明；不能用通用套话跳过设计。
-
-### operations 可用字段
-
-| 字段 | 内容 |
+| 字段 | 语义 |
 |---|---|
-| gems | 数组：group/index 为当前技能组/组内宝石的 1 起始序号；其余可设 skill_id、level、quality、enabled、enable_global1、enable_global2、count、skill_part、skill_stage_count、skill_minion |
-| groups | 数组：index 加 enabled、slot、label、include_in_full_dps、main_active_skill、group_count 中的字段 |
-| replace_skills | 完整替换当前技能方案的技能组数组；其他未启用方案保留。每组包含 slot、enabled、include_in_full_dps、main_active_skill 等组字段，以及 gems 数组；新宝石至少提供 skill_id，默认 1 级 0 品质 |
-| items | 数组：`{"id":20,"text":"Rarity: RARE\n名称\n基底\n..."}` 或 `{"id":20,"craft":{...}}`；原 ID 替换，新 ID 新增。text 用真实/已核实来源；普通稀有目标优先 craft |
-| equip | 数组：`{"slot":"Weapon 2","item_id":20}`；flask 可附 `active:false`；`Jewel 12345` 表示天赋珠宝插槽；0 表示移除 |
-| tree | 对象：nodes 完整替换，或 nodes_add/nodes_remove 增量添加/移除；class_id、ascendancy_id、secondary_ascendancy_id 可选；masteries_add 局部增改专精，masteries 完整替换，均为 `{"节点ID":效果ID}`。沿用输入天赋版本，不能靠改 treeVersion 强行迁移 |
-| level | 1–100，必须等于用户确认的 target_level |
-| main_group | 当前技能组的 1 起始序号 |
-| weapon_set | 1 或 2 |
-| config | 候选条件对象，需在 config_evidence 按键说明来源；不能修改 scenario 中的共同条件 |
+| game_version / version_source / version_checked_at | 当前目标机制版本、实际官方 URL、真实查阅时间；未知不猜，交付保留缺口 |
+| mode | refine / rebuild / both；未知省略/null |
+| budget | `{amount,currency}`；amount 有限非负，未知省略/null |
+| target_level | 明确目标角色等级；不是从文件随手复制的确认 |
+| allow_class_change / allow_ascendancy_change / allow_main_skill_change | true / false / null；副升华变化也检查升华许可 |
+| keep_slots | `[{slot:"本机槽位",preserve:"item_identity或exact_spec"}]`；实物加工与完整规格保留分开 |
+| keep_skill_ids | 明确需保留启用的本机技能 ID 数组 |
+| minimum_stats | `{本次原生指标名:有限最低值}`；缺失指标不按0 |
+| max_changed_equipment | `{count,basis:"replaced_items或changed_slots"}`；更换物品或改槽位规格，按用户口径 |
+| scenario | 用户明确限定的配置值；模型自行选择的共同场景放 plan.scenario |
+| baseline_main_group | 用户明确指定的原角色主组，1起索引；否则沿用文件 |
+| quest_passive_points | 已明确的任务点事实，不能默认全完成 |
+| normal_points_available | 已明确的普通总可用点数；未知不由程序套固定奖励公式 |
+| ascendancy_points / secondary_ascendancy_points | 已明确可用点数，不是必用点数；不固定8/10等赛季上限 |
+| notes | 其他记录 |
 
-正常装备插槽：Weapon 1、Weapon 2、Weapon 1 Swap、Weapon 2 Swap、Helmet、Body Armour、Gloves、Boots、Amulet、Belt、Ring 1、Ring 2、Flask 1–5。珠宝插槽为 `Jewel 节点ID`。
+未知值可先计算，只影响依赖它的判断。用户若不知精确点数，确认任务/角色进度后由模型结合当前来源评审 progress claim，不要求用户懂 JSON 或点数算法。重大方向 permission 缺口只能用真实用户回答更新 intent，不能写 claim 越过。
 
-宝石的 `count`、技能组 `group_count` 与层数仅在真实机制支持时设置，解释实际持续数量。克隆物品或换词缀要确认前后缀、基底、物等、势力、腐化和赛季限制。程序不替代完整游戏物品合法性数据库。
+## plan.json：修改与决策
 
-3.29 起宝石不受普通插槽颜色限制，匹配红/绿/蓝提供 +10 品质；不应为插入异色宝石强制增加改色成本。`gems[].quality` 是宝石自身品质，不能把插槽加成再加进去。原生计算按同装备各组和组内宝石的先后顺序分配物理孔位，输出 `matches_socket` / `socket_quality_bonus`。程序保留未启用的普通宝石组并清除其 slot，避免其挤占在用组的品质位置；带 source 的装备/天赋授予技能必须保留 source 与 slot，原生引擎靠两者匹配开关状态。计算后出现保留技能状态漂移会被拒绝。真实不相连的孔必须拆组；同一连线上含辅助的技能不能拆成独立组来漏算保留/消耗。新 XML 与说明包含实际镶嵌顺序。
+最初计划可先只有 `schema_version:2, mode:"refine或rebuild", summary:"具体目的", operations:{...}`，evaluate 会返回草案缺口及本次技能引用。完整字段是：schema_version、name、mode、summary、template_xml、operations、scenario、sources、shopping、inventory、assumptions、migration_steps、legality_notes、evidence、claims、usage、assessment。sources/assumptions/legality_notes 是说明，不自动充当已验证证据；用 claims 关联实际来源。
 
-### 普通稀有目标装
+| operations 字段 | 格式/作用 |
+|---|---|
+| gems | `[{group:1,index:2,skill_id:"本机ID",level:1,quality:0,...}]`；只改指定宝石 |
+| groups | `[{index:1,enabled:true,slot:"本机槽位",label:"用途",include_in_full_dps:true,main_active_skill:1,group_count:1}]`，按需写字段 |
+| replace_skills | 完整替换当前技能集：`[{slot:"...",gems:[{skill_id:"...",level:1,quality:0}],...组字段}]` |
+| main_group | 当前主技能组的1起索引 |
+| items | `[{id:正整数,text:"原生完整物品文本"}]` 或下述 craft；不改其他物品/非活动套装 |
+| equip | `[{slot:"本机槽位",item_id:物品ID,active:false}]`；0 表示移除；天赋珠宝使用 `Jewel <节点ID>` |
+| tree | nodes 全量或 nodes_add/nodes_remove 增量；class_id、ascendancy_id、secondary_ascendancy_id 从当前目录选择；masteries 全量或 masteries_add 局部映射 |
+| level | 目标角色等级，由实际引擎核对保留值与使用要求 |
+| weapon_set | XML 支持的1或2；这是接口格式，非武器组合策略 |
+| config | 候选专有配置变化；null 显式删除。共同场景写顶层 scenario，未知字段保留未覆盖 |
 
-先用 bases 查询完整基底名，再用 affixes 的 `完整基底名|关键词` 查询该基底能自然出现的普通词缀，包含 id、Prefix/Suffix、互斥 group、物等要求与数值范围。多个关键词可以 batch，不猜词缀 ID、层级或获取物等。
+宝石额外字段：enabled、enable_global1、enable_global2、count、skill_part、skill_stage_count、skill_minion，沿用当前本机语义。关闭守护收益与仍装备/触发/支付费用分开。禁用普通组不会释放 slot；确实卸下需显式 `slot:""`。
 
-把配方直接放进 operations.items，evaluate 会一次生成全部目标装备，再按同一角色流程实算：
+tree.masteries/masteries_add 使用节点 ID 字符串到效果 ID 的映射；nodes 全量不能混用增量，masteries 全量不能混用局部；保留其他专精。模板路径相对 plan 所在目录，仍须核对实际来源与迁移步骤。
 
-```json
-{"id":20,"craft":{
-  "base":"Two-Toned Boots (Armour/Energy Shield)",
-  "ilvl":86,"quality":20,"sockets":"W-W-W-W",
-  "affixes":[{"id":"IncreasedLife8","roll":0.5},{"id":"MovementVelocity5"},{"id":"ChaosResist6"}]
-}}
-```
+普通稀有配方使用 `items:[{id:100,craft:{base:"当前完整基底名",ilvl:正整数,quality:非负整数,sockets:"R-R G-G",affixes:[{id:"目录词缀ID",roll:0.5}]}}]`。roll 是范围位置0–1，默认0.5；默认品质0。词缀数量、互斥、适用和孔数由本机物品对象核对，不强加3前3后。此助手配方只覆盖原生普通词缀路径；特殊机制用实际物品文本与当前依据，不能假称所有制作都已模拟。
 
-此例只展示格式，不自动视为已拥有或预算内可得。roll 是范围内位置 0–1，默认中值 0.5，不是实际数值；不要默认全部满值。基底防御和基础隐式按中值生成。quality 仅 0–20，普通孔写 R/G/B/W，用连字符连接、空格断开。程序检查适用基底、物等、相同 group 冲突、最多三前缀/三后缀和基底孔数。物等与当前角色等级不是同一个值。
+## 证据、结论与使用方式
 
-此配方范围为无势力、未腐化、普通自然词缀的稀有装备，不含精髓、隐匿、工艺台、追忆、异界隐式或特殊珠宝/药剂。需要这些物品时查真实来源并使用 text，不把它们塞进普通配方。生成成功只证明所列数据约束；还需记录获取路径、孔数/连线方式、国服可获得性和费用。crafted_items 会留在评价记录，购物仍按自动物品差异记录 unknown/estimate/verified_cn。
+每条 evidence：`evidence_id/kind/subject` 必需；可选 text/url/path/excerpt/context/checked_at/message_ref。ID 在 intent+plan 合并后唯一，不以 native: 开头。status/digest/origin 由程序生成。
 
-### 整体换流派
+- user_statement：text 是实际表达，输出 user_declared。用户库存不是程序独立盘点。
+- web：url 与正文实际包含的 excerpt，由脚本读取公开官方/PoEDB 页面，输出 source_observed。其他公开来源可用 TeleAgent 联网工具读取，再使用 artifact。
+- artifact：path 指向本次任务目录内文本，excerpt 必须确实存在，记录内容摘要与采集 URL/时间。输出 artifact_observed，代表片段可追溯，不假装文件必定来自声称的网站。不能用此路径读取平台内部输出目录。
+- 原生引用直接写 `native:candidate#/stats/Life`、`native:baseline#/stats/Life` 等 JSON pointer，无需声明 evidence。只能访问本次已有字段，指针不执行代码。引用值与引擎/计算 XML 绑定；不要猜旧数组下标。
 
-可从原文件用 replace_skills/tree/items/equip 构造完整新方案；也可用 `template_xml` 指向已取得的、同天赋版本的模板 XML，路径相对于 plan.json 所在目录或使用绝对路径。模板和原角色在相同场景下独立重算。
+claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertainties`。subjects/evidence_refs/conditions/uncertainties 均为字符串数组；claim_id 唯一。缺引用、引用不存在、来源未解决或 uncertainties 非空，保持 unresolved。model_assessed 表示模型作了有引用的判断，**不表示程序证明语义充分**。
 
-模板方式仍应在 operations 设置用户目标 level、main_group，并迁移必须保留的真实装备。保留装备可从 inspection 复制其原文本到候选对应 ID，再 equip。`sources` 记录模板来源，`migration_steps` 记录核心装备准备、宝石升级、洗点与最后切换顺序。新职业需要 allow_class_change=true，并明确重新练角色。
+常用 subject：`goal`、`progress:normal`、`progress:ascendancy`、`progress:secondary_ascendancy`、`condition:guard`、`condition:Flask 1`、`config:<字段>`、`skill:<skill_ref>`、`dependency:<skill_ref>`、`count:<组>:<宝石位置>`、`resource:Mana:leech`、`resource:EnergyShield:recharge`、`transformation:<槽位>`、`legality:item:<物品ID>`、`migration`、`template_source`。以实际 pending 为索引说明问题；permission、缺失原生量和 capability 缺口不能靠填理由转成程序通过。
 
-### 预算与依据
+`assessment:{goal_claim_ids:["目标claimID"],scope:"实际核对范围",unresolved:[]}`。goal claim 引用用户目标与本次数值/来源，解释收益、代价、是否满足。不得以改变 scope 隐去用户已经明确要求的部分。
 
-shopping 每项需要 description、status。物品条目还应提供结构化关联：
+usage 每行是 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。引用 evaluation.result.active_skills 本次真实 skill_ref；claim 关联 `skill:<同一引用>`。频率为次/秒，窗口与恢复为秒，有限非负；未知就省略，不能编数。手动副技能需明确实际频率，包括0次的场景也解释。程序核对单次支付、可核算的线性费用、使用窗口与恢复；不能可靠推导的时序留 capability 缺口。默认展示原生满速费用；不要求全部方案满速持续。充能启动与打断条件、吸取受益者单列；调整节奏后未重算的 DPS 不当持续输出。
 
-- 宝石：`{"kind":"gem","skill_id":"SupportBrutality","level":20,"quality":0,"quantity":1,"description":"将原 19 级练至 20 级或采购替换","status":"unknown"}`。
-- 装备：`{"kind":"item","item_id":20,"quantity":1,"description":"目标胸甲，含连线/改色","status":"unknown"}`。
-- 洗点、制作等额外操作：`kind:"service"`，用 description 写具体内容。
+## 库存和采购
 
-程序从前后 XML 自动检测新增宝石、等级/品质/数量变化和新装备/改造；未匹配的需求保持 unknown。价格 low/high 表示该条全部 quantity 的总价。原 XML 19 级不能抵消目标 20 级，缺少同规格的物品不能直接标 owned。原 XML 也不等于仓库盘点；用户额外声称已备齐时在说明记录，实际规格须核对。
+requirements 从实际 XML 差异产生，包含仍装备的禁用/备用宝石、规格变化、装备改造和退点资源。阅读 evaluation.budget.materials，不能用“原 XML 没有，所以用户肯定没有”代替询问。
 
-status：
+物资公共字段：kind、quantity、evidence_refs，可选 description。gem 用 skill_id/level/quality；item 用 item_id/spec_sha256（来自该候选需求）；service 用 service_id。库存写 inventory，报价写 shopping，均不能自填 status。
 
-- owned：原 XML 可复用的同规格物品，或确认不产生通货费用的操作。没有 kind 的文字声明不能抵消程序检测的新增需求。
-- verified_cn：提供 low/high/currency/source/checked_at/league；source 为实际国服来源链接，league 与 intent.league 完全一致。
-- estimate：提供 low/high/currency，报告保持“估价”标记。
-- unknown：价格或可获得性尚不确定，不计入已知成本范围。
+库存 evidence.subject 为 `gem:<skill_id>:<level>:<quality>`、`item:<id>` 或 `service:<service_id>`，context.quantity 对应用户实际确认数量，装备还匹配 spec_sha256。同规格合并数量，依据不重复。同一条用户声明不反复累计数量。
 
-金额单位必须和预算一致；先核实汇率再换算。不同市场的价格、制作期望成本和成品成交价格不可混为一谈。空 shopping 表示价格未核实。列出全部必要成本，价格状态只是记录，不自动证明引用网页可信。
+报价另含 low/high/currency：low/high 是**该整条 quantity 的总价**。来源 context 需对应 realm:"cn"、league、currency、quantity、low、high，装备还需 spec_sha256，并有实际 checked_at。`quote:<物资引用>` claim 必须引用同一价格记录，解释规格与语义匹配。只写 URL 或 verified_cn 会被拒绝。国际服报价不计成国服已核实价格；无汇率依据不自动换算。
 
-`config_evidence` 示例：`{"conditionOnslaught":"装备词缀提供击杀获得，刷图可持续；无小怪首领不使用此假设"}`。说明必须和计算场景相符。
+程序区分 unknown、uncertain_range、quote_assessed、user_declared、no_additional_cost、over_budget。已知必需下界超过限额才确定超预算；估计超过或缺项不假称肯定超预算/预算满足。totals_complete=false 时金额仅为已列部分。quote_assessed 仍有交易时效条件，非成交保证。
 
-## 批量比较单个宝石
+## 结果、完整性与交付
 
-已经 evaluate 通过的候选，可用一次原生引擎进程比较同一位置的替代宝石：
+evaluate 保存 candidate.xml、requested.xml、plan.json、evaluation.json。读取 result 的实际技能、装备、配置、统计与伤害分项，readiness 的资源、errors/pending、budget、claims/evidence 和逐类 validation。diagnostics 带 code/category/subject/evidence_refs/affects/message/status；未知能力不改写成游戏非法。
 
-```powershell
-python $entry probe --run $run --name proposal-a --group 1 --index 2 --ids 'SupportBrutality,SupportIronGrip' --level 19 --quality 0
-```
+候选名称为1–48位小写英文/数字/连字符。原件、意图、请求 XML、候选记录/文件及引擎内容都有完整性校验；直接手改输出会要求重算。baseline 缓存按意图、共同场景、引擎及适配版本区分，各候选保留自己的基准。
 
-group/index 为候选当前技能组/宝石的 1 起始序号，ids 为已从 catalog 查到的 1–11 个不同 skill_id。level/quality 省略则保持该位置原规格；对比宝石自然等级上限不同时分开查询，不能让所有宝石沿用不适用的 20 级。
+probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。返回各变体原生快照、差异与未评审依赖；不继承旧宝石的使用结论，最终选择仍写完整 plan/evaluate。批量大小为进程资源保护，自动分批比较。
 
-返回 screened、原位置基准，以及每种替代的实算伤害、资源、用户约束和机械检查错误。候选文件保持不变。先排除 errors 非空的结果，再结合清图/首领、操作与成本判断。DPS 较高不自动更适合；当前比较未核算新增采购、未生成最终 XML 回读。选定后更新完整 plan 并重新 evaluate/export。
+export 再复算并重核来源。blocked 只输出诊断 HTML；draft 输出明确命名的配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json。`file_exported` 与方案状态分开。最后通过 TeleAgent 文件工具交付两份用户文件，以 facts_summary 为事实基础，再解释已引用的取舍；不能将“已回读”说成“全部机制、预算和实战已证实”。
 
-## 校验与交付
-
-evaluate 会计算原方案与候选、检查约束、输出候选 XML，然后回读重算。`status:invalid` 的 `errors` 必须解决才可 export。warnings 不被隐藏：包含引擎未解析词缀、缺少涂油、预算未知、升级比较等。
-
-已覆盖：解析/重复 ID/悬空装备引用、引擎静默丢弃的装备、当前方案选择、丢失天赋、当前等级点数与升华点/无解释的留点、启用技能与装备需求、宝石自身等级/品质上限和无效辅助、常态守护/药剂、持续资源或有时限的爆发、自动物品差异、启用技能组的数量/连线与原生顺序、3.29 孔色品质、用户锁定条件、预算上限、回读数据与核心指标一致性。禁用技能组视为备选方案，不占用当前配装的物理插槽。
-
-仍需 agent 结合证据审查：改色/连线的可行性与成本、插槽顺序对特殊装备的作用、触发循环、药剂覆盖率、条件持续性、特殊机制、所有装备词缀组合的游戏内合法性、国服可获得性和价格、用户目标是否实际改善。不能把“计算通过”写成“全部游戏机制与市场均保证”。
-
-export 只接收当前意图下的有效候选；会检查文件摘要并最终复算。输出可直接交付，聊天结论原样使用 user_summary。将军之吼幻影主技能的吸取/击回未计作玩家自身回复；原生面板值保留在 native_leech_on_hit 供诊断，本人额外攻击的收益需另行验证。不把内部 run.json、计划或临时文件作为最终成果。
-
-`evaluation.result.config_values/config_labels` 记录本次原生计算使用的配置值和列表标签（包含引擎填入的默认值），也参与 XML 保存回读一致性检查。报告和 user_summary 从这些字段生成敌人场景；HTML 折叠区提供完整配置、XML 摘要与引擎文件指纹，便于核对结论对应的版本和文件。条件在实战中的覆盖率仍由模型结合具体来源解释。
-
-导出前复核 plan 的说明文字：summary/assumptions/migration_steps 只写改动、条件和实际操作，DPS/资源/抗性等结果由程序表格给出，不重复保留旧设计数值。核对位移和辅助主动技能的真实支付池、最终节点与物品准备。文字修正也经过 evaluate/export，避免计划和交付文件不一致；估价不代表已确认预算达标。
-
-`evaluate.readiness` 返回实际常态/条件开关、剩余点数和资源明细。原方案诊断失效或条件不同时，`comparison.*.percent` 为 null，不能自己重新计算百分比并称为同条件实战提升。`status` 返回已发现的 pob_path/engine_version，后续查询无需反复 doctor。新技能版本会要求旧候选重新 evaluate。
+退出字段：calculation_mode、resource_mode、unused_points_reason、config_evidence、burst_seconds、upgrade_gems、fallback_skill_id、version_status、verified_cn。分别迁入具体 usage、claims、阶段或来源；旧字段显式报错，不保留双套运行路径。

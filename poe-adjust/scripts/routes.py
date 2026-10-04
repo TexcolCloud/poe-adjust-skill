@@ -1,341 +1,241 @@
-"""Validate a staged route against native gems, sockets and ascendancy paths."""
+"""Linear route plans grounded in current native catalogs and explicit evidence."""
 from __future__ import annotations
-
 import copy
 import html
+import json
 import math
-
 import buildxml as bx
 import engine
+import facts
 
-ACQUISITIONS = {"quest": "任务奖励", "vendor": "任务解锁商店", "drop": "随机掉落", "trade": "玩家交易", "lab": "迷宫获取", "owned": "确认已有"}
-WEAPONS = {"one_hand_shield": ("one_hand", "Shield"), "dual_wield": ("one_hand", "one_hand"), "two_hand": ("two_hand", None), "bow": ("bow", None), "unarmed_shield": (None, "Shield")}
-USAGES = {"main": "主要输出", "movement": "位移", "utility": "按需辅助操作", "aura": "常驻开启"}
-ATTRIBUTES = {"strength": "力量", "dexterity": "敏捷", "intelligence": "智慧"}
+ATTRIBUTES = {"strength":"力量", "dexterity":"敏捷", "intelligence":"智慧"}
 
 
 def strings(value, label, *, required=True):
-    if isinstance(value, str): value = [value]
-    bx.require(isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value), label + " 应为文字或非空文字组成的数组。")
-    bx.require(not required or value, label + " 不能为空。")
+    if isinstance(value,str): value=[value]
+    bx.require(isinstance(value,list) and all(isinstance(v,str) and v.strip() for v in value),label+" 应为文字数组。")
+    bx.require(not required or value,label+" 不能为空。")
     return value
 
 
 def gem_ids(route):
-    library = route.get("gems")
-    bx.require(isinstance(library, dict) and library, "路线格式已更新：顶层 gems 保存获取依据，stages[].skill_groups 保存实际装备位置和连线；请按 leveling.md 重新整理旧路线。")
-    result = set(library)
-    for gem in library.values():
-        bx.require(isinstance(gem, dict), "gems 每项应是获取依据对象。")
-        if gem.get("fallback_skill_id"): result.add(gem["fallback_skill_id"])
-    bx.require(1 <= len(result) <= 80 and all(isinstance(v, str) and v for v in result), "路线需要 1–80 个有效宝石 skill_id。")
-    return sorted(result)
+    library=route.get("gems")
+    bx.require(isinstance(library,dict) and library,"gems 使用本机 skill_id 到目录备注的映射；获取记录绑定阶段 required_items 的 instance_id。")
+    bx.require(all(isinstance(k,str) and k and isinstance(v,dict) and set(v)<={"note"} for k,v in library.items()),"gems 仅保留 note；旧 acquisition/fallback 移到实际阶段物资及进入条件。")
+    return sorted(library)
 
 
 def link_queries(route):
-    queries = set()
-    for stage in route.get("stages", []):
-        for group in stage.get("skill_groups", []):
-            for key in ("gems", "upgrade_gems"):
-                if group.get(key): queries.add(",".join(gem["skill_id"] for gem in group[key]))
-    bx.require(queries and len(queries) <= 80, "路线需要 1–80 套技能连线。")
-    return sorted(queries)
-
-
-def resolve_gem_levels(stages, gems):
-    """Resolve explicit automatic targets and report all unavailable levels together."""
-    errors = []
-    for stage in stages:
-        for group in stage.get("skill_groups", []):
-            for key in ("gems", "upgrade_gems"):
-                for skill in group.get(key, []):
-                    entry = gems.get(skill.get("skill_id"))
-                    if not entry: continue  # The structural validator reports unknown gems.
-                    requirements = {row["gem_level"]: row for row in entry["level_requirements"]}
-                    available = [level for level, row in requirements.items() if row["character_level"] <= stage["level"]]
-                    label = f"{stage['level']} 级阶段的 {entry.get('display_name', entry['name'])}"
-                    if skill.get("level") == "auto" and available:
-                        skill["level"] = max(available)
-                    level = skill.get("level")
-                    if type(level) is not int or level not in requirements:
-                        hint = f"本阶段最高可练到宝石 {max(available)} 级，可填更低等级或 auto。" if available else f"最早需要角色 {entry['min_level']} 级，必须换过渡技能或延后阶段。"
-                        errors.append(label + "宝石等级不在普通可练等级中；" + hint)
-                    elif requirements[level]["character_level"] > stage["level"]:
-                        hint = f"本阶段最高宝石 {max(available)} 级。" if available else "本阶段尚不能使用，不能靠降低宝石等级解决。"
-                        errors.append(f"{label} {level} 级需要角色 {requirements[level]['character_level']} 级；" + hint)
-    bx.require(not errors, "宝石等级检查失败（level 是宝石等级，不能填写角色等级）：\n" + "\n".join(dict.fromkeys(errors)))
-
-
-def validate_group(group, stage, gems, library, compatibility, capacity, warnings, allow_minions):
-    label = f"{stage['level']} 级阶段"
-    bx.require(set(group) <= {"name", "slot", "use", "gems", "upgrade_gems"} and isinstance(group.get("name"), str) and group["name"].strip(), label + "技能组需要 name/slot/use/gems，可选 upgrade_gems。")
-    bx.require(group.get("use") in USAGES, label + "技能组 use 应为 main/movement/utility/aura。")
-    base = group.get("gems")
-    bx.require(isinstance(base, list) and base, label + "基础路线每组需要至少一颗宝石。")
-    used = set()
-    for key in ("gems", "upgrade_gems"):
-        if key not in group: continue
-        entries = group[key]
-        bx.require(isinstance(entries, list) and 1 <= len(entries) <= capacity, label + "连线数量超过 " + group["slot"] + " 实际孔数。")
-        if key == "upgrade_gems":
-            bx.require(len(entries) > len(base) and entries[0]["skill_id"] == base[0]["skill_id"], label + "upgrade_gems 应为同一主技能的更多连升级；换主技能另设阶段。")
-        ids = [gem.get("skill_id") for gem in entries]
-        bx.require(len(set(ids)) == len(ids), label + "同组宝石重复。")
-        for index, skill in enumerate(entries):
-            bx.require(set(skill) <= {"skill_id", "level", "quality"}, label + "技能组宝石只接受 skill_id/level/quality，获取依据放顶层 gems。")
-            skill_id = skill.get("skill_id")
-            entry = gems.get(skill_id)
-            bx.require(entry and skill_id in library, label + "宝石未识别或缺少获取依据：" + str(skill_id))
-            used.add(skill_id)
-            active = bool(entry.get("tags", {}).get("grants_active_skill"))
-            bx.require(active if index == 0 else not active, label + "每组第一颗为主动技能，其余必须为辅助；第二主动技能另建组并安排位置。")
-            bx.require(allow_minions or not (active and entry.get("tags", {}).get("minion")), label + "安排了召唤技能，但用户选择不使用召唤：" + entry["name"])
-            if index == 0 and group["use"] == "aura":
-                bx.require(entry.get("tags", {}).get("aura") or entry.get("tags", {}).get("herald"), label + "常驻开启须为本机 aura/herald 宝石；其他技能按实际手动用途安排。")
-            requirements = {row["gem_level"]: row for row in entry["level_requirements"]}
-            requirement = requirements[skill["level"]]
-            skill["attribute_requirements"] = {key: requirement.get(key, 0) for key in ATTRIBUTES}
-            bx.require(type(skill.get("quality", 0)) is int and 0 <= skill.get("quality", 0) <= 23, label + "宝石品质无效。")
-            acquisition = library[skill_id]
-            bx.require(acquisition["available_from_act"] <= stage["act"], label + "使用 " + entry["name"] + f" 早于已记录的第 {acquisition['available_from_act']} 章获取进度；改用过渡宝石或将本段延后，不能仅凭角色等级视为已购买。")
-            uncertain = acquisition["acquisition"] in {"drop", "lab", "trade"} or entry.get("special_variant") or entry.get("vaal")
-            fallback = gems.get(acquisition.get("fallback_skill_id"))
-            if uncertain:
-                bx.require(fallback and fallback["skill_id"] != skill_id and not fallback.get("special_variant") and not fallback.get("vaal") and fallback["min_level"] <= stage["level"], label + "随机/交易/特殊宝石需有本阶段可用的普通 fallback_skill_id：" + entry["name"])
-                bx.require(bool(fallback.get("tags", {}).get("grants_active_skill")) == active, label + "替代宝石的主辅类型不一致。")
-                warnings.append(label + "的 " + entry["name"] + " 获取不稳定；未取得先使用 " + fallback.get("display_name", fallback["name"]) + "，复查替代连线和属性。")
-            skill["name"] = entry.get("display_name", entry["name"])
-            native_level = next(row for row in entry["level_requirements"] if row["gem_level"] == skill["level"])
-            skill["base_resources"] = copy.deepcopy(native_level.get("base_resources", {}))
-            skill["description"] = entry.get("description", "")
-        if compatibility is not None:
-            checked = compatibility.get(",".join(ids))
-            bx.require(checked, label + "缺少原生辅助兼容性结果。")
-            bx.require(not checked.get("errors"), label + "原生连线查询无效：" + "; ".join(checked.get("errors", [])))
-            bx.require(not checked["incompatible"], label + "以下辅助不支持该组主技能：" + ", ".join(checked["incompatible"]))
-    return used
+    return sorted({",".join(g["skill_id"] for g in group.get("gems",[])) for stage in route.get("stages",[]) for group in stage.get("skill_groups",[]) if group.get("gems")})
 
 
 def base_names(route):
-    names = set()
-    for stage in route.get("stages", []):
-        bases = stage.get("bases", {})
-        bx.require(isinstance(bases, dict) and all(isinstance(name, str) and name.strip() for name in bases.values()), "阶段 bases 应为装备位置到本机基底名称的映射。")
+    names=set()
+    for stage in route.get("stages",[]):
+        bases=stage.get("bases",{})
+        bx.require(isinstance(bases,dict) and all(isinstance(v,str) and v for v in bases.values()),"bases 应为槽位到本机基底名称的映射。")
         names.update(bases.values())
     return sorted(names)
 
 
-def validate(route, gems, data_version=None, classes=None, compatibility=None, nodes=None, *, socket_limits, bases=None):
-    allowed = {"name", "confirmed", "goal", "league", "game_version", "class_id", "ascendancy", "trade_mode", "budget", "version_status", "version_source", "scope", "gems", "stages", "sources", "risks", "notes", "allow_minions", "allow_mule", "shared_trials"}
-    bx.require(not (set(route) - allowed), "路线包含未知字段：" + ", ".join(sorted(set(route) - allowed)))
-    bx.require(route.get("confirmed") is True, "先完成开荒目标的多轮澄清，再保存 confirmed=true。")
-    for key in ("name", "goal", "league", "ascendancy"):
-        bx.require(isinstance(route.get(key), str) and route[key].strip(), "路线需要 " + key)
-    engine.validate_game_version(route.get("game_version"), route["league"], data_version)
-    bx.require(type(route.get("class_id")) is int and route["class_id"] in bx.CLASSES, "class_id 不是 PoE1 职业。")
-    for key in ("allow_minions", "allow_mule"):
-        bx.require(type(route.get(key)) is bool, "路线需要已确认的 " + key + "：是否允许召唤，以及是否愿意另建小号取宝石。未允许时填 false，不为通过检查擅自改为 true。")
-    result = copy.deepcopy(route)
-    base_names(result)
-    bx.require(type(route.get("shared_trials", False)) is bool, "shared_trials 应为用户确认的同赛季共享试炼进度，未确认时为 false。")
-    if classes is not None:
-        selected = next((entry for entry in classes if entry["id"] == route["class_id"]), None)
-        bx.require(selected and route["ascendancy"] in {entry["name"] for entry in selected["ascendancies"]}, "升华不属于所选职业或名称无法识别；请从 catalog classes 返回的英文名中选择。")
-        result["class_display_name"] = selected.get("display_name", bx.CLASSES[route["class_id"]])
-        ascendancy = next(entry for entry in selected["ascendancies"] if entry["name"] == route["ascendancy"])
-        result["ascendancy_display_name"] = ascendancy.get("display_name", ascendancy["name"])
-    bx.require(route.get("trade_mode") in {"ssf", "trade"}, "trade_mode 应为 ssf 或 trade。")
-    bx.require(route.get("scope", "maps") in {"maps", "campaign", "partial"}, "scope 应为 maps/campaign/partial。")
-    budget = route.get("budget", {})
-    bx.require(isinstance(budget, dict) and type(budget.get("amount")) in (int, float) and math.isfinite(budget["amount"]) and budget["amount"] >= 0 and isinstance(budget.get("currency"), str) and budget["currency"], "需要已确认的开荒预算 amount/currency。")
-    bx.require(route.get("version_status") in {"verified", "unverified"}, "明确 version_status=verified 或 unverified。")
-    sources = route.get("sources")
-    bx.require(isinstance(sources, list) and sources, "开荒路线需要实际查阅的网页来源。")
-    source_map = {}
-    for source in sources:
-        bx.require(isinstance(source, dict) and all(isinstance(source.get(k), str) and source[k].strip() for k in ("id", "title", "url", "checked_at", "version")), "来源需要 id/title/url/checked_at/version。")
-        bx.require(source["id"] not in source_map and source["url"].startswith(("https://", "http://")), "来源 ID 重复或 URL 无效。")
-        engine.validate_checked_at(source["checked_at"])
-        source_map[source["id"]] = source
-    if route["version_status"] == "verified":
-        bx.require(route.get("version_source") in source_map, "版本已核实需要 version_source 指向支持国服版本映射的网页。")
-        engine.validate_game_version(route["game_version"], route["league"], version_source=source_map[route["version_source"]]["url"])
-    warnings = []
-    if route["version_status"] == "unverified": warnings.append("国服赛季与资料版本的对应关系未完全核实；关键改动需以国服公告为准。")
-    library = result.get("gems")
-    gem_ids(route)
-    for skill_id, acquisition in library.items():
-        bx.require(set(acquisition) <= {"acquisition", "source_id", "source_note", "fallback_skill_id", "available_from_act", "class_ids", "via_mule", "quest", "npc"}, "gems 获取依据存在未知字段。")
-        bx.require(skill_id in gems, "本机未识别独立宝石：" + skill_id)
-        bx.require(acquisition.get("acquisition") in ACQUISITIONS, "宝石需要有效 acquisition。")
-        bx.require(acquisition.get("source_id") in source_map and isinstance(acquisition.get("source_note"), str) and acquisition["source_note"].strip(), "宝石获取需要 source_id 与章节/任务/NPC/职业说明 source_note。")
-        bx.require(not (route["trade_mode"] == "ssf" and acquisition["acquisition"] == "trade"), "自力开荒不能依赖交易宝石。")
-        bx.require(type(acquisition.get("available_from_act")) is int and 1 <= acquisition["available_from_act"] <= 11, "每种宝石需要 available_from_act：按所列任务来源填写第 1–10 章，11 表示异界，不能用可装备等级替代。")
-        if acquisition["acquisition"] in {"quest", "vendor"}:
-            classes_for_source = acquisition.get("class_ids")
-            bx.require(isinstance(classes_for_source, list) and classes_for_source and all(type(value) is int and value in bx.CLASSES for value in classes_for_source), "任务/商店来源需要 class_ids，列出该任务奖励或商店行实际允许的职业；全职业需明确列出 0–6。")
-            via_mule = acquisition.get("via_mule", False)
-            bx.require(type(via_mule) is bool, "via_mule 应为布尔值。")
-            bx.require(not via_mule or route["allow_mule"], "用户未允许另建小号取宝石，不能安排 via_mule：" + skill_id)
-            bx.require(route["class_id"] in classes_for_source or via_mule, "该任务/商店的职业范围不含当前职业：" + skill_id + "；使用后续全职业商店、已获准的小号转交或其他过渡，不要把别的职业奖励写成当前职业可领。")
-        acquisition["name"] = gems[skill_id].get("display_name", gems[skill_id]["name"])
-    stages = result.get("stages")
-    bx.require(isinstance(stages, list) and 1 <= len(stages) <= 12, "stages 需要 1–12 个阶段。")
-    levels = [stage.get("level") for stage in stages]
-    bx.require(all(type(level) is int and 1 <= level <= 100 for level in levels) and levels == sorted(set(levels)), "阶段角色等级必须在 1–100 且严格递增。")
-    acts = [stage.get("act") for stage in stages]
-    bx.require(all(type(act) is int and 1 <= act <= 11 for act in acts) and acts == sorted(acts), "每个阶段需要按实际进度递增的 act：第 1–10 章，11 为异界；同章可有多个等级阶段。")
-    if route.get("scope", "maps") != "partial":
-        bx.require(len(stages) >= 3 and levels[0] <= 5 and levels[-1] >= 68, "完整开荒路线至少三个阶段，覆盖起步至剧情结束/异界初期；局部路线请使用 scope=partial。")
-    resolve_gem_levels(stages, gems)
-    asc_nodes, paths = engine.ascendancy_paths(route["ascendancy"], nodes)
-    previous_nodes, used_gems = set(), set()
-    stage_allowed = {"name", "level", "act", "weapon_setup", "bases", "skill_groups", "gear", "passives", "ascendancy_points", "ascendancy_nodes", "ascendancy_respec_reason", "resources", "checks", "transition", "required_items"}
+def resolve_gem_levels(stages,gems):
     for stage in stages:
-        bx.require(not (set(stage) - stage_allowed), "阶段存在未知字段：" + ", ".join(sorted(set(stage) - stage_allowed)))
-        label = f"{stage['level']} 级阶段"
-        bx.require(isinstance(stage.get("name"), str) and stage["name"].strip(), label + "需要名称。")
-        for key in ("gear", "passives", "checks", "transition"): stage[key] = strings(stage.get(key), label + "." + key)
-        bx.require(isinstance(stage.get("resources"), str) and stage["resources"].strip(), label + "需要 resources。")
-        bx.require(stage.get("weapon_setup") in WEAPONS, label + "需要 weapon_setup：one_hand_shield/dual_wield/two_hand/bow/unarmed_shield。")
-        weapon_slots = WEAPONS[stage["weapon_setup"]]
-        categories = {slot: slot for slot in ("Body Armour", "Helmet", "Gloves", "Boots")}
-        categories.update({"Weapon 1": weapon_slots[0], "Weapon 2": weapon_slots[1]})
-        bx.require(not (set(stage.get("bases", {})) - set(categories)), label + "bases 含未支持的装备位置。")
-        capacities, stage["socket_evidence"] = {}, {}
-        for slot, category in categories.items():
-            name = stage.get("bases", {}).get(slot)
-            if category is None:
-                bx.require(not name, label + "当前配置不能在 " + slot + " 安排基底。")
-                capacities[slot] = 0
-                continue
-            if name:
-                base = (bases or {}).get(name)
-                bx.require(base and base.get("socket_category") == category, label + "基底未找到或装备类型不符：" + name)
-                capacity = base.get("sockets")
-            else:
-                limit = (socket_limits or {}).get(category, {})
-                bx.require(type(limit.get("min")) is int and type(limit.get("max")) is int and 0 <= limit["min"] <= limit["max"], label + "本机孔位数据缺失或无效：" + category)
-                # An unspecified base can safely use the smallest native limit.
-                # Empty or smaller groups need no arbitrary equipment choice.
-                capacity = limit["min"]
-            bx.require(type(capacity) is int and capacity >= 0, label + "本机基底缺少合法孔数：" + str(name or category))
-            capacities[slot] = capacity
-            stage["socket_evidence"][slot] = {"capacity": capacity, "category": category, "base": name}
-            if not name:
-                stage["socket_evidence"][slot]["category_range"] = [limit["min"], limit["max"]]
-        groups = stage.get("skill_groups")
-        bx.require(isinstance(groups, list) and 1 <= len(groups) <= 16, label + "需要 1–16 个 skill_groups。")
-        bx.require(any(group.get("use") == "main" for group in groups), label + "至少一组 use=main 输出技能。")
-        usage, upgraded_usage = {}, {}
+        for group in stage.get("skill_groups",[]):
+            for gem in group.get("gems",[]):
+                native=gems.get(gem.get("skill_id"),{})
+                rows=native.get("level_requirements",[])
+                if gem.get("level")=="auto":
+                    bx.require(type(stage.get("level")) is int,"auto 需要已知阶段角色等级。")
+                    choices=[r["gem_level"] for r in rows if r.get("naturally_trainable") and type(r.get("character_level")) is int and r["character_level"]<=stage["level"]]
+                    bx.require(choices,"该阶段没有本机确认的可练等级："+str(gem.get("skill_id")))
+                    gem["level"]=max(choices)
+                    gem["level_selection"]="explicit_auto_native_trainable"
+
+
+def validate_group(group,stage,gems,library,compatibility,capacity,warnings,pending):
+    bx.require(isinstance(group,dict) and set(group)<={"name","slot","use","enabled","gems"},"技能组使用 name/slot/use/enabled/gems；升级或替换写后续阶段。")
+    for field in ("name","use"):
+        bx.require(isinstance(group.get(field),str) and group[field].strip(),"技能组需要具体 "+field)
+    bx.require(isinstance(group.get("slot"),str),"slot 应为槽位名，未装备用空字符串。")
+    bx.require(type(group.get("enabled",True)) is bool,"enabled 应为布尔值；关闭计算仍占孔。")
+    entries=group.get("gems")
+    bx.require(isinstance(entries,list) and entries,"每个物理组需要宝石实例。")
+    if capacity is not None and group["slot"]: bx.require(len(entries)<=capacity,"单组连线超过基底孔位容量："+group["slot"])
+    for gem in entries:
+        bx.require(set(gem)<={"instance_id","skill_id","level","quality","level_selection"},"宝石实例使用 instance_id/skill_id/level/quality。")
+        bx.require(isinstance(gem.get("instance_id"),str) and gem["instance_id"],"宝石实例需要稳定 instance_id。")
+        native=gems.get(gem.get("skill_id"))
+        bx.require(native and gem["skill_id"] in library,"本机未识别宝石或顶层 gems 缺少该 ID。")
+        bx.require(type(gem.get("level")) is int and gem["level"]>0 and type(gem.get("quality",0)) is int and gem.get("quality",0)>=0,"宝石等级/品质应为正整数/非负整数。")
+        row=next((r for r in native["level_requirements"] if r["gem_level"]==gem["level"]),None)
+        if row is None:
+            pending.append("native:gem_level:"+gem["instance_id"])
+        elif type(stage.get("level")) is int and type(row.get("character_level")) is int:
+            bx.require(row["character_level"]<=stage["level"],gem["instance_id"]+" 使用等级高于该阶段角色等级。")
+        else: pending.append("level_requirement:"+gem["instance_id"])
+        gem["name"]=native.get("display_name",native["name"])
+        gem["attribute_requirements"]={k:(row or {}).get(k) for k in ATTRIBUTES}
+        gem["base_resources"]=copy.deepcopy((row or {}).get("base_resources",{}))
+        gem["naturally_trainable"]=(row or {}).get("naturally_trainable")
+    checked=(compatibility or {}).get(",".join(g["skill_id"] for g in entries))
+    if not checked: pending.append("native:links:"+stage["stage_id"]+":"+group["name"])
+    else:
+        bx.require(not checked.get("errors"),"原生连线查询失败："+"；".join(checked.get("errors",[])))
+        group["relations"]=checked.get("relations",[])
+        if checked.get("incompatible"): warnings.append(stage["stage_id"]+" / "+group["name"]+" 中有未作用于主动的辅助；核对是否用于练级/后续阶段，不计辅助收益："+",".join(checked["incompatible"]))
+
+
+def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=None,*,bases=None,slots=None,evidence=None,claims=None):
+    allowed={"schema_version","name","confirmed","goal","league","game_version","class_id","ascendancy","trade_mode","budget","version_source","scope","gems","stages","risks","notes","allow_minions","allow_mule","constraint_sources","evidence","claims","assessment","inventory","shopping"}
+    bx.require(isinstance(route,dict) and set(route)<=allowed,"路线含旧字段或未知字段；按 leveling.md 的 schema_version=2 迁移。")
+    bx.require(route.get("schema_version")==2 and route.get("confirmed") is True,"先确认路线方向，再使用 schema_version=2。")
+    for key in ("name","goal","league","scope"):
+        bx.require(isinstance(route.get(key),str) and route[key].strip(),"路线需要 "+key)
+    engine.validate_game_version(route.get("game_version"),route["league"],data_version)
+    selected=next((c for c in classes or [] if c["id"]==route.get("class_id")),None)
+    bx.require(selected,"class_id 应来自当前 catalog classes。")
+    asc=next((a for a in selected["ascendancies"] if a["name"]==route.get("ascendancy")),None)
+    bx.require(not route.get("ascendancy") or asc,"升华不属于所选本机职业。")
+    if route.get("trade_mode") is not None: bx.require(route["trade_mode"] in {"ssf","trade"},"trade_mode 使用 ssf/trade 或暂不填写。")
+    for flag in ("allow_minions","allow_mule"):
+        if flag in route: bx.require(type(route[flag]) is bool,flag+" 应为用户明确表达的布尔值。")
+    if route.get("budget") is not None:
+        budget=route["budget"]
+        bx.require(isinstance(budget,dict) and set(budget)=={"amount","currency"} and type(budget["amount"]) in (int,float) and math.isfinite(budget["amount"]) and budget["amount"]>=0 and isinstance(budget["currency"],str) and budget["currency"],"路线 budget 需要有限非负 amount 与 currency。")
+    evidence,claims=evidence or {},claims or []
+    source_map=route.get("constraint_sources",{})
+    bx.require(isinstance(source_map,dict),"constraint_sources 应为字段路径映射。")
+    for key in ("goal","trade_mode","budget","allow_minions","allow_mule"):
+        if key not in route: continue
+        source=evidence.get(source_map.get("/"+key),{})
+        bx.require(source.get("kind")=="user_statement" and source.get("status")=="user_declared","用户约束需要对应表达依据：/"+key)
+    result=copy.deepcopy(route)
+    result["class_display_name"]=selected.get("display_name",selected["name"])
+    result["ascendancy_display_name"]=(asc or {}).get("display_name",(asc or {}).get("name","未选"))
+    library=gem_ids(result)
+    stages=result.get("stages")
+    bx.require(isinstance(stages,list) and stages,"stages 至少一个阶段；同级切换可分阶段。")
+    stage_ids=set(); prior_level=None; instances={}; acquired_instances=set(); previous_nodes=set(); warnings=[]; pending=[]
+    native_slots={s["name"] for s in slots or []}
+    if not data_version: pending.append("version:data")
+    resolve_gem_levels(stages,gems)
+    asc_nodes,paths=engine.ascendancy_paths(route["ascendancy"],nodes or []) if route.get("ascendancy") else ({},{})
+    for stage in stages:
+        bx.require(set(stage)<={"stage_id","name","level","act","completed_act","entry_conditions","weapon_setup","bases","skill_groups","gear","passives","ascendancy_points","ascendancy_nodes","resources","checks","transition","required_items","key_transition","snapshot"},"阶段存在旧策略字段或未知字段。")
+        sid=stage.get("stage_id")
+        bx.require(isinstance(sid,str) and sid and sid not in stage_ids,"stage_id 需要唯一且稳定。")
+        stage_ids.add(sid)
+        bx.require(type(stage.get("key_transition",False)) is bool,"key_transition 应为布尔值，由模型依据玩法依赖判断。")
+        if stage.get("key_transition") and not stage.get("snapshot"): pending.append("snapshot:"+sid)
+        if "snapshot" in stage:
+            snap=stage["snapshot"]
+            bx.require(isinstance(snap,dict) and set(snap)<={"template_xml","operations","assumptions","usage","metrics"},"snapshot 使用 template_xml/operations/assumptions/usage/metrics。")
+            strings(snap.get("assumptions",[]),sid+" snapshot.assumptions",required=False)
+            valid={c["claim_id"] for c in claims if c["status"]=="model_assessed" and "snapshot:"+sid in c["subjects"]}
+            if not snap.get("assumptions") or not set(snap["assumptions"])<=valid: pending.append("snapshot_assumptions:"+sid)
+        bx.require(isinstance(stage.get("name"),str) and stage["name"],sid+" 需要名称。")
+        for key in ("level","act","completed_act","ascendancy_points"):
+            if stage.get(key) is not None: bx.require(type(stage[key]) is int and stage[key]>=(0 if key in {"completed_act","ascendancy_points"} else 1),sid+" 的 "+key+" 无效。")
+        if stage.get("level") is not None:
+            bx.require(prior_level is None or stage["level"]>=prior_level,"执行顺序中的角色等级不能倒退；同级阶段允许。")
+            prior_level=stage["level"]
+        else: pending.append("level:"+sid)
+        conditions=strings(stage.get("entry_conditions",[]),sid+" entry_conditions",required=False)
+        for key in conditions:
+            if not any(c["claim_id"]==key and c["status"]=="model_assessed" and "stage:"+sid in c["subjects"] for c in claims): pending.append("entry_condition:"+sid+":"+key)
+        for field in ("gear","passives","checks","transition"):
+            stage[field]=strings(stage.get(field,[]),sid+" "+field,required=False)
+        if not facts.has_claim(claims,"stage:"+sid): pending.append("stage_assessment:"+sid)
+        groups=stage.get("skill_groups")
+        bx.require(isinstance(groups,list) and groups,sid+" 需要实际技能组。")
+        usage={}; seen=set(); stage["socket_evidence"]={}
+        for slot,name in stage.get("bases",{}).items():
+            bx.require(slot in native_slots,"不是当前原生槽位："+slot)
+            base=(bases or {}).get(name)
+            bx.require(base,"未知本机基底："+name)
+            if "valid_slots" not in base: pending.append("native:base_slot:"+name)
+            else: bx.require(slot in base["valid_slots"],name+" 无法放入 "+slot)
         for group in groups:
-            slot = group.get("slot")
-            bx.require(slot in capacities, label + "武器配置不能在此位置放宝石：" + str(slot))
-            bounds = stage["socket_evidence"].get(slot, {}).get("category_range")
-            if bounds and bounds[0] != bounds[1]:
-                bx.require(all(not isinstance(group.get(key), list) or len(group[key]) <= capacities[slot] for key in ("gems", "upgrade_gems")),
-                           label + "所需孔数超过未指定基底时的共同容量；用 catalog bases 查询并在 bases 中为 " + slot + " 指定具体基底。")
-            bx.require(capacities[slot] > 0, label + "武器配置不能在此位置放宝石：" + str(slot))
-            used_gems.update(validate_group(group, stage, gems, library, compatibility, capacities[slot], warnings, route["allow_minions"]))
-            usage[slot] = usage.get(slot, 0) + len(group["gems"])
-            upgraded_usage[slot] = upgraded_usage.get(slot, 0) + len(group.get("upgrade_gems", group["gems"]))
-        for slot in capacities:
-            bx.require(max(usage.get(slot, 0), upgraded_usage.get(slot, 0)) <= capacities[slot], label + "在 " + slot + " 分配的总孔数超过容量；基础与升级都必须能同时装备。若本机同类基底孔数不同，需要查询并指定具体基底才能使用较大容量。")
-        stage["attribute_requirements"] = {
-            key: {attribute: max(gem["attribute_requirements"][attribute]
-                                 for group in groups for gem in group.get(key, group["gems"]))
-                  for attribute in ATTRIBUTES}
-            for key in ("gems", "upgrade_gems")}
-        points, allocated = stage.get("ascendancy_points"), stage.get("ascendancy_nodes")
-        bx.require(type(points) is int and points in (0, 2, 4, 6, 8), label + "ascendancy_points 应为已完成迷宫的 0/2/4/6/8 点。")
-        bx.require(isinstance(allocated, list) and all(type(node) is int for node in allocated) and len(set(allocated)) == len(allocated), label + "ascendancy_nodes 应为累计大点 ID 数组。")
-        requested, actual = set(allocated), set()
-        for node_id in allocated:
-            bx.require(node_id in asc_nodes and asc_nodes[node_id].get("type") == "Notable" and node_id in paths, label + "升华大点不属于所选升华或无可分配路径：" + str(node_id))
-            actual.update(paths[node_id])
-        bx.require(len(actual) <= points, f"{label}升华含连接点共需 {len(actual)} 点，超过已安排的 {points} 点；不能在八点之外再补其他升华。")
-        bx.require(not (previous_nodes - actual) or isinstance(stage.get("ascendancy_respec_reason"), str) and stage["ascendancy_respec_reason"].strip(), label + "移除上一阶段升华需要说明洗点与切换原因 ascendancy_respec_reason。")
-        previous_nodes = actual
-        stage["ascendancy_used"] = len(actual)
-        stage["ascendancy_details"] = [{"id": node, "name": asc_nodes[node].get("display_name", asc_nodes[node]["name"]), "stats": asc_nodes[node].get("stats", []), "required_by_path": node not in requested}
-                                       for node in sorted(actual, key=lambda node: (len(paths[node]), node)) if asc_nodes[node].get("type") == "Notable"]
-        if points > len(actual): warnings.append(label + f"有 {points-len(actual)} 点升华尚未安排，按迷宫与后续切换条件核对。")
-        items = stage.get("required_items", [])
-        bx.require(isinstance(items, list), label + "required_items 应为数组。")
-        for item in items:
-            bx.require(isinstance(item, dict) and set(item) <= {"name", "acquisition", "fallback", "source_id"} and item.get("name") and item.get("acquisition") in ACQUISITIONS, label + "核心物品字段无效。")
-            bx.require(item.get("source_id") in source_map, label + "核心物品需要来源。")
-            bx.require(not (route["trade_mode"] == "ssf" and item["acquisition"] == "trade"), "自力开荒不能依赖交易核心物品。")
-            if item["acquisition"] in {"drop", "trade", "lab"}:
-                bx.require(isinstance(item.get("fallback"), str) and item["fallback"].strip(), label + "随机获取的核心物品需要替代路线。")
-    bx.require(used_gems == set(library), "宝石表有未安排到任何阶段的条目；删除闲置条目或落实使用位置：" + ", ".join(sorted(set(library)-used_gems)))
-    for key in ("risks", "notes"): result[key] = strings(result.get(key, []), key, required=False)
-    return result, list(dict.fromkeys(warnings))
+            slot=group.get("slot")
+            bx.require(slot=="" or slot in native_slots,"技能组槽位不是当前原生选项。")
+            base=(bases or {}).get(stage.get("bases",{}).get(slot),{})
+            capacity=base.get("sockets")
+            if slot and type(capacity) is not int: pending.append("native:socket_capacity:"+sid+":"+slot)
+            stage["socket_evidence"][slot]={"base":stage.get("bases",{}).get(slot),"capacity":capacity,"scope":"基底最大容量；实际孔色/连线/特殊装备效果需阶段 XML 实算。"}
+            validate_group(group,stage,gems,library,compatibility,capacity,warnings,pending)
+            usage[slot]=usage.get(slot,0)+len(group["gems"])
+            for gem in group["gems"]:
+                ref=gem["instance_id"]
+                bx.require(ref not in seen,sid+" 同一颗宝石不能同时占两个位置："+ref)
+                seen.add(ref)
+                if ref in instances:
+                    old=instances[ref]
+                    bx.require(old["skill_id"]==gem["skill_id"],"更换宝石需要新的 instance_id："+ref)
+                    if old["quality"]!=gem.get("quality",0) or gem["level"]<old["level"] or not gem.get("naturally_trainable") and gem["level"]!=old["level"]:
+                        if not facts.has_claim(claims,"transformation:"+sid+":"+ref): pending.append("transformation:"+sid+":"+ref)
+                else:
+                    needs=[r for r in stage.get("required_items",[]) if r.get("instance_id")==ref and r.get("kind")=="gem"]
+                    bx.require(len(needs)<=1,"同一实例获取记录重复："+ref)
+                    if not needs: pending.append("acquisition:"+ref)
+                    else:
+                        need=needs[0]
+                        bx.require(all(need.get(k)==gem.get(k,0) for k in ("skill_id","level","quality")) and need.get("quantity")==1,"实例获取的规格/数量不匹配："+ref)
+                        if need.get("acquisition")=="trade" and route.get("trade_mode")=="ssf": raise ValueError("SSF 用户约束不允许交易取得："+ref)
+                        if need.get("via_mule"):
+                            bx.require(route.get("allow_mule") is not False,"用户不允许小号取物。")
+                            if route.get("allow_mule") is None: pending.append("permission:allow_mule")
+                instances[ref]={"skill_id":gem["skill_id"],"level":gem["level"],"quality":gem.get("quality",0)}
+        for slot,count in usage.items():
+            capacity=stage["socket_evidence"][slot]["capacity"]
+            if slot and type(capacity) is int: bx.require(count<=capacity,sid+" 在 "+slot+" 的物理占孔超过容量。")
+        stage["attribute_requirements"]={key:max(values) if values and all(v is not None for v in values) else None for key in ATTRIBUTES for values in [[g["attribute_requirements"][key] for group in groups for g in group["gems"] if group["slot"]]]}
+        allocated=stage.get("ascendancy_nodes",[])
+        bx.require(isinstance(allocated,list) and all(type(n) is int for n in allocated) and len(set(allocated))==len(allocated),"ascendancy_nodes 使用本机节点 ID 数组。")
+        actual=set()
+        for node in allocated:
+            bx.require(node in asc_nodes and node in paths,"节点不属于所选升华或没有连接路径："+str(node))
+            actual.update(paths[node])
+        points=stage.get("ascendancy_points")
+        if points is not None: bx.require(len(actual)<=points,sid+" 的升华连接点超过该阶段声明的可用点数。")
+        if actual and not facts.has_claim(claims,"progress:"+sid): pending.append("progress:"+sid)
+        if previous_nodes-actual and not facts.has_claim(claims,"respec:"+sid): pending.append("respec:"+sid)
+        previous_nodes=actual
+        stage["ascendancy_used"]=len(actual)
+        stage["ascendancy_allocated_nodes"]=sorted(actual)
+        for item in stage.get("required_items",[]):
+            bx.require(isinstance(item,dict) and "status" not in item,"物资获取状态由程序生成。")
+            facts.material_ref(item)
+            bx.require(type(item.get("quantity")) is int and item["quantity"]>0,"阶段物资 quantity 为正整数。")
+            if item.get("instance_id"):
+                bx.require(item["instance_id"] not in acquired_instances,"同一物理实例只登记首次取得；后续沿用不重复采购："+item["instance_id"])
+                acquired_instances.add(item["instance_id"])
+            if item.get("acquisition")=="trade" and route.get("trade_mode")=="ssf": raise ValueError("SSF 路线不能依赖交易。")
+    if not facts.has_claim(claims,"goal"): pending.append("goal_assessment")
+    for key in ("allow_minions",):
+        if key in route and not facts.has_claim(claims,"preference:"+key): pending.append("preference:"+key)
+    assessment=route.get("assessment",{})
+    bx.require(isinstance(assessment,dict) and set(assessment)<={"goal_claim_ids","scope","unresolved"},"路线 assessment 使用 goal_claim_ids/scope/unresolved。")
+    for key in ("goal_claim_ids","unresolved"):
+        bx.require(isinstance(assessment.get(key,[]),list) and all(isinstance(v,str) and v for v in assessment.get(key,[])),"assessment."+key+" 需要字符串数组。")
+    goal_ids={c["claim_id"] for c in claims if c["status"]=="model_assessed" and "goal" in c["subjects"]}
+    if not assessment.get("scope") or not assessment.get("goal_claim_ids") or not set(assessment.get("goal_claim_ids",[]))<=goal_ids: pending.append("goal_assessment")
+    pending += ["assessment:"+v for v in assessment.get("unresolved",[])]
+    result["pending"]=list(dict.fromkeys(pending))
+    result["claims"]=claims
+    result["evidence"]=evidence
+    result["risks"]=strings(result.get("risks",[]),"risks",required=False)
+    result["notes"]=strings(result.get("notes",[]),"notes",required=False)
+    return result,list(dict.fromkeys(warnings))
 
 
-def render(route, warnings, engine_version, tree_version):
-    esc = lambda value: html.escape(str(value), quote=True)
-    listing = lambda values: "<ul>" + "".join("<li>" + esc(v) + "</li>" for v in values) + "</ul>"
-    def resources_text(values):
-        parts = []
-        pools = {"Mana": "魔力", "Life": "生命", "EnergyShield": "能量护盾", "Rage": "怒火"}
-        for pool, amount in values.get("cost", {}).items():
-            parts.append(f"单次基础消耗：{pools.get(pool, pool)} {amount:g}")
-        for key, label in (("manaReservationPercent", "魔力保留"), ("lifeReservationPercent", "生命保留"),
-                           ("manaReservationFlat", "固定魔力保留"), ("lifeReservationFlat", "固定生命保留")):
-            if key in values: parts.append(f"{label} {values[key]:g}" + ("%" if key.endswith("Percent") else ""))
-        if "manaMultiplier" in values: parts.append(f"辅助的消耗与保留倍率 {100 + values['manaMultiplier']:g}%")
-        return "；".join(parts) or "本机等级表未报告可展示的资源字段，不能推断为零消耗。"
-    class_name = route.get("class_display_name", bx.CLASSES[route["class_id"]])
-    ascendancy_name = route.get("ascendancy_display_name", route["ascendancy"])
-    delivery_note = "待核实草案：获取、试炼或版本依据仍有缺口，暂不作为可直接照做的攻略。" if route.get("delivery_status") == "route_draft" else "分阶段路线：已完成列出的程序检查，仍需核对机制、国服差异和实际进度。"
-    sections = []
+def render(route,warnings,engine_version,tree_version):
+    esc=lambda v:html.escape(str(v))
+    bullets=lambda rows:"<ul>"+"".join("<li>"+esc(r)+"</li>" for r in rows)+"</ul>"
+    sections=[]
     for stage in route["stages"]:
-        chapter = f"第 {stage['act']} 章" if stage["act"] <= 10 else "异界"
-        groups = [f"<p>剧情进度：{chapter}。等级里程碑不代表已经完成本章任务，先满足本段列出的领取和切换条件。</p>"]
-        socket_notes = []
-        for slot, proof in stage["socket_evidence"].items():
-            bounds = proof.get("category_range")
-            detail = f"类别范围 {bounds[0]}–{bounds[1]} 孔，未指定基底时按共同容量规划" if bounds and bounds[0] != bounds[1] else proof["base"] or proof["category"]
-            socket_notes.append(f"{slot}：规划上限 {proof['capacity']} 孔（{detail}）")
-        groups.append("<details><summary>本机装备孔位依据</summary>" + listing(socket_notes) + "<p>当前本机基底上限，不证明已取得连线、满足物等或具备制作费用；特殊物品效果与实际装备仍须核对。</p></details>")
-        if stage.get("trial_requirements"):
-            requirements = [f"{lab['name']}：" + "；".join(lab["trial_locations"]) for lab in stage["trial_requirements"]]
-            progress = "用户已确认同赛季共享试炼进度；本角色仍须通关对应迷宫。" if route.get("shared_trials", False) else "先完成这些剧情试炼，再逐次通关迷宫取得本段升华点。"
-            groups.append("<h3>迷宫前置</h3>" + listing(requirements) + "<p>" + esc(progress) + "迷宫区域等级不等于最低进入等级；达到角色等级也不等于能安全通关。</p>")
-            proof = route.get("fact_evidence", {}).get("trials", {})
-            if proof.get("url"): groups.append(f'<p><a href="{esc(proof["url"])}">试炼位置依据</a> · {esc(proof.get("checked_at", ""))}</p>')
+        groups=[]
         for group in stage["skill_groups"]:
-            links = lambda key: " + ".join(f"{gem['name']} {gem['level']}级/{gem.get('quality',0)}品质" for gem in group[key])
-            upgrade = f"<p>获得更多连线后可升级：{esc(links('upgrade_gems'))}。未获得时继续使用上面的基础连线。</p>" if group.get("upgrade_gems") else ""
-            groups.append(f"<h3>{esc(group['name'])} · {esc(group['slot'])} · {esc(USAGES[group['use']])}</h3><p>基础 {len(group['gems'])} 连：{esc(links('gems'))}</p>{upgrade}")
-            evidence, seen = [], set()
-            for gem in group["gems"] + group.get("upgrade_gems", []):
-                identity = (gem["skill_id"], gem["level"])
-                if identity in seen: continue
-                seen.add(identity)
-                text = f"{gem['name']} · 宝石 {gem['level']} 级：" + resources_text(gem.get("base_resources", {}))
-                if gem.get("description"): text += " 原文：" + gem["description"]
-                evidence.append(text)
-            groups.append("<details><summary>本机宝石原文与基础资源</summary><p>按上列宝石等级读取。主动技能数值尚未计入辅助倍率、天赋、装备或其他修改，不能用它们直接证明整套连线的保留或续航；具体角色以 XML 实算为准。光环能否通过降级减少保留，须比较实际等级数据。</p>" + listing(evidence) + "</details>")
-        ascendancies = [node["name"] + ("（连接路径必经）" if node.get("required_by_path") else "") + "：" + "；".join(node["stats"]) for node in stage["ascendancy_details"]]
-        items = [item["name"] + " · " + ACQUISITIONS[item["acquisition"]] + ("；未获得时：" + item["fallback"] if item.get("fallback") else "") for item in stage.get("required_items", [])]
-        attribute_text = lambda key: "、".join(f"{name} {stage['attribute_requirements'][key][attribute]}" for attribute, name in ATTRIBUTES.items())
-        attribute_note = "基础宝石所需属性：" + attribute_text("gems") + "。"
-        if stage["attribute_requirements"]["upgrade_gems"] != stage["attribute_requirements"]["gems"]:
-            attribute_note += "可选连线升级后：" + attribute_text("upgrade_gems") + "。"
-        attribute_note += "这是宝石门槛，未计具体装备本身需求或降低需求效果；不代表角色已经满足。换装前核对属性，不足时暂缓升级宝石或补属性。"
-        groups.append("<p class=\"note\">" + esc(attribute_note) + "</p>")
-        sections.append(f"<section><h2>{stage['level']} 级 · {esc(stage['name'])}</h2>{''.join(groups)}<p>等级是宝石练级目标，刚领取不等于已练到该等级。同一装备的不同组按上述连线分开安排。</p><h3>装备优先级</h3>{listing(stage['gear'])}{listing(items)}<h3>天赋与升华</h3>{listing(stage['passives'])}<p>本段已安排 {stage['ascendancy_used']} / {stage['ascendancy_points']} 点升华（包含连接小点）。</p>{listing(ascendancies)}<p>{esc(stage.get('ascendancy_respec_reason',''))}</p><h3>资源与操作</h3><p>{esc(stage['resources'])}</p><h3>继续推进前检查</h3>{listing(stage['checks'])}<h3>转入下一阶段的条件</h3>{listing(stage['transition'])}</section>")
-    sources = {source["id"]: source for source in route["sources"]}
-    rows = []
-    for skill_id, gem in route["gems"].items():
-        fallback = "；未取得时先使用 " + gem["fallback_skill_id"] if gem.get("fallback_skill_id") else ""
-        if gem.get("via_mule"): fallback += "；需按已确认方案另建小号取得并转交"
-        chapter = f"第 {gem['available_from_act']} 章" if gem["available_from_act"] <= 10 else "异界"
-        fallback += "；本路线记录的最早取得进度：" + chapter
-        links = ' '.join(f'<a href="{esc(url)}">获取依据</a>' for url in gem.get("source_urls", [sources[gem['source_id']]['url']]))
-        state = "网页表格已核对" if gem.get("evidence_status") == "source_checked" else "取得办法待核实"
-        rows.append(f"<tr><td>{esc(gem['name'])}</td><td>{esc(ACQUISITIONS[gem['acquisition']])}：{esc(gem['source_note'])}{esc(fallback)} · {state} {links}</td></tr>")
-    evidence = [f'<li><a href="{esc(source["url"])}">{esc(source["title"])}</a> · {esc(source["version"])} · {esc(source["checked_at"])}</li>' for source in sources.values()]
-    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(route['name'])}</title><style>body{{font:16px/1.75 system-ui,"Microsoft YaHei",sans-serif;max-width:1080px;margin:32px auto;padding:0 22px;background:#f4f3ef;color:#23303b}}header,section{{padding:26px;background:white;border:1px solid #ddd;border-radius:12px;margin:18px 0}}h1{{font-size:30px}}h2{{color:#235b53}}table{{border-collapse:collapse;width:100%}}td,th{{text-align:left;padding:10px;border-bottom:1px solid #ddd}}.note{{background:#fff5da;padding:14px}}@media print{{section{{break-inside:avoid}}}}</style><header><h1>{esc(route['name'])}</h1><p class="note">{esc(delivery_note)}</p><p>{esc(route['goal'])}</p><p>{esc(route['league'])} · {esc(class_name)} → {esc(ascendancy_name)} · {'自力获取' if route['trade_mode']=='ssf' else '允许交易'} · 初始预算 {route['budget']['amount']:g} {esc(route['budget']['currency'])}</p><p class="note">这是分阶段行动路线。已按本机 PoB {esc(engine_version)} / 天赋 {esc(tree_version)} 核对宝石、连线和升华结构；任务领取与国服改动以所列资料和实际游戏为准。尚未使用完整阶段装备进行伤害/生存实算，不承诺面板或通关速度。</p></header>{''.join(sections)}<section><h2>宝石取得总表</h2><table><tr><th>宝石</th><th>取得办法</th></tr>{''.join(rows)}</table></section><section><h2>需要留意</h2>{listing(warnings + route.get('risks', []) + route.get('notes', []))}</section><section><h2>查阅资料</h2><ul>{''.join(evidence)}</ul><p>实际推进后，可提供新的角色 XML，继续计算下一阶段的具体装备与天赋。</p></section></html>'''
+            links=" — ".join(g["name"]+f" {g['level']}/{g.get('quality',0)} ["+g["instance_id"]+"]" for g in group["gems"])
+            groups.append(f"<h3>{esc(group['name'])} · {esc(group['slot'] or '未装备')}</h3><p>{esc(group['use'])}：{esc(links)}</p>")
+        sections.append(f"<section><h2>{esc(stage['name'])} [{esc(stage['stage_id'])}]</h2><p>等级 {esc(stage.get('level','未知'))} · 前往第 {esc(stage.get('act','未知'))} 章；已完成进度 {esc(stage.get('completed_act','未声明'))}</p><p>进入条件：{esc(', '.join(stage.get('entry_conditions',[])))}</p>{''.join(groups)}<p>所列宝石属性需求：{esc(stage['attribute_requirements'])}。实际装备效果见本阶段计算记录。</p>{bullets(stage['gear']+stage['passives']+stage['transition']+stage['checks'])}<p>{esc(stage.get('resources','资源使用安排尚未说明'))}</p><details><summary>本阶段物资与原生核对</summary><pre>{esc(json.dumps({'materials':stage.get('required_items',[]),'sockets':stage['socket_evidence'],'ascendancy_nodes':stage['ascendancy_allocated_nodes'],'calculation':stage.get('calculation',{'status':'not_calculated','scope':'未提供完整阶段快照，不报告精确效果'})},ensure_ascii=False,indent=2))}</pre></details></section>")
+    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(route['name'])}</title><style>body{{font:16px/1.7 system-ui;max-width:1050px;margin:auto;padding:28px;background:#f5f6f8;color:#202a38}}section{{background:white;margin:18px 0;padding:24px;border-radius:12px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}</style><h1>{esc(route['name'])}</h1><p>{esc(route.get('delivery_status','draft'))} · {esc(route['class_display_name'])} · {esc(route['ascendancy_display_name'])}</p><p>{esc(route['goal'])}</p><p>范围：{esc(route['scope'])}。这是一条有进入条件的路线；仅有 calculation 记录的阶段按所声明装备、技能、天赋与配置实算；其余阶段不报告精确效果。</p>{bullets(route['pending']+warnings)}{''.join(sections)}<section><h2>判断、来源与风险</h2>{bullets(route['risks']+route['notes'])}<pre>{esc(json.dumps({'claims':route['claims'],'evidence':route['evidence'],'facts':route.get('fact_evidence',{})},ensure_ascii=False,indent=2))}</pre></section><p>本机引擎 {esc(engine_version)}；天赋数据 {esc(tree_version)}。</p></html>'''

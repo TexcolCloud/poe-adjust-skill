@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 import buildxml as bx
@@ -19,7 +20,8 @@ import engine
 import facts
 import routes
 
-VERSION = "1.7.6"
+VERSION = "2.1.0"
+SCHEMA_VERSION = 2
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -80,9 +82,12 @@ def diagnosis_summary(result):
 def read_run(path):
     run = Path(path).resolve()
     state = read_json(run / "run.json")
+    bx.require(state.get("schema_version") == SCHEMA_VERSION, "旧会话为历史记录；请在新目录 start，用有来源的用户意图生成 schema_version=2 并重新计算，不能直接导出旧候选。")
     bx.require(state.get("invoked") is True, "请先由用户明确调用 POE 配装助手。")
     original = run / "original.xml"
     bx.require(original.is_file() and bx.digest(original.read_bytes()) == state["original_sha256"], "原始快照发生变化。请用用户提供的文件建立新会话。")
+    if state.get("intent"):
+        bx.require(bx.digest(json.dumps(state["intent"],ensure_ascii=False,sort_keys=True,allow_nan=False))==state.get("intent_hash"),"已确认意图记录被直接修改；请恢复记录并用 intent 命令更新，不能沿用旧候选。")
     return run, state
 
 
@@ -101,7 +106,7 @@ def begin(args):
     run.mkdir(parents=True, exist_ok=True)
     original = bx.serialise(document)
     write_text(run / "original.xml", original)
-    state = {"schema_version": 1, "skill_version": VERSION, "invoked": True, "created_at": now(), "phase": "clarifying",
+    state = {"schema_version": SCHEMA_VERSION, "skill_version": VERSION, "invoked": True, "created_at": now(), "phase": "clarifying",
              "source_path": str(source), "input_sha256": bx.digest(source.read_bytes()), "original_sha256": bx.digest(original), **info}
     write_json(run / "run.json", state)
     inspection = bx.summary(document)
@@ -116,89 +121,97 @@ def begin(args):
             "next": "先结合以上角色信息逐轮确认目标、赛季版本、预算、改装范围和进度；其余装备原文在 inspection，宝石字段是 skillId/nameSpec。"}
 
 
-def validate_intent(value, original):
-    allowed = {"confirmed", "goal", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "notes", "calculation_mode", "resource_mode"}
-    bx.require(not (set(value) - allowed), "意图包含未知字段：" + ", ".join(sorted(set(value) - allowed)))
-    bx.require(value.get("confirmed") is True, "先向用户归纳并明确目标；confirmed 必须对应用户已表达的意图。")
-    for field in ("goal", "league"):
-        bx.require(isinstance(value.get(field), str) and value[field].strip(), f"需要已确认的 {field}。")
-    engine.validate_game_version(value.get("game_version"), value["league"], version_source=value.get("version_source"))
-    bx.require(isinstance(value.get("version_source"), str) and value["version_source"].startswith(("https://", "http://")), "version_source 需要实际支持国服赛季与版本对应关系的网页 URL。")
-    bx.require(isinstance(value.get("version_checked_at"), str), "version_checked_at 需要实际查阅日期。")
-    engine.validate_checked_at(value["version_checked_at"])
-    bx.require(value.get("mode") in {"refine", "rebuild", "both"}, "mode 应为 refine/rebuild/both。")
-    budget = value.get("budget")
-    bx.require(isinstance(budget, dict) and set(budget) <= {"amount", "currency"}, "budget 需要 amount 与 currency。")
-    bx.require(isinstance(budget.get("amount"), (int, float)) and not isinstance(budget["amount"], bool) and math.isfinite(budget["amount"]) and budget["amount"] >= 0, "预算金额应为有限非负数。")
-    bx.require(isinstance(budget.get("currency"), str) and budget["currency"], "需要预算通货单位。")
-    for field in ("target_level", "baseline_main_group", "quest_passive_points", "ascendancy_points"):
-        bx.require(field in value, f"请先确认并填写 {field}，不能套用示例或默认角色进度。")
-    defaults = {"allow_class_change": False,
-                "allow_ascendancy_change": False, "allow_main_skill_change": False,
-                "keep_slots": [], "keep_skill_ids": [], "scenario": {}, "minimum_stats": {},
-                "notes": "", "calculation_mode": "steady", "resource_mode": "sustained"}
+def validate_intent(value, original, native=None, folder=None):
+    allowed = {"schema_version", "confirmed", "goal", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
+    bx.require(value.get("schema_version") == SCHEMA_VERSION, "intent 使用 schema_version=2；旧默认策略字段需按 commands.md 迁移。")
+    bx.require(not set(value) - allowed, "意图包含未知/弃用字段：" + ", ".join(sorted(set(value) - allowed)))
+    bx.require(value.get("confirmed") is True, "先归纳已表达的目标；confirmed 只记录流程，不代表程序独立验证用户表达。")
+    for key in ("goal", "league"):
+        bx.require(isinstance(value.get(key), str) and value[key].strip(), "需要明确的 " + key)
+    if value.get("game_version"):
+        engine.validate_game_version(value["game_version"], value["league"])
+    if value.get("version_checked_at"): engine.validate_checked_at(value["version_checked_at"])
+    defaults = {"allow_class_change": None, "allow_ascendancy_change": None, "allow_main_skill_change": None,
+                "keep_slots": [], "keep_skill_ids": [], "scenario": {}, "minimum_stats": {}, "notes": "", "budget": None,
+                "mode": None, "target_level": None, "quest_passive_points": None, "normal_points_available": None,
+                "ascendancy_points": None, "secondary_ascendancy_points": None}
     result = {**defaults, **value}
-    bx.require(result["calculation_mode"] in {"steady", "conditional"}, "calculation_mode 应为 steady 或 conditional。")
-    bx.require(result["resource_mode"] in {"sustained", "burst"}, "resource_mode 应为 sustained 或 burst。")
-    for flag in ("allow_class_change", "allow_ascendancy_change", "allow_main_skill_change"):
-        bx.require(isinstance(result[flag], bool), f"{flag} 应为布尔值。")
-    for field in ("keep_slots", "keep_skill_ids"):
-        bx.require(isinstance(result[field], list) and all(isinstance(v, str) for v in result[field]), f"{field} 应为文本数组。")
-    bx.require(all(s in bx.SLOTS or re.fullmatch(r"Jewel \d+", s) for s in result["keep_slots"]), "keep_slots 存在未知插槽。")
-    bx.require(isinstance(result["target_level"], int) and 1 <= result["target_level"] <= 100, "目标等级超出范围。")
-    bx.require(isinstance(result["quest_passive_points"], int) and 0 <= result["quest_passive_points"] <= 23, "当前适配版本的任务天赋点应为 0–23。")
-    bx.require(isinstance(result["ascendancy_points"], int) and 0 <= result["ascendancy_points"] <= 8, "升华点应为 0–8。")
+    bx.require(result["mode"] in (None, "refine", "rebuild", "both"), "mode 为 refine/rebuild/both 或未知 null。")
+    for key in ("allow_class_change", "allow_ascendancy_change", "allow_main_skill_change"):
+        bx.require(result[key] is None or type(result[key]) is bool, key + " 为 true/false/null；未知不等于禁止。")
+    budget = result["budget"]
+    if budget is not None:
+        bx.require(isinstance(budget, dict) and set(budget) == {"amount", "currency"}, "budget 需要 amount/currency；未确定时为 null。")
+        bx.require(type(budget["amount"]) in (int, float) and math.isfinite(budget["amount"]) and budget["amount"] >= 0, "预算金额应为有限非负数。")
+        bx.require(isinstance(budget["currency"], str) and budget["currency"], "预算需要通货单位。")
+    for key in ("target_level", "quest_passive_points", "normal_points_available", "ascendancy_points", "secondary_ascendancy_points"):
+        bx.require(result[key] is None or type(result[key]) is int and result[key] >= (1 if key == "target_level" else 0), key + " 为进度整数或 null，不套用固定赛季上限。")
+    bx.require(isinstance(result["keep_slots"], list), "keep_slots 应为数组。")
+    known_slots = {row["name"] for row in (native or {}).get("slots", [])}
+    known_slots.update(row.get("name") for row in bx.active_set(original, "Items", "ItemSet", "activeItemSet").findall("Slot"))
+    for entry in result["keep_slots"]:
+        bx.require(isinstance(entry, dict) and set(entry) == {"slot", "preserve"} and entry["preserve"] in {"item_identity", "exact_spec"}, "keep_slots 每项为 {slot,preserve}；preserve=item_identity 或 exact_spec。")
+        bx.require(entry["slot"] in known_slots, "当前已读数据未识别保留槽位：" + entry["slot"])
+    bx.require(isinstance(result["keep_skill_ids"], list) and all(isinstance(v, str) and v for v in result["keep_skill_ids"]), "keep_skill_ids 应为 ID 数组。")
     bx.require(isinstance(result["minimum_stats"], dict), "minimum_stats 应为对象。")
     for key, val in result["minimum_stats"].items():
-        bx.require(key in METRICS and isinstance(val, (int, float)) and math.isfinite(val), f"未知或无效的最低指标：{key}")
-    bx.index_one(bx.groups(original), result["baseline_main_group"], "原角色主技能组")
+        bx.require(isinstance(key, str) and key and type(val) in (int, float) and math.isfinite(val), "约定最低指标必须是本机指标名和有限数值。")
+    if result.get("max_changed_equipment") is not None:
+        rule = result["max_changed_equipment"]
+        bx.require(isinstance(rule, dict) and set(rule) == {"count", "basis"} and type(rule["count"]) is int and rule["count"] >= 0 and rule["basis"] in {"replaced_items", "changed_slots"}, "max_changed_equipment 需要 count 与 basis=replaced_items/changed_slots。")
+    if result.get("baseline_main_group") is not None:
+        bx.index_one(bx.groups(original), result["baseline_main_group"], "原角色主技能组")
     bx.set_config(copy.deepcopy(original), result["scenario"])
+    records = facts.load_evidence(result.get("evidence", []), folder or Path.cwd(), {"league": result["league"]})
+    sources = result.get("constraint_sources", {})
+    bx.require(isinstance(sources, dict), "constraint_sources 是约束字段到用户声明 evidence_id 的映射。")
+    required = ["goal"] + [key for key in ("mode", "budget", "target_level", "quest_passive_points", "normal_points_available", "ascendancy_points", "secondary_ascendancy_points", "max_changed_equipment", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "baseline_main_group") if result.get(key) is not None]
+    required += [key for key in ("keep_slots", "keep_skill_ids", "scenario", "minimum_stats") if result[key]]
+    for key in required:
+        ref = sources.get("/" + key)
+        bx.require(ref in records and records[ref]["kind"] == "user_statement" and records[ref]["status"] == "user_declared", "明确限制 /" + key + " 需要 constraint_sources 中对应的用户表达；模型假设请放 plan。")
+    result["constraint_sources"] = sources
     return result
-
 
 def set_intent(args):
     run, state = read_run(args.run)
-    intent = validate_intent(read_json(args.file), bx.read_document(run / "original.xml"))
-    info = engine.check(engine.resolve_root(state["pob_path"]))
-    engine.validate_game_version(intent["game_version"], intent["league"], engine.require_data_version(info))
+    root = engine.resolve_root(state["pob_path"])
+    native = engine.calculate(root, catalog="rules", query="slots")
+    intent = validate_intent(read_json(args.file), bx.read_document(run / "original.xml"), native, Path(args.file).resolve().parent)
+    if intent.get("game_version"):
+        engine.validate_game_version(intent["game_version"], intent["league"], native.get("data_version"))
     state["intent"] = intent
-    state["intent_hash"] = bx.digest(json.dumps(intent, ensure_ascii=False, sort_keys=True))
-    state["target_version_evidence"] = facts.version_fact(intent["version_source"], intent["game_version"], intent["league"], run / ".poe-evidence", info["engine_fingerprint"])
+    state["intent_evidence_folder"] = str(Path(args.file).resolve().parent)
+    state["intent_hash"] = bx.digest(json.dumps(intent, ensure_ascii=False, sort_keys=True, allow_nan=False))
+    state["target_version_evidence"] = facts.version_fact(intent.get("version_source"), intent.get("game_version") or "", intent["league"], run / ".poe-evidence", native["engine_fingerprint"])
     state["phase"] = "designing"
     state["updated_at"] = now()
     write_json(run / "run.json", state)
-    return {"run": str(run), "phase": state["phase"], "intent": intent, "target_version_evidence": state["target_version_evidence"], "next": "核对版本正文与关键机制后写 plan.json 并 evaluate。正文未核实时保留为草案；旧意图下的候选不能导出。"}
+    return {"run": str(run), "phase": state["phase"], "intent": intent, "intent_hash": state["intent_hash"], "target_version_evidence": state["target_version_evidence"], "next": "用本机事实与来源设计；未知进度只影响依赖它的检查，不能当零或满进度。"}
 
-
-def prepared(original, intent, *, baseline=False):
+def prepared(original, intent, *, baseline=False, scenario=None):
     root = copy.deepcopy(original)
-    bx.set_config(root, intent["scenario"], reset=True)
+    common = dict(scenario or {})
+    for key, value in intent.get("scenario", {}).items():
+        bx.require(key not in common or common[key] == value, "比较场景覆盖了用户限定条件：" + key)
+        common[key] = value
+    bx.set_config(root, common)
     root.find("Build").set("characterLevelAutoMode", "false")
-    if baseline:
+    if baseline and intent.get("baseline_main_group") is not None:
         root.find("Build").set("mainSocketGroup", str(intent["baseline_main_group"]))
     return root
 
-
 def active_slot(name, result):
-    if name.startswith("Weapon "):
-        return name.endswith(" Swap") == bool(result.get("use_second_weapon_set"))
+    slot = next((row for row in result.get("slots", []) if row["name"] == name), None)
+    if slot is not None: return slot.get("active", True)
+    # No native slot record means activity is unknown, not an inferred weapon layout.
     return True
-
 
 def active_gems(result):
     return [gem for gem in result.get("gems", []) if gem.get("enabled") and gem.get("group_enabled") and active_slot(gem.get("slot", ""), result)]
 
 
-def release_inactive_sockets(document):
-    """Keep alternate groups but do not let them shift active native socket quality."""
-    for group in bx.groups(document):
-        # Native granted groups are matched by source AND slot. Clearing their
-        # slot makes the engine replace them with newly enabled groups.
-        if group.get("enabled", "true") == "false" and not group.get("source"):
-            group.set("slot", "")
-
-
-def socket_layout_issues(document, result):
+def socket_layout_issues(document, result, unsupported=None):
     """Check physical links using the engine's sequential socket assignment."""
     errors = []
     equipped = {item["slot"]: item for item in result["equipped"]}
@@ -207,10 +220,10 @@ def socket_layout_issues(document, result):
     for index, group in enumerate(bx.groups(document), 1):
         slot = group.get("slot", "")
         gems = [gem for gem in result["gems"] if gem["group"] == index]
+        if group.get("source") or not slot or not gems:
+            continue
         offset = offsets.get(slot, 0)
         offsets[slot] = offset + len(gems)
-        if group.get("source") or group.get("enabled", "true") == "false" or not active_slot(slot, result) or not gems:
-            continue
         item = equipped.get(slot)
         if not item:
             errors.append(f"第 {index} 组需要关联实际装备插槽；当前 {slot or '未指定'} 没有装备。")
@@ -223,7 +236,10 @@ def socket_layout_issues(document, result):
             errors.append(f"{slot} 插槽数量不足：第 {index} 组按原生顺序占用第 {offset+1}–{offset+len(gems)} 孔，装备只有 {len(physical)} 孔。移除不用的组或调整装备/技能位置。")
             continue
         if any(colour in "AD" for _, colour in assigned):
-            errors.append(f"{slot} 第 {index} 组占用了深渊/特殊插槽，不能视为普通宝石孔。")
+            if unsupported is not None:
+                unsupported.append(f"capability:special_socket:{slot}:{index}")
+            else:
+                errors.append(f"{slot} 第 {index} 组使用特殊插槽，当前普通孔接口未覆盖，需进一步核对。")
         if len({link for link, _ in assigned}) > 1:
             errors.append(f"{slot} 连线不匹配：第 {index} 组跨越未相连的插槽；按装备孔位顺序拆分或重新连接，不能仅在 PoB 中写作一组。")
         has_support = any(gem.get("support") and gem.get("enabled") for gem in gems)
@@ -236,26 +252,35 @@ def socket_layout_issues(document, result):
 
 
 def mechanical_issues(document, result, intent):
-    errors, warnings = [], list(result.get("warnings", []))
-    for node in result["granted_passives"]:
-        if node["allocated_on_tree"]:
-            warnings.append(f"本机节点 {node['id']} {node.get('display_name', node['name'])} 已在树上分配，同时又被额外授予；原生计算按同一节点计入，不能解释为两份叠加收益。是否调整天赋或授予来源由方案目标决定。")
-    engine.validate_game_version(intent.get("game_version"), intent["league"], engine.require_data_version(result), intent.get("version_source"))
-    for capability in ("matching_socket_quality", "native_resource_costs", "native_gem_requirements"):
-        if not result.get("capabilities", {}).get(capability):
-            errors.append(f"本机接口尚未验证 {capability}，不能认证依赖此能力的完整配装；请保留诊断结果供维护者适配。")
-    if result["tree_version"] != result["data_version"].replace(".", "_"):
-        errors.append("天赋版本与当前机制/宝石数据版本不同；当前适配仅接受对应标准天赋树，不能把旧树或特殊模式树当作当前普通赛季。")
+    errors, warnings, gaps = [], list(result.get("warnings", [])), []
     stats = result["stats"]
-    config_keys = set(result["config_keys"])
+    for node in result.get("granted_passives", []):
+        if node["allocated_on_tree"]:
+            warnings.append(f"节点 {node['id']} {node.get('display_name',node['name'])} 已在树上分配并被额外授予，不能算两份收益；是否调整由模型判断。")
+    if intent.get("game_version") and result.get("data_version"):
+        if intent["game_version"] != result["data_version"]: errors.append("目标版本与本机机制数据不一致。")
+    elif not result.get("data_version"): gaps.append("version:data")
+    if result.get("data_version") and result["tree_version"].split("_")[:2] != result["data_version"].split("."):
+        gaps.append("version:tree")
+    caps = result.get("capabilities", {})
+    if not caps.get("native_gem_requirements") and result.get("gems"): gaps.append("capability:native_gem_requirements")
+    if not caps.get("matching_socket_quality") and any(gem.get("slot") for gem in result.get("gems", [])): gaps.append("capability:matching_socket_quality")
+    if not caps.get("excluded_guard_validation") and any(gem.get("enableGlobal1") == "false" for group in bx.groups(document) for gem in group.findall("Gem")):
+        gaps.append("capability:excluded_guard_validation")
     for entry in bx.active_config(document).findall("Input"):
         name = entry.get("name", "")
-        if name not in config_keys:
-            errors.append("引擎不识别配置：" + name)
+        if name in {"customMods", "customModsExtra"}:
+            gaps.append("config:" + name)
+        if name not in result["config_keys"]:
+            gaps.append("config:" + name)
+            warnings.append("本机接口未识别配置：" + name)
         elif name in result["config_lists"]:
             allowed = result["config_lists"][name]
+            if not allowed:
+                gaps.append("config:" + name)
+                continue
             value = None
-            kinds = [kind for kind in ("string", "number", "boolean") if kind in entry.attrib]
+            kinds = [key for key in ("string", "number", "boolean") if key in entry.attrib]
             if len(kinds) == 1:
                 kind = kinds[0]
                 if kind == "string": value = entry.get(kind)
@@ -263,202 +288,214 @@ def mechanical_issues(document, result, intent):
                 elif kind == "number":
                     try: value = float(entry.get(kind))
                     except ValueError: pass
-            matches = any((type(value) == type(option) or type(value) in (int, float) and type(option) in (int, float)) and value == option for option in allowed)
-            if not matches:
-                choices = json.dumps(allowed[:12], ensure_ascii=False) if allowed else "本机选项暂不可读取，不能验证"
-                errors.append(f"无效配置值：{name}={value!r}；本机允许值 {choices}。用 catalog config 返回的 val，不要使用显示标签 label。")
-    for warning in warnings:
-        if "negative" in warning or "not have enough" in warning or "too many" in warning:
-            errors.append(warning)
-    allowance = result["level"] - 1 + intent["quest_passive_points"] + stats.get("ExtraPoints", 0)
-    if result["points"] > allowance:
-        errors.append(f"当前等级与任务进度最多 {allowance:g} 点，方案使用 {result['points']} 点。")
-    if result["ascendancy_points"] > intent["ascendancy_points"]:
-        errors.append("方案超过已确认可用的升华点。")
-    requested_nodes = {int(n) for n in bx.active_spec(document).get("nodes", "").split(",") if n}
+            if not any((type(value) == type(option) or type(value) in (int,float) and type(option) in (int,float)) and value == option for option in allowed):
+                errors.append(f"无效配置值：{name}={value!r}；请使用 catalog config 的 val：{allowed[:12]}")
+    spec = bx.active_spec(document)
+    for field, actual in (("classId","class_id"),("ascendClassId","ascendancy_id"),("secondaryAscendClassId","secondary_ascendancy_id")):
+        raw = spec.get(field)
+        if raw is None or raw == "nil" and field == "secondaryAscendClassId": continue  # Native unselected secondary sentinel, not an inferred ID.
+        bx.require(raw.isdigit(),"XML 职业/升华编号无效："+field+"="+raw)
+        expected = int(raw)
+        if actual not in result:
+            if expected: gaps.append("tree:" + field)
+        elif result[actual] != expected: errors.append(f"引擎未保留天赋 {field}={expected}，实际为 {result[actual]}。")
+    if result["level"] != int(document.find("Build").get("level")):
+        errors.append("引擎调整了输入角色等级；当前原生接口不接受该等级。")
+    requested_nodes = {int(n) for n in spec.get("nodes", "").split(",") if n}
     missing = requested_nodes - set(result["nodes"])
     if missing: errors.append("引擎未保留部分天赋节点：" + ",".join(map(str, sorted(missing))))
     for group in bx.groups(document):
-        if not group.get("source"):
-            continue
+        if not group.get("source"): continue
         for gem in group.findall("Gem"):
             retained = [entry for entry in result["gems"] if entry.get("source") == group.get("source") and entry.get("id") == gem.get("skillId")]
-            # A removed item/node may legitimately remove its granted group.
-            if retained and not any(entry.get("slot", "") == group.get("slot", "") and
-                                    entry["group_enabled"] == (group.get("enabled", "true") != "false") for entry in retained):
-                errors.append(f"引擎改变了授予技能状态：{group.get('source')} / {gem.get('skillId')}；槽位与启用状态必须和方案一致，不能将重建后默认开启的技能当作已关闭。")
+            if retained and not any(entry.get("slot", "") == group.get("slot", "") and entry["group_enabled"] == (group.get("enabled", "true") != "false") for entry in retained):
+                errors.append("引擎改变了授予技能状态：" + group.get("source"))
     for skill in result.get("active_skills", []):
-        if skill.get("trigger_target_required_level") and skill.get("trigger_level_limit") is not None:
-            if skill["trigger_target_required_level"] > skill["trigger_level_limit"]:
-                errors.append(f"第 {skill['group']} 组 {skill.get('display_name', skill['name'])} 的角色等级需求 {skill['trigger_target_required_level']:g} 超过触发辅助等级上限 {skill['trigger_level_limit']:g}；降低被触发宝石等级或提高辅助等级，并重新核对触发条件。")
-    for gem in active_gems(result):
-        if not gem.get("recognised"):
-            errors.append(f"未知宝石：第 {gem['group']} 组第 {gem['index']} 个。")
-        if gem.get("support") and not (gem.get("support_applied") or gem.get("supports_excluded_guards")):
-            errors.append(f"第 {gem['group']} 组的 {gem.get('display_name',gem.get('name'))} 未辅助任何启用技能；请核对适用类型、触发等级、重复辅助或将备用宝石移出当前组。")
-        if not gem.get("source") and gem.get("max_base_level"):
-            if gem.get("level", 1) > gem["max_base_level"] or gem.get("quality", 0) > 23:
-                errors.append(f"{gem.get('name')} 的宝石自身等级/品质超出普通练级或腐化上限；装备、辅助及匹配孔色加成由引擎另算，不能预加到 gems.level/quality。")
-        for req, available in (("req_level", result["level"]), ("req_str", stats.get("Str", 0)), ("req_dex", stats.get("Dex", 0)), ("req_int", stats.get("Int", 0))):
-            if (gem.get(req) or 0) > available:
-                errors.append(f"{gem.get('name',gem.get('id'))} 的 {req} 需求 {gem[req]} 超过 {available:g}。")
+        if skill.get("trigger_target_required_level") and skill.get("trigger_level_limit") is not None and skill["trigger_target_required_level"] > skill["trigger_level_limit"]:
+            errors.append(f"第 {skill['group']} 组 {skill.get('name')} 的需求等级超过触发辅助原生上限 {skill['trigger_level_limit']}。")
+    def requirements(required, available, subject):
+        if type(required) in (int,float) and required > 0:
+            if type(available) not in (int,float): gaps.append(subject)
+            elif required > available: errors.append(f"{subject} 需求 {required:g} 超过 {available:g}。")
+    for gem in result["gems"]:
+        if not gem.get("slot") and not gem.get("source"): continue
+        label = f"gem:{gem['group']}:{gem['index']}"
+        if not gem.get("recognised"): errors.append("未知宝石：" + label)
+        if gem.get("support") and gem.get("enabled") and gem.get("group_enabled") and not (gem.get("support_applied") or gem.get("supports_excluded_guards")):
+            warnings.append(label + " 未辅助启用技能；若是练级/备用用途需说明，不能声称它提供了辅助收益。")
+        if gem.get("native_level_present") is False and not gem.get("source"): gaps.append(label + ":level")
+        for req, available in (("req_level",result["level"]),("req_str",stats.get("Str")),("req_dex",stats.get("Dex")),("req_int",stats.get("Int"))):
+            requirements(gem.get(req), available, label + ":" + req)
     equipped = {item["slot"]: item for item in result["equipped"]}
-    expected_equipment = [(slot.get("name", ""), int(slot.get("itemId", "0")))
-                          for slot in bx.active_set(document, "Items", "ItemSet", "activeItemSet").findall("Slot")]
-    expected_equipment += [("Jewel " + slot.get("nodeId"), int(slot.get("itemId", "0")))
-                           for slot in bx.active_spec(document).findall("Sockets/Socket") if int(slot.get("nodeId", "0")) in requested_nodes]
-    for name, item_id in expected_equipment:
-        if item_id and active_slot(name, result) and equipped.get(name, {}).get("id") != item_id:
-            errors.append(f"{name} 的装备 {item_id} 未被引擎装入；请核对基底名称、物品类型和插槽，不能把被静默移除的装备当作已生效。可用 catalog bases 查询合法基底。")
+    expected = [(slot.get("name", ""), int(slot.get("itemId", "0"))) for slot in bx.active_set(document,"Items","ItemSet","activeItemSet").findall("Slot")]
+    expected += [("Jewel " + slot.get("nodeId"), int(slot.get("itemId", "0"))) for slot in spec.findall("Sockets/Socket") if int(slot.get("nodeId","0")) in requested_nodes]
+    for name, item_id in expected:
+        if item_id and equipped.get(name, {}).get("id") != item_id:
+            errors.append(f"{name} 的装备 {item_id} 未被引擎装入；不能把静默移除的装备当作生效。")
     for name, item in equipped.items():
-        if not active_slot(name, result): continue
-        if not item.get("base_recognised"):
-            errors.append(f"{name} 装备基底未被识别。")
-        for req, available in (("level", result["level"]), ("str", stats.get("Str", 0)), ("dex", stats.get("Dex", 0)), ("int", stats.get("Int", 0))):
-            if (item.get("requirements", {}).get(req) or 0) > available:
-                errors.append(f"{name} 装备的 {req} 需求未满足。")
+        if not item.get("base_recognised"): errors.append(name + " 装备基底未被识别。")
+        if item.get("valid_for_slot") is False: errors.append(name + " 的物品不满足原生槽位要求。")
+        if active_slot(name, result):
+            for req, available in (("level",result["level"]),("str",stats.get("Str")),("dex",stats.get("Dex")),("int",stats.get("Int"))):
+                requirements(item.get("requirements",{}).get(req),available,"item:" + name + ":" + req)
         if item.get("unparsed"):
-            warnings.append(f"{name} 存在引擎未完整解析的词缀：" + "；".join(item["unparsed"]))
-    errors.extend(socket_layout_issues(document, result))
-    for key, threshold in intent["minimum_stats"].items():
-        if key not in stats or stats[key] < threshold:
-            errors.append(f"{METRICS[key]} 为 {stats.get(key,'未知')}，低于约定的 {threshold}。")
-    if result["main_skill"] == "DefaultAttack":
-        errors.append("主技能退回普通攻击，请确认主技能组及技能可用性。")
-    return list(dict.fromkeys(errors)), list(dict.fromkeys(warnings))
+            warnings.append(name + " 存在未解析词缀：" + "；".join(item["unparsed"]))
+            if not (item.get("slot", "").startswith("Flask ") and item.get("active") is False): gaps.append("item:" + str(item["id"]) + ":unparsed")
+    errors.extend(socket_layout_issues(document,result,gaps))
+    return list(dict.fromkeys(errors)), list(dict.fromkeys(warnings)), list(dict.fromkeys(gaps))
 
-
-def readiness(result, intent, plan):
-    """Audit conditions that PoB permits but a usable delivered build must explain."""
+def readiness(result, intent, plan, claims=None):
+    """Report observed constraints and scoped usage, not a universal play style."""
+    claims = claims or []
+    errors, warnings, pending, resources = [], [], [], []
     stats = result["stats"]
-    errors, warnings, resources = [], [], []
-    available = result["level"] - 1 + intent["quest_passive_points"] + stats.get("ExtraPoints", 0)
-    unused = {"normal": available - result["points"], "ascendancy": intent["ascendancy_points"] - result["ascendancy_points"]}
-    reasons = plan.get("unused_points_reason", {})
-    bx.require(isinstance(reasons, dict) and set(reasons) <= {"normal", "ascendancy"}, "unused_points_reason 只能包含 normal/ascendancy 的留点理由。")
-    for key, label in (("normal", "普通天赋"), ("ascendancy", "升华")):
-        if unused[key] > 0:
-            reason = reasons.get(key)
-            if not isinstance(reason, str) or not reason.strip():
-                errors.append(f"尚有 {unused[key]:g} 个可用{label}点未分配；完成分配，或在 unused_points_reason.{key} 写明本方案为何留点。")
-            else:
-                warnings.append(f"保留 {unused[key]:g} 个{label}点：{reason}")
-    guard = bool(stats.get("GuardSkillActive"))
-    flasks = [item["slot"] for item in result["equipped"] if item["slot"].startswith("Flask ") and item.get("active")]
-    mode = intent.get("calculation_mode", "steady")
-    if mode == "steady":
-        if guard:
-            errors.append("常态计算仍启用了守护增益；对应宝石设置 enable_global1=false 并重算。保留宝石用于应急，不把短时增益当常驻。")
-        if flasks:
-            errors.append("常态计算仍启用药剂：" + "、".join(flasks) + "；设置 equip[].active=false。若确需计算药剂覆盖，另用 conditional 意图并提供覆盖依据。")
-    else:
-        evidence = plan.get("config_evidence", {})
-        for condition in (["guard"] if guard else []) + flasks:
-            if not isinstance(evidence.get(condition), str) or not evidence[condition].strip():
-                errors.append("条件面板缺少触发、持续时间和覆盖依据：config_evidence." + condition)
-        if guard or flasks:
-            warnings.append("此为有条件的守护/药剂面板，不能作为无条件常态承伤或持续输出。")
-    duration = plan.get("burst_seconds")
-    if duration is not None:
-        bx.require(type(duration) in (int, float) and math.isfinite(duration) and duration > 0, "burst_seconds 应为有限正数。")
-    eb = result.get("resource_rules", {}).get("energy_shield_protects_mana", False)
-    active = [skill for skill in result.get("active_skills", []) if not skill.get("disabled")]
-    automatic = [skill for skill in active if not skill.get("is_main") and skill.get("trigger") and skill.get("costs", {}).get("SkillTriggerRate", 0) > 0]
-    if result.get("excluded_guard_checks"):
-        warnings.append("守护收益未计入常态面板；其连线、等级与单次费用已另作原生检查，自动触发费用按引擎速率计入。实际受击频率与覆盖仍需核对，手动守护须留出单次资源。")
-    mirage_main = any(skill.get("is_main") and skill.get("generals_cry") for skill in active)
-    multiplied = [gem for gem in active_gems(result) if not gem.get("support") and max(gem.get("count", 1), gem.get("group_count", 1)) > 1]
-    if multiplied:
-        count_evidence = plan.get("config_evidence", {}).get("skill_counts")
-        if not isinstance(count_evidence, str) or not count_evidence.strip():
-            errors.append("多个召唤物/重叠技能数量需要 config_evidence.skill_counts：逐组说明可维持数量、取得/施放速率与持续时间，不能直接填理论上限抬高 Full DPS。")
-        warnings.append("Full DPS 使用了手动设置的多实例数量，实际覆盖依赖 skill_counts 中的依据；查看报告分项，不能把数量视为引擎已证明可维持。")
-    if any(skill.get("generals_cry") for skill in active):
-        evidence = plan.get("config_evidence", {}).get("generals_cry")
-        if not isinstance(evidence, str) or not evidence.strip():
-            errors.append("将军之吼方案需要 config_evidence.generals_cry：说明尸体取得、战吼触发/冷却、幻影数量及玩家自身回复来源；幻影攻击不等于本人攻击。")
-        corpse_sources = [skill for skill in active if skill.get("creates_corpses")]
-        if mode == "steady":
-            if not result.get("capabilities", {}).get("native_corpse_sources"):
-                errors.append("本机接口无法读取 CreatesCorpse 技能类型，尚不能认证将军之吼的尸体生成来源；请保留诊断供维护者适配。")
-            elif not corpse_sources:
-                errors.append("将军之吼缺少已装入且启用的尸体生成技能：本机技能类型未识别到 CreatesCorpse。怪物尸体不能保证无小怪首领启动；补齐来源，特殊外部来源须用 conditional 并在 generals_cry 依据中解释。")
-        warnings.append("将军之吼按幻影攻击计算；CreatesCorpse 仅识别造尸能力，不证明数量或稳定供尸。尸体生成、接近目标和战吼循环会影响实际覆盖，不能描述成本人无条件自动施放。")
-    if automatic:
-        warnings.append("持续消耗额外计入启用的自动触发技能：" + "、".join(skill.get("display_name", skill["name"]) for skill in automatic) + "。")
-    if any(not skill.get("is_main") and not skill.get("trigger") and any(skill.get("costs", {}).get(key, 0) > 0 for key in ("ManaCost", "LifeCost", "ESCost")) for skill in active):
-        warnings.append("主技能与已识别自动触发的持续消耗已核对；位移、手动诅咒、尸体生成或补召唤的额外频率未自动假定。按 active_skills 的单次消耗留出余量，不能将该结果当作所有技能同时满速的续航。")
-    for resource, cost_key, label in (("Mana", "Mana", "魔力"), ("Life", "Life", "生命"), ("EnergyShield", "ES", "能量护盾")):
-        cost = stats.get(cost_key + "PerSecondCost", 0)
-        single = stats.get(cost_key + "Cost", 0)
-        automatic_cost = sum(skill.get("costs", {}).get(cost_key + "PerSecondCost", 0) for skill in automatic)
-        cost += automatic_cost
-        single = max([single] + [skill.get("costs", {}).get(cost_key + "Cost", 0) for skill in automatic])
-        raw_regen = stats.get(resource + "RegenRecovery", 0)
-        regen = stats.get("Net" + resource + "Regen", raw_regen)
-        native_leech = stats.get(resource + "LeechGainRate", 0)
-        leech = 0 if mirage_main else native_leech
-        if mirage_main and native_leech:
-            warnings.append(f"将军之吼主技能面板的{label}吸取/击回 {native_leech:.1f}/秒属于幻影攻击，未计作玩家自身回复；另行使用本人攻击时需核实其命中与频率。")
-        pool = stats.get(resource + "Unreserved", stats.get(resource, 0))
-        recharge = 0
-        if resource == "Mana" and eb:
-            single = 0
-        if resource == "EnergyShield":
-            pool = min(pool, stats.get("EnergyShieldRecoveryCap", pool))
+    def number(data, key):
+        value = data.get(key)
+        return value if type(value) in (int,float) and math.isfinite(value) else None
+    def needs(subject):
+        if not facts.has_claim(claims,subject): pending.append(subject)
+    unused = {}
+    for label, used_key, limit_key in (("normal","points","normal_points_available"),("ascendancy","ascendancy_points","ascendancy_points"),("secondary_ascendancy","secondary_ascendancy_points","secondary_ascendancy_points")):
+        used, limit = result.get(used_key), intent.get(limit_key)
+        unused[label] = limit - used if type(limit) is int and type(used) is int else None
+        if unused[label] is not None and unused[label] < 0: errors.append(f"{label} 使用 {used} 点，超过已确认可用 {limit} 点。")
+        elif limit is None and used: needs("progress:" + label)
+    guard = stats.get("GuardSkillActive")
+    flasks = [item["slot"] for item in result.get("equipped",[]) if item["slot"].startswith("Flask ") and item.get("active")]
+    if guard: needs("condition:guard")
+    for slot in flasks: needs("condition:" + slot)
+    for key in plan.get("operations",{}).get("config",{}): needs("config:" + key)
+    active = [skill for skill in result.get("active_skills",[]) if not skill.get("disabled")]
+    main = next((skill for skill in active if skill.get("is_main")),None)
+    known_cost_keys={prefix+suffix for prefix in ("Mana","Life","ES") for suffix in ("Cost","PerSecondCost")}
+    extra_costs=[]
+    for subject,data in [("main",stats)]+[(skill.get("skill_ref",skill.get("id")),skill.get("costs",{})) for skill in active]:
+        for key,value in data.items():
+            if key.endswith("Cost") and key not in known_cost_keys and type(value) in (int,float) and value>0:
+                extra_costs.append({"subject":subject,"metric":key,"value":value,"status":"native_observed","scope":"当前三资源账目未覆盖此项，不按免费处理。"})
+                pending.append("capability:resource_cost:"+str(subject)+":"+key)
+    automatic = [skill for skill in active if not skill.get("is_main") and skill.get("trigger") and (number(skill.get("costs",{}),"SkillTriggerRate") or 0) > 0]
+    usage = plan.get("usage",[])
+    bx.require(isinstance(usage,list),"usage 应为数组。")
+    by_ref = {skill.get("skill_ref"):skill for skill in active if skill.get("skill_ref")}
+    usages = {}
+    for row in usage:
+        bx.require(isinstance(row,dict) and set(row) <= {"skill_ref","casts_per_second","active_seconds","recovery_seconds","continuous","claim_id"},"usage 字段无效。")
+        ref = row.get("skill_ref")
+        bx.require(ref in by_ref and ref not in usages,"usage.skill_ref 需要本次原生返回的唯一技能引用。")
+        for key in ("casts_per_second","active_seconds","recovery_seconds"):
+            if key in row: bx.require(number(row,key) is not None and row[key]>=0, key + " 需要有限非负数，单位为次/秒或秒。")
+        if "continuous" in row: bx.require(type(row["continuous"]) is bool,"usage.continuous 应为布尔值。")
+        usages[ref] = row
+        if not any(c["claim_id"]==row.get("claim_id") and c["status"]=="model_assessed" and "skill:"+ref in c["subjects"] for c in claims): needs("skill:"+ref)
+    for skill in active:
+        ref = skill.get("skill_ref") or skill.get("id")
+        if skill.get("generals_cry"): needs("dependency:" + ref)
+        if skill is not main and skill not in automatic and any((number(skill.get("costs",{}),key) or 0)>0 for key in ("ManaCost","LifeCost","ESCost")) and ref not in usages:
+            pending.append("usage:" + ref)
+    for gem in result.get("gems",[]):
+        if gem.get("enabled") and gem.get("group_enabled") and (gem.get("count",1)>1 or gem.get("group_count",1)>1): needs(f"count:{gem['group']}:{gem['index']}")
+    eb = result.get("resource_rules",{}).get("energy_shield_protects_mana")
+    main_usage = usages.get(main.get("skill_ref") if main else None,{})
+    for resource, cost_key, label in (("Mana","Mana","魔力"),("Life","Life","生命"),("EnergyShield","ES","能量护盾")):
+        single, native_cost = number(stats,cost_key+"Cost"), number(stats,cost_key+"PerSecondCost")
+        raw_native_cost=native_cost
+        if main and main.get("no_cost") is True:
+            if single is None: single=0
+            if native_cost is None: native_cost=0
+        pool = number(stats,resource+"Unreserved")
+        if pool is None: pool = number(stats,resource)
+        raw_regen, degen = number(stats,resource+"RegenRecovery"), number(stats,resource+"Degen")
+        regen = number(stats,"Net"+resource+"Regen")
+        if regen is None and raw_regen is not None and degen is not None: regen = raw_regen-degen
+        native_leech = number(stats,resource+"LeechGainRate")
+        leech = 0 if main and main.get("actor") in {"mirage","minion"} else native_leech
+        automatic_values = [number(skill.get("costs",{}),cost_key+"PerSecondCost") for skill in automatic]
+        auto_cost = sum(automatic_values) if all(value is not None for value in automatic_values) else None
+        cost = native_cost + auto_cost if native_cost is not None and auto_cost is not None else None
+        single_values = [single] + [number(skill.get("costs",{}),cost_key+"Cost") for skill in automatic]
+        single = max(single_values) if all(value is not None for value in single_values) else None
+        if resource=="Mana" and eb: single=0
+        if resource=="EnergyShield":
+            cap=number(stats,"EnergyShieldRecoveryCap")
+            if pool is not None and cap is not None: pool=min(pool,cap)
             if eb:
-                single += max([stats.get("ManaCost", 0)] + [skill.get("costs", {}).get("ManaCost", 0) for skill in automatic])
-            if cost <= 0 and single <= 0 and regen >= 0:
-                continue
-            safe_eb_recharge = eb and not stats.get("TotalBuildDegen", 0) and not any(stats.get(key, 0) for key in ("sharedMindOverMatter", "PhysicalMindOverMatter", "FireMindOverMatter", "ColdMindOverMatter", "LightningMindOverMatter", "ChaosMindOverMatter"))
-            conditional_recharge = mode == "conditional" and isinstance(plan.get("config_evidence", {}).get("energy_shield_recharge"), str) and plan["config_evidence"]["energy_shield_recharge"].strip()
-            if stats.get("EnergyShieldRechargeAppliesToEnergyShield") and (safe_eb_recharge or conditional_recharge):
-                recharge = stats.get("EnergyShieldRecharge", 0)
-                if recharge:
-                    delay = stats.get("EnergyShieldRechargeDelay", 2)
-                    warnings.append(f"能盾资源计入已启动的充能 {recharge:.1f}/秒；启动延迟 {delay:.2f} 秒。" + ("EB 且未检测到伤害转魔力或自身持续伤害；技能消耗本身不打断充能。" if safe_eb_recharge else "按 energy_shield_recharge 的有条件覆盖依据计算；充能被打断时不能沿用此续航。"))
-                    if max(cost - regen - leech, 0) * delay > pool:
-                        errors.append("能盾储量不足以覆盖满速使用时的充能启动延迟；先等待充能、降低消耗或增加无需充能的回复，并明确实际操作。")
-            if eb:
-                warnings.append("EB 消耗按能盾池保守核对，未自动把耗尽后的魔力池/魔力回复合并为能盾供给。")
-            if stats.get("EnergyShieldRecharge", 0) and not recharge:
-                warnings.append("能盾充能未计入持续回复；伤害可能打断充能。需要条件计算时用 conditional，并在 config_evidence.energy_shield_recharge 说明启动、打断与覆盖依据。")
-        net = cost - regen - leech - recharge
-        if single > 0 and (pool < single or resource == "Life" and pool <= single):
-            errors.append(f"可用{label} {pool:.1f} 不能支付主技能/自动触发技能的单次消耗 {single:.1f}。")
-        record = {"resource": label, "pool": pool, "cost_per_second": cost, "regeneration": regen, "raw_regeneration": raw_regen, "leech_on_hit": leech, "recharge": recharge,
-                  "automatic_cost_per_second": automatic_cost, "native_leech_on_hit": native_leech,
-                  "net_cost": net, "sustainable_while_hitting": net <= 0.01,
-                  "seconds_without_hits": max(pool - (1 if resource == "Life" else 0), 0) / (cost - regen - recharge) if cost > regen + recharge else None}
-        if net > 0.01:
-            record["maximum_burst_seconds"] = max(pool - (1 if resource == "Life" else 0), 0) / net
-            message = f"主技能满速及已识别自动触发每秒消耗{label} {cost:.1f}，扣除自身持续伤害后净秒回 {regen:.1f}、命中吸取 {leech:.1f}、计入充能 {recharge:.1f}，净缺口 {net:.1f}；不能持续满速使用。"
-            if intent.get("resource_mode", "sustained") == "sustained":
-                errors.append(message + "请修复续航。只有用户明确接受爆发/停手玩法时才改用 resource_mode=burst。")
-            elif duration is None or duration > record["maximum_burst_seconds"]:
-                errors.append(message + f"爆发方案须给出 burst_seconds，且不得超过 {record['maximum_burst_seconds']:.2f} 秒。")
+                mana_values=[number(stats,"ManaCost")]+[number(skill.get("costs",{}),"ManaCost") for skill in automatic]
+                single=single+max(mana_values) if single is not None and all(v is not None for v in mana_values) else None
+        # A paced main skill is projected only when native cost agrees with single-cost × rate.
+        projection = "native_full_speed"
+        rate = main_usage.get("casts_per_second")
+        if rate is not None and main:
+            native_rate=number(main.get("costs",{}),"SkillTriggerRate") or number(main.get("costs",{}),"Speed")
+            main_single=number(main.get("costs",{}),cost_key+"Cost")
+            if native_rate is None or native_rate<=0 or native_cost is None or main_single is None or not math.isclose(native_cost,main_single*native_rate,rel_tol=1e-5,abs_tol=1e-5) or automatic:
+                pending.append("capability:usage_projection:"+main["skill_ref"])
+                projection="unsupported"
+            elif rate>native_rate+1e-8:
+                errors.append("使用频率超过本机当前技能频率："+main["skill_ref"])
             else:
-                downtime = net * duration / regen if regen > 0 else None
-                record["recovery_seconds_at_regen_only"] = downtime
-                record["duty_cycle"] = duration / (duration + downtime) if downtime is not None else None
-                warnings.append(message + (f"按 {duration:g} 秒爆发，停手仅靠秒回至少恢复 {downtime:.1f} 秒。" if downtime is not None else "停手后的恢复时间无法由秒回证明，需要另外核实恢复操作。"))
-        if cost > regen + recharge + 0.01 and leech:
-            warnings.append(f"{label}续航依赖命中吸取；空挥、无敌阶段和转场不保证满速持续。")
+                cost=main_single*rate
+                projection="linear_native_cost_only"
+        manual_cost=0
+        for ref,row in usages.items():
+            skill=by_ref[ref]
+            if skill is main or skill in automatic: continue
+            value=number(skill.get("costs",{}),cost_key+"Cost")
+            if value is None or row.get("casts_per_second") is None:
+                manual_cost=None
+                break
+            manual_cost+=value*row["casts_per_second"]
+            single=max(single,value) if single is not None else None
+        if cost is not None and manual_cost is not None: cost+=manual_cost
+        elif manual_cost is None: cost=None
+        subject="resource:"+resource
+        if single is not None and pool is not None and single>0 and (single>pool or resource=="Life" and single>=pool):
+            errors.append(f"可用{label} {pool:g} 不能支付单次消耗 {single:g}。")
+        recharge=number(stats,"EnergyShieldRecharge") if resource=="EnergyShield" else None
+        recharge_counted=0
+        if recharge and facts.has_claim(claims,"resource:EnergyShield:recharge"):
+            recharge_counted=recharge
+            delay=number(stats,"EnergyShieldRechargeDelay")
+            if delay is None: pending.append("native:resource:EnergyShield:delay")
+            elif None not in (cost,regen,leech,pool) and max(cost-regen-leech,0)*delay>pool:
+                needs("resource:EnergyShield:startup")
+            warnings.append("能盾充能仅在对应 claim 的启动/打断条件下计入；不是持续覆盖证明。")
+        known=all(value is not None for value in (pool,single,cost,regen,leech))
+        net=cost-regen-leech-recharge_counted if known else None
+        record={"resource":label,"resource_id":resource,"pool":pool,"single_cost":single,"native_cost_per_second":raw_native_cost,"cost_per_second":cost,
+                "main_cost_scope":"not_applicable_by_native_flag" if main and main.get("no_cost") is True else "native_value_or_unknown",
+                "automatic_cost_per_second":auto_cost,"manual_cost_per_second":manual_cost,"regeneration":regen,"raw_regeneration":raw_regen,"degen":degen,
+                "native_leech_on_hit":native_leech,"leech_on_hit":leech,"recharge":recharge,"recharge_counted":recharge_counted,"net_cost":net,
+                "sustainable_while_hitting":net<=0.01 if net is not None else None,"projection":projection,"scope":"所列技能及条件下的支付账目；DPS 仍是原生快照，未按使用节奏重算的伤害不能当实际持续输出。"}
+        if not known: pending.append("native:"+subject)
+        elif net>0.01:
+            maximum=max(pool-(1 if resource=="Life" else 0),0)/net
+            record["maximum_burst_seconds"]=maximum
+            duration=main_usage.get("active_seconds")
+            if main_usage.get("continuous") is True: errors.append(f"{label}净缺口 {net:g}/秒，不满足声明的持续使用。")
+            elif duration is not None:
+                if duration>maximum: errors.append(f"声明的使用时长超过{label}静态储量可支持的 {maximum:g} 秒。")
+                recovery=net*duration/regen if regen>0 else None
+                record["recovery_seconds_at_regen_only"]=recovery
+                if recovery is None: pending.append("capability:"+subject+":recovery")
+                elif main_usage.get("recovery_seconds") is None: pending.append(subject+":recovery")
+                elif main_usage["recovery_seconds"]<recovery: errors.append(f"{label}声明恢复时间小于净秒回所需时间 {recovery:g} 秒。")
+            else: needs(subject+":usage")
+            warnings.append(f"{label}当前使用方式有净缺口 {net:g}/秒；不能据此声称无限持续。")
+        if leech and leech>0: needs(subject+":leech")
         resources.append(record)
-    return {"errors": errors, "warnings": warnings, "unused_points": unused,
-            "conditions": {"mode": mode, "guard_active": guard, "active_flasks": flasks}, "resources": resources,
-            "automatic_costs": automatic}
-
+    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,
+            "conditions":{"guard_active":guard,"active_flasks":flasks,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。"},"resources":resources,"additional_native_costs":extra_costs}
 
 def material_requirements(original, document, before, after):
     """Derive purchases/upgrades from actual XML, not a prose claim of ownership."""
     def gem_key(gem):
         return gem.get("id"), gem.get("level", 1), gem.get("quality", 0)
-    stock = Counter(gem_key(gem) for gem in before["gems"] if not gem.get("source"))
+    stock = Counter(gem_key(gem) for gem in before["gems"] if not gem.get("source") and gem.get("slot"))
     needed = Counter()
     names = {}
     for gem in after["gems"]:
-        if not gem.get("id") or gem.get("source") or not gem.get("group_enabled") or not active_slot(gem.get("slot", ""), after):
+        if not gem.get("id") or gem.get("source") or not gem.get("slot"):
             continue
         key = gem_key(gem)
         needed[key] += 1
@@ -469,126 +506,172 @@ def material_requirements(original, document, before, after):
         prior = sorted({(g[1], g[2]) for g in stock if g[0] == skill})
         requirements.append({"kind": "gem", "skill_id": skill, "level": level, "quality": quality, "quantity": count,
                              "description": f"{names[key]} {level} 级 / {quality} 品质 × {count}" + (f"（原 XML 记录等级/品质：{prior}，需练级、调品质或采购）" if prior else "（原 XML 未记录足量同规格宝石）")})
-    old_items = Counter(bx.normal_item(bx.text_item(item)) for item in original.findall("Items/Item"))
+    old_texts = {int(item.get("id")): bx.normal_item(bx.text_item(item)) for item in original.findall("Items/Item")}
+    old_items = Counter(old_texts[item["id"]] for item in before["equipped"] if item["id"] in old_texts)
     item_texts = {int(item.get("id")): bx.normal_item(bx.text_item(item)) for item in document.findall("Items/Item")}
     for item in after["equipped"]:
-        if not active_slot(item["slot"], after):
-            continue
         text = item_texts.get(item["id"], "")
         if old_items[text]:
             old_items[text] -= 1
         else:
             requirements.append({"kind": "item", "item_id": item["id"], "quantity": 1,
+                                 "spec_sha256": bx.digest(text),
                                  "description": f"{item['slot']}：{item['name']}（新物品或原物品改造，含孔色/连线变化）"})
-    return requirements
+    removed = set(before.get("nodes", [])) - set(after.get("nodes", []))
+    if removed:
+        requirements.append({"kind":"service","service_id":"passive_respec","quantity":len(removed),
+                             "description":"移除已分配节点，需核对实际洗点资源；节点数不等于通货价格。"})
+    grouped = {}
+    for row in requirements:
+        key = facts.material_ref(row)
+        if key in grouped: grouped[key]["quantity"] += row["quantity"]
+        else: grouped[key] = {**row, "requirement_id": key}
+    return list(grouped.values())
 
 
 def check_constraints(original, document, before, after, intent, plan):
-    errors = []
-    if intent["mode"] != "both" and plan["mode"] != intent["mode"]: errors.append("候选超出用户确认的改装模式。")
-    if after["level"] != intent["target_level"]: errors.append("候选等级与用户确认的目标等级不一致。")
-    if after["tree_version"] != before["tree_version"]: errors.append("候选天赋版本与原角色不同，请先确定统一游戏版本。")
-    if not intent["allow_class_change"] and before["class"] != after["class"]: errors.append("用户要求保留职业。")
-    if not intent["allow_ascendancy_change"] and before["ascendancy"] != after["ascendancy"]: errors.append("用户要求保留升华。")
-    if not intent["allow_main_skill_change"] and before["main_skill"] != after["main_skill"]: errors.append("用户要求保留主技能。")
-    before_slots = {entry["slot"]: entry for entry in before["equipped"]}
-    after_slots = {entry["slot"]: entry for entry in after["equipped"]}
-    original_items = {int(item.get("id")): bx.normal_item(bx.text_item(item)) for item in original.findall("Items/Item")}
-    new_items = {int(item.get("id")): bx.normal_item(bx.text_item(item)) for item in document.findall("Items/Item")}
-    for slot in intent["keep_slots"]:
-        old, new = before_slots.get(slot), after_slots.get(slot)
-        if not old or not new or original_items.get(old["id"]) != new_items.get(new["id"]):
-            errors.append("必须保留的装备被改动：" + slot)
-    enabled_ids = {gem.get("id") for gem in active_gems(after)}
-    for skill in intent["keep_skill_ids"]:
-        if skill not in enabled_ids: errors.append("必须保留的技能未启用：" + skill)
-    config = plan.get("operations", {}).get("config", {})
-    for key in config:
-        if key in intent["scenario"] and config[key] != intent["scenario"][key]:
-            errors.append("候选修改了共同战斗场景：" + key)
-        if not plan.get("config_evidence", {}).get(key): errors.append("候选配置缺少持续性/触发来源说明：" + key)
-    if plan["mode"] == "rebuild" and not plan.get("migration_steps"):
-        errors.append("整体换流派需要说明装备准备和切换顺序。")
-    if plan.get("template_xml") and not plan.get("sources"):
-        errors.append("引用完整配装模板需要记录来源。")
-    for source in plan.get("sources", []):
-        if source.get("checked_at"):
-            try:
-                engine.validate_checked_at(source["checked_at"])
-            except ValueError as exc:
-                errors.append(str(exc))
-    return errors
+    errors, pending = [], []
+    if intent.get("mode") not in (None,"both",plan["mode"]): errors.append("候选超出用户确认的改装模式。")
+    if intent.get("target_level") is not None and after["level"] != intent["target_level"]: errors.append("候选等级与用户确认的目标等级不一致。")
+    if after["tree_version"] != before["tree_version"]: errors.append("候选天赋版本发生变化，需原生迁移及新的版本依据，不能直接改 treeVersion。")
+    for flag,field,label in (("allow_class_change","class","职业"),("allow_ascendancy_change","ascendancy","升华"),("allow_main_skill_change","main_skill","主技能")):
+        if before[field] != after[field]:
+            if intent.get(flag) is False: errors.append("用户明确要求保留"+label+"。")
+            elif intent.get(flag) is None: pending.append("permission:"+flag)
+    if before.get("secondary_ascendancy_id") != after.get("secondary_ascendancy_id"):
+        if intent.get("allow_ascendancy_change") is False: errors.append("用户明确要求保留升华，副升华发生变化。")
+        elif intent.get("allow_ascendancy_change") is None: pending.append("permission:allow_ascendancy_change")
+    before_slots={row["slot"]:row for row in before["equipped"]}
+    after_slots={row["slot"]:row for row in after["equipped"]}
+    original_items={int(item.get("id")):bx.normal_item(bx.text_item(item)) for item in original.findall("Items/Item")}
+    new_items={int(item.get("id")):bx.normal_item(bx.text_item(item)) for item in document.findall("Items/Item")}
+    changed,replaced=[],[]
+    for slot in before_slots.keys() | after_slots.keys():
+        old,new=before_slots.get(slot),after_slots.get(slot)
+        if not old or not new or original_items.get(old["id"]) != new_items.get(new["id"]): changed.append(slot)
+        if not old or not new or old["id"] != new["id"] or old.get("base") != new.get("base"): replaced.append(slot)
+    for entry in intent.get("keep_slots",[]):
+        slot=entry["slot"]
+        if entry["preserve"]=="exact_spec" and slot in changed: errors.append("必须保留完整规格的装备被改动："+slot)
+        elif entry["preserve"]=="item_identity":
+            if slot in replaced: errors.append("必须保留实物的槽位更换了物品："+slot)
+            elif slot in changed: pending.append("transformation:"+slot)
+    rule=intent.get("max_changed_equipment")
+    if rule:
+        counted=replaced if rule["basis"]=="replaced_items" else changed
+        if len(counted)>rule["count"]: errors.append(f"装备改动 {len(counted)} 处超过约定 {rule['count']} 处，口径 {rule['basis']}："+"、".join(sorted(counted)))
+    enabled_ids={gem.get("id") for gem in active_gems(after)}
+    for skill in intent.get("keep_skill_ids",[]):
+        if skill not in enabled_ids: errors.append("必须保留的技能未启用："+skill)
+    for key,threshold in intent.get("minimum_stats",{}).items():
+        value=after["stats"].get(key)
+        if type(value) not in (float,int): pending.append("metric:"+key)
+        elif value<threshold: errors.append(f"{METRICS.get(key,key)} 为 {value:g}，低于约定 {threshold:g}。")
+    for values in (plan.get("scenario",{}),plan.get("operations",{}).get("config",{})):
+        for key,value in values.items():
+            if key in intent.get("scenario",{}) and value != intent["scenario"][key]: errors.append("候选修改了用户限定场景："+key)
+    if plan["mode"]=="rebuild" and not plan.get("migration_steps"): pending.append("migration")
+    if plan.get("template_xml") and not plan.get("sources"): pending.append("template_source")
+    return errors,pending
 
-
-def budget_summary(plan, intent, requirements=None):
-    entries = plan.get("shopping", [])
-    bx.require(isinstance(entries, list), "shopping 应为数组。")
-    low = high = 0
-    statuses, warnings = [], []
-    for entry in entries:
-        bx.require(isinstance(entry, dict) and entry.get("description"), "每项购物清单需要 description。")
-        status = entry.get("status", "unknown")
-        bx.require(status in {"owned", "verified_cn", "estimate", "unknown"}, "购物状态应为 owned/verified_cn/estimate/unknown。")
-        if entry.get("kind"):
-            bx.require(entry["kind"] in {"gem", "item", "service"}, "购物 kind 应为 gem/item/service。")
-        statuses.append(status)
-        if status == "owned": continue
-        if status == "unknown": continue
-        bx.require(entry.get("currency") == intent["budget"]["currency"], "购物清单与预算需要使用同一通货；换算需先核实汇率。")
-        lo, hi = entry.get("low"), entry.get("high")
-        bx.require(isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and math.isfinite(lo) and math.isfinite(hi) and 0 <= lo <= hi, "价格范围无效。")
-        if status == "verified_cn":
-            bx.require(entry.get("source", "").startswith(("https://", "http://")) and entry.get("checked_at") and entry.get("league") == intent["league"], "国服已核实价格需要来源链接、时间和相同赛季。")
-            engine.validate_checked_at(entry["checked_at"])
-        low += lo
-        high += hi
-    materials = []
+def budget_summary(plan, intent, requirements=None, evidence=None, claims=None):
+    evidence,claims=evidence or {},claims or []
+    entries,inventory=plan.get("shopping",[]),plan.get("inventory",[])
+    bx.require(isinstance(entries,list) and isinstance(inventory,list),"shopping/inventory 应为数组。")
+    target=intent.get("budget") or {}
+    currency=target.get("currency")
+    limit=target.get("amount")
+    stocks,orders={},{}
+    warnings=[]
+    for group,rows in (("inventory",inventory),("shopping",entries)):
+        for entry in rows:
+            bx.require(isinstance(entry,dict) and "status" not in entry,"物资状态由程序生成；owned 使用 inventory 与用户声明，价格通过 evidence_refs 关联来源。")
+            ref=facts.material_ref(entry)
+            qty=entry.get("quantity")
+            bx.require(type(qty) is int and qty>0,"物资 quantity 应为正整数。")
+            refs=entry.get("evidence_refs",[])
+            bx.require(isinstance(refs,list) and all(isinstance(v,str) for v in refs) and len(refs)==len(set(refs)),"物资 evidence_refs 应为不重复的引用数组。")
+            records=[evidence[v] for v in refs if v in evidence and evidence[v].get("subject")==ref and evidence[v].get("status")!="unresolved"]
+            if group=="inventory":
+                bx.require(ref not in stocks,"相同规格库存请合并数量，不能重复抵消需求："+ref)
+                declared=[r for r in records if r["kind"]=="user_statement" and type(r.get("context",{}).get("quantity")) is int and r["context"]["quantity"]>0 and (entry["kind"]!="item" or entry.get("spec_sha256") and r.get("context",{}).get("spec_sha256")==entry["spec_sha256"])]
+                stocks[ref]={**entry,"status":"user_declared" if sum(r["context"]["quantity"] for r in declared)>=qty else "unknown"}
+                continue
+            bx.require(ref not in orders,"相同规格购物记录请合并数量："+ref)
+            row={**entry,"status":"unknown"}
+            lo,hi=entry.get("low"),entry.get("high")
+            if lo is not None or hi is not None:
+                bx.require(type(lo) in (int,float) and type(hi) in (int,float) and math.isfinite(lo) and math.isfinite(hi) and 0<=lo<=hi,"价格 low/high 是该条全部 quantity 总价，需为有效有限区间。")
+                row["status"]="estimate"
+                # The source is observed; matching its meaning to this price remains an explicit model assessment.
+                matching=[r for r in records if r.get("status") in {"source_observed","artifact_observed"} and r.get("checked_at") and r.get("context",{}).get("realm")=="cn" and r.get("context",{}).get("league")==intent.get("league") and r.get("context",{}).get("currency")==entry.get("currency") and r.get("context",{}).get("quantity")==qty and r.get("context",{}).get("low")==lo and r.get("context",{}).get("high")==hi and (entry["kind"]!="item" or entry.get("spec_sha256") and r.get("context",{}).get("spec_sha256")==entry["spec_sha256"])]
+                if matching and any(c["status"]=="model_assessed" and "quote:"+ref in c["subjects"] and set(c["evidence_refs"]) & {r["evidence_id"] for r in matching} for c in claims): row["status"]="quote_assessed"
+                if currency is None: currency=entry.get("currency")
+                if not currency or entry.get("currency")!=currency:
+                    row["status"]="unknown"
+                    warnings.append(ref+" 通货未与预算统一，未做无依据换算。")
+            orders[ref]=row
+    materials=[]
+    unresolved=[]
     for need in requirements or []:
-        keys = ("kind", "skill_id", "level", "quality") if need["kind"] == "gem" else ("kind", "item_id")
-        matches = [entry for entry in entries if all(entry.get(k) == need[k] for k in keys)]
-        bx.require(len(matches) <= 1, "同一物品的购物记录重复：" + need["description"])
-        match = matches[0] if matches else {}
-        bx.require(match.get("status") != "owned", "原 XML 未记录足量同规格物品，不能直接标 owned：" + need["description"] + "；请列为练级/制作/采购，状态 unknown 或已核实价格。")
-        if match:
-            bx.require(type(match.get("quantity", 1)) is int and match.get("quantity", 1) >= need["quantity"], "购物数量不足：" + need["description"])
-        status = match.get("status", "unknown")
-        statuses.append(status)
-        materials.append({**need, "status": status, "source": match.get("source")})
-    if requirements and any(e.get("status") == "owned" and not e.get("kind") for e in entries):
-        warnings.append("文字声明的“已有”未关联具体物品，不能抵消自动检测到的采购/升级需求。")
-    if (not entries and requirements != []) or "unknown" in statuses: status = "unknown"
-    elif "estimate" in statuses: status = "estimate"
-    elif all(s == "owned" for s in statuses): status = "owned"
-    else: status = "verified_cn"
-    if status == "unknown": warnings.append("成本尚未完整核实；不得承诺能在预算内买齐。")
-    elif status == "estimate": warnings.append("成本含估计价格，尚未证明国服实际可买齐。")
-    return {"status": status, "low": low, "high": high, "currency": intent["budget"]["currency"], "limit": intent["budget"]["amount"], "over_budget": high > intent["budget"]["amount"], "warnings": warnings, "materials": materials}
-
+        ref=facts.material_ref(need)
+        stock=stocks.get(ref,{})
+        if need["kind"]=="item" and stock.get("spec_sha256")!=need.get("spec_sha256"): stock={}
+        owned=min(need["quantity"],stock.get("quantity",0)) if stock.get("status")=="user_declared" else 0
+        remaining=need["quantity"]-owned
+        order=orders.get(ref,{})
+        if need["kind"]=="item" and order.get("spec_sha256")!=need.get("spec_sha256"): order={}
+        satisfied=remaining==0 or order.get("quantity",0)>=remaining and order.get("status")=="quote_assessed"
+        if not satisfied: unresolved.append(ref)
+        materials.append({**need,"requirement_id":ref,"declared_owned":owned,"remaining":remaining,"status":"user_declared" if remaining==0 else order.get("status","unknown"),"evidence_refs":stock.get("evidence_refs",[]) + order.get("evidence_refs",[])})
+    low=high=known_low=0
+    any_unknown=False
+    for ref,row in orders.items():
+        if row["status"]=="unknown": any_unknown=True; continue
+        low+=row["low"]; high+=row["high"]
+        applicable=next((n for n in requirements or [] if facts.material_ref(n)==ref and (n["kind"]!="item" or n.get("spec_sha256")==row.get("spec_sha256"))),None)
+        if row["status"]=="quote_assessed" and applicable: known_low+=row["low"]
+    estimated=any(row["status"]=="estimate" for row in orders.values())
+    over=limit is not None and known_low>limit
+    crossing=limit is not None and low<=limit<high
+    if over: status="over_budget"
+    elif unresolved or any_unknown: status="unknown"
+    elif estimated or crossing: status="uncertain_range"
+    elif orders: status="quote_assessed"
+    elif materials: status="user_declared"
+    else: status="no_additional_cost"
+    if status in {"unknown","uncertain_range"}: warnings.append("成本或物资尚未充分对应；不能承诺预算内买齐。")
+    if status=="quote_assessed": warnings.append("价格根据实际来源片段及模型匹配判断，非成交保证，购买前复核。")
+    return {"status":status,"low":low,"high":high,"known_lower_bound":known_low,"totals_complete":not unresolved and not any_unknown,
+            "currency":currency,"limit":limit,"over_budget":over,"range_crosses_limit":crossing,"unresolved":unresolved,"warnings":warnings,"materials":materials,"shopping":list(orders.values()),"inventory":list(stocks.values())}
 
 def compare(before, after, comparable=True):
-    result = {}
-    for key in METRICS:
-        a, b = before["stats"].get(key), after["stats"].get(key)
-        if isinstance(a, (float, int)) and isinstance(b, (float, int)):
-            result[key] = {"before": a, "after": b, "delta": b-a, "percent": (b-a)/abs(a)*100 if a and comparable else None}
+    result={}
+    keys=before["stats"].keys() & after["stats"].keys()
+    for key in sorted(keys):
+        a,b=before["stats"][key],after["stats"][key]
+        if type(a) in (float,int) and type(b) in (float,int) and math.isfinite(a) and math.isfinite(b):
+            result[key]={"before":a,"after":b,"delta":b-a,"percent":(b-a)/abs(a)*100 if a and comparable else None,"scope":"native_snapshot"}
     return result
 
-
 def semantics(result):
-    return {"class": result["class"], "ascendancy": result["ascendancy"], "level": result["level"], "tree_version": result["tree_version"],
+    return {"class": result["class"], "ascendancy": result["ascendancy"], "secondary_ascendancy_id": result.get("secondary_ascendancy_id"), "level": result["level"], "tree_version": result["tree_version"],
             "config_values": result["config_values"],
             "nodes": result["nodes"], "main_skill": result["main_skill"], "main_group": result["main_group"],
-            "gems": [{key: gem.get(key) for key in ("group", "index", "id", "source", "level", "quality", "enabled", "group_enabled", "slot", "matches_socket", "socket_quality_bonus")} for gem in result["gems"]],
+            "gems": [{key: gem.get(key) for key in ("group", "index", "id", "source", "level", "quality", "enabled", "group_enabled", "slot", "matches_socket", "socket_quality_bonus", "count", "group_count", "skill_part", "skill_stage_count", "skill_minion", "main_active_skill", "include_in_full_dps")} for gem in result["gems"]],
             "equipped": [{key: item.get(key) for key in ("slot", "id", "name", "base", "active")} for item in result["equipped"]]}
 
 
 def roundtrip(root, result, document):
     saved = bx.preserve_extensions(document, bx.parse(result["xml"]))
     xml = bx.serialise(saved)
-    reloaded = engine.calculate(root, xml)
+    reloaded = engine.calculate(root, xml, cache=False)
     bx.require(semantics(result) == semantics(reloaded), "XML 回读后配置、装备、天赋或技能发生变化，未通过导出检查。")
-    for key in METRICS:
+    for key in result["stats"].keys() | reloaded["stats"].keys():
         a, b = result["stats"].get(key), reloaded["stats"].get(key)
+        if type(a) not in (int,float) and type(b) not in (int,float):
+            bx.require(a == b, "XML 回读后的状态不一致：" + key)
+            continue
         if a is None and b is None: continue
         bx.require(isinstance(a, (int, float)) and isinstance(b, (int, float)) and math.isclose(a, b, rel_tol=1e-8, abs_tol=1e-5), "XML 回读后的计算结果不一致：" + key)
     return xml
@@ -604,12 +687,12 @@ def materialize_items(plan, root):
         spec = item["craft"]
         bx.require(isinstance(spec, dict) and set(spec) <= {"base", "ilvl", "quality", "sockets", "affixes"}, "craft 仅接受 base/ilvl/quality/sockets/affixes。")
         bx.require(isinstance(spec.get("base"), str) and spec["base"].strip(), "craft.base 使用 catalog bases 返回的完整基底名。")
-        bx.require(type(spec.get("ilvl")) is int and 1 <= spec["ilvl"] <= 100, "craft.ilvl 应为 1–100 物品等级。")
-        bx.require(type(spec.get("quality", 20)) is int and 0 <= spec.get("quality", 20) <= 20, "普通配方品质只接受 0–20；特殊加工需另有真实依据。")
+        bx.require(type(spec.get("ilvl")) is int and spec["ilvl"] > 0, "craft.ilvl 应为正整数；原生词缀与获取依据分别核对。")
+        bx.require(type(spec.get("quality", 0)) is int and spec.get("quality", 0) >= 0, "craft.quality 应为非负整数，取得方式须有依据。")
         sockets = spec.get("sockets", "")
         bx.require(isinstance(sockets, str) and (not sockets or re.fullmatch(r"[RGBW](?:[- ][RGBW])*", sockets)), "craft.sockets 只接受普通孔，例如 W-W-W-W 或 R-R G-G。")
         affixes = spec.get("affixes")
-        bx.require(isinstance(affixes, list) and 1 <= len(affixes) <= 6, "craft.affixes 应为 1–6 项。")
+        bx.require(isinstance(affixes, list) and bool(affixes), "craft.affixes 应为非空数组；数量由本机物品实例校验。")
         for affix in affixes:
             bx.require(isinstance(affix, dict) and set(affix) <= {"id", "roll"} and isinstance(affix.get("id"), str), "词缀配方需要 catalog affixes 返回的 id，可选 roll。")
             roll = affix.get("roll", 0.5)
@@ -617,123 +700,146 @@ def materialize_items(plan, root):
         recipes.append({"id": item["id"], **spec})
     if not recipes:
         return plan, []
-    bx.require(len(recipes) <= 10 and len({spec["id"] for spec in recipes}) == len(recipes), "每次最多 10 件且不能有重复配方物品 ID。")
-    audit = engine.calculate(root, crafts=recipes)["crafted_items"]
+    bx.require(len({spec["id"] for spec in recipes}) == len(recipes), "不能有重复配方物品 ID。")
+    audit = []
+    for offset in range(0,len(recipes),10):
+        audit.extend(engine.calculate(root, crafts=recipes[offset:offset+10])["crafted_items"])
     generated = {item["id"]: item["text"] for item in audit}
     resolved = copy.deepcopy(plan)
     resolved["operations"]["items"] = [{"id": item["id"], "text": generated[item["id"]]} if "craft" in item else item for item in resolved["operations"]["items"]]
     return resolved, audit
 
 
+def assess_candidate(original, document, baseline, result, intent, plan, evidence_folder, intent_evidence_folder=None):
+    """One assessment path for evaluation and final export; scopes stay explicit."""
+    context = {"engine_fingerprint": result["engine_fingerprint"], "league": intent["league"], "game_version": intent.get("game_version")}
+    evidence = facts.load_evidence(intent.get("evidence", []), intent_evidence_folder or evidence_folder, context)
+    plan_evidence = facts.load_evidence(plan.get("evidence", []), evidence_folder, context)
+    bx.require(not (evidence.keys() & plan_evidence.keys()),"intent 和 plan 的 evidence_id 不能重复。")
+    evidence.update(plan_evidence)
+    claims = facts.assess_claims(plan.get("claims", []), evidence, {"baseline": baseline, "candidate": result})
+    errors, warnings, native_gaps = mechanical_issues(document, result, intent)
+    mechanical_errors = list(errors)
+    constraint_errors, constraint_pending = check_constraints(original, document, baseline, result, intent, plan)
+    # Permission and absent native measurements cannot be supplied by a model conclusion.
+    constraint_pending = [p for p in constraint_pending if p.startswith(("permission:", "metric:")) or not facts.has_claim(claims,p)]
+    errors += constraint_errors
+    audit = readiness(result, intent, plan, claims)
+    errors += audit["errors"]
+    warnings += audit["warnings"]
+    requirements = material_requirements(original, document, baseline, result)
+    budget = budget_summary(plan, intent, requirements, evidence, claims)
+    if budget["over_budget"]: errors.append("已知采购成本下界超过用户预算。")
+    warnings += budget["warnings"]
+    pending = native_gaps + constraint_pending + audit["pending"]
+    pending += ["material:"+value for value in budget["unresolved"]]
+    if budget["status"] in {"unknown", "uncertain_range"}: pending.append("budget")
+    if intent.get("budget") and budget["high"] > intent["budget"]["amount"]: pending.append("budget:upper_bound")
+    for item in plan.get("operations", {}).get("items", []):
+        if not facts.has_claim(claims, "legality:item:"+str(item["id"])): pending.append("legality:item:"+str(item["id"]))
+    for key in plan.get("scenario", {}):
+        if key not in intent.get("scenario", {}) and not facts.has_claim(claims,"config:"+key): pending.append("config:"+key)
+    assessment = plan.get("assessment", {})
+    bx.require(isinstance(assessment,dict) and set(assessment) <= {"goal_claim_ids","scope","unresolved"}, "assessment 接受 goal_claim_ids/scope/unresolved。")
+    for key in ("goal_claim_ids", "unresolved"):
+        bx.require(isinstance(assessment.get(key,[]),list) and all(isinstance(v,str) and v for v in assessment.get(key,[])), "assessment."+key+" 应为字符串数组。")
+    goal_ids = assessment.get("goal_claim_ids", [])
+    goal_claims = {c["claim_id"]:c for c in claims if "goal" in c["subjects"] and c["status"]=="model_assessed"}
+    if not goal_ids or any(key not in goal_claims for key in goal_ids) or not assessment.get("scope"): pending.append("goal_assessment")
+    pending += ["assessment:"+v for v in assessment.get("unresolved", [])]
+    version = facts.version_fact(intent.get("version_source"), intent.get("game_version"), intent["league"], evidence_folder / ".poe-evidence", result["engine_fingerprint"])
+    if version["status"] != "source_observed": pending.append("version:target")
+    comparison_notes = []
+    for key,label in (("level","角色等级"),("class","职业"),("main_skill","主技能口径"),("config_values","战斗配置")):
+        if baseline.get(key) != result.get(key): comparison_notes.append(label+"不同。")
+    for key in ("GuardSkillActive",):
+        if baseline["stats"].get(key) != result["stats"].get(key): comparison_notes.append(key+"开启条件不同。")
+    def flasks(r): return sorted(i["slot"] for i in r.get("equipped",[]) if i["slot"].startswith("Flask ") and i.get("active"))
+    if flasks(baseline) != flasks(result): comparison_notes.append("药剂开启条件不同。")
+    if baseline.get("warnings"): warnings.append("原方案存在原生警告，需按具体内容审查受影响结论；警告本身不等于所有指标不可比。")
+    if any(r["projection"] != "native_full_speed" for r in audit["resources"]): comparison_notes.append("使用节奏调整未重算伤害，数值只代表原生快照。")
+    if comparison_notes: warnings.append("前后只展示数值差，不声明同条件提升百分比。")
+    errors, pending = list(dict.fromkeys(errors)), list(dict.fromkeys(pending))
+    diagnostics=[]
+    for category,messages in (("mechanical",mechanical_errors),("user_constraint",constraint_errors),("usage",audit["errors"]),("budget",["已知采购成本下界超过用户预算。"] if budget["over_budget"] else [])):
+        for message in messages:
+            diagnostics.append({"code":category+"_violation","category":category,"subject":"candidate","evidence_refs":[],"affects":["delivery"],"message":message,"status":"failed"})
+    for subject in pending:
+        diagnostics.append({"code":"unresolved_dependency","category":"capability" if subject.startswith(("capability:","native:")) else "evidence","subject":subject,
+                            "evidence_refs":[ref for claim in claims if subject in claim["subjects"] for ref in claim["evidence_refs"]],"affects":["delivery",subject],"message":"需要补足对应事实、条件或用户意图："+subject,"status":"unknown"})
+    return {"status":"blocked" if errors else "draft" if pending else "scoped_result", "errors":errors,"pending":pending,"warnings":list(dict.fromkeys(warnings)),
+            "validation":{"mechanical":"failed" if mechanical_errors else "unknown" if native_gaps else "passed",
+                          "user_constraints":"failed" if constraint_errors else "unknown" if constraint_pending else "passed",
+                          "usage":"failed" if audit["errors"] else "unknown" if audit["pending"] else "model_assessed",
+                          "target_version":version["status"], "goal":"model_assessed" if "goal_assessment" not in pending else "unresolved",
+                          "scope":"程序核对结构、可用原生事实和证据引用；目标取舍、来源语义、效果覆盖仍是模型判断，不是实战保证。"},
+            "configuration_audit":{"original_inputs":[dict(n.attrib) for n in bx.active_config(original).findall("Input")],"common_changes":plan.get("scenario",{}),"user_required":intent.get("scenario",{}),"candidate_changes":plan.get("operations",{}).get("config",{}),"baseline_actual":baseline.get("config_values",{}),"candidate_actual":result.get("config_values",{})},
+            "diagnostics":diagnostics,"budget":budget,"readiness":audit,"claims":claims,"evidence":evidence,"target_version_evidence":version,
+            "actual_changes":actual_changes(baseline,result),"comparison_notes":comparison_notes,"comparison":compare(baseline,result,not comparison_notes)}
+
+
 def evaluate(args):
     run, state = read_run(args.run)
     bx.require(state.get("intent"), "先通过多轮对话确认意图，并执行 intent。")
     bx.require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", args.name), "候选名称请使用 1–48 位小写英文、数字或连字符。")
-    intent = state["intent"]
-    plan_path = Path(args.plan).resolve()
+    intent, plan_path = state["intent"], Path(args.plan).resolve()
     plan = read_json(plan_path)
+    bx.require(plan.get("schema_version")==SCHEMA_VERSION,"plan 使用 schema_version=2，旧策略字段请按 commands.md 迁移。")
     original = bx.read_document(run / "original.xml")
     root = engine.resolve_root(args.pob or state["pob_path"])
     info = engine.check(root)
-    engine.validate_game_version(intent["game_version"], intent["league"], engine.require_data_version(info))
-    if state.get("engine_fingerprint") != info["engine_fingerprint"]:
-        # Preserve confirmed intent and the original snapshot; invalidate evidence.
-        state.update(engine.health(root))
-        write_json(run / "run.json", state)
+    engine.validate_game_version(intent.get("game_version"), intent["league"], info.get("data_version"))
+    native = engine.calculate(root, catalog="rules")
+    scenario = plan.get("scenario", {})
+    context_hash = bx.digest(json.dumps({"intent":state["intent_hash"], "scenario":scenario,"engine":info["engine_fingerprint"],"skill":VERSION},sort_keys=True,ensure_ascii=False,allow_nan=False))
     base_path = run / "baseline.json"
-    cached_baseline = read_json(base_path) if base_path.exists() else {}
-    if (cached_baseline.get("intent_hash") == state["intent_hash"] and cached_baseline.get("skill_version") == VERSION
-            and cached_baseline.get("engine_fingerprint") == info["engine_fingerprint"]):
-        baseline = cached_baseline
+    cached = read_json(base_path) if base_path.exists() else {}
+    if (cached.get("context_hash")==context_hash and cached.get("skill_version")==VERSION and cached.get("engine_fingerprint")==info["engine_fingerprint"]
+            and bx.digest(base_path.read_text(encoding="utf-8"))==state.get("baseline_sha256")):
+        baseline=cached
     else:
-        baseline = engine.calculate(root, bx.serialise(prepared(original, intent, baseline=True)))
-        baseline["intent_hash"] = state["intent_hash"]
-        baseline["skill_version"] = VERSION
-        write_json(base_path, baseline)
-    source = original
+        baseline=engine.calculate(root,bx.serialise(prepared(original,intent,baseline=True,scenario=scenario)))
+        baseline.update(context_hash=context_hash,skill_version=VERSION,intent_hash=state["intent_hash"])
+        write_json(base_path,baseline)
+    state["baseline_sha256"]=bx.digest(base_path.read_text(encoding="utf-8"))
+    source=original
     if plan.get("template_xml"):
-        path = Path(plan["template_xml"])
-        source = bx.read_document(path if path.is_absolute() else plan_path.parent / path)
-    # Apply shared scenario first; candidate-specific conditions then require evidence.
-    resolved_plan, crafted_items = materialize_items(plan, root)
-    document = bx.apply_plan(prepared(source, intent), resolved_plan)
-    release_inactive_sockets(document)
-    result = engine.calculate(root, bx.serialise(document))
-    bx.require(result["engine_fingerprint"] == baseline["engine_fingerprint"] == info["engine_fingerprint"], "前后计算期间引擎内容发生变化，请更新完成后重新 evaluate。")
-    missing_nodes = sorted({int(value) for value in bx.active_spec(document).get("nodes", "").split(",") if value} - set(result["nodes"]))
-    tree_diagnostics = []
+        path=Path(plan["template_xml"])
+        source=bx.read_document(path if path.is_absolute() else plan_path.parent/path)
+    resolved, crafted = materialize_items(plan,root)
+    document=bx.apply_plan(prepared(source,intent,scenario=scenario),resolved,native=native)
+    result=engine.calculate(root,bx.serialise(document))
+    bx.require(result["engine_fingerprint"]==baseline["engine_fingerprint"]==native["engine_fingerprint"]==info["engine_fingerprint"],"计算期间引擎内容发生变化，请更新完成后重算。")
+    missing_nodes=sorted({int(v) for v in bx.active_spec(document).get("nodes","").split(",") if v}-set(result["nodes"]))
+    tree_diagnostics=[]
     if missing_nodes:
-        # Inspect the retained native tree, without guessing that dropped nodes
-        # are unsupported or automatically changing the player's allocation.
-        queried = engine.calculate(root, result["xml"], queries=[{"kind": "nodes", "query": "id:" + str(node), "limit": 1} for node in missing_nodes[:8]])
-        bx.require(queried["engine_fingerprint"] == result["engine_fingerprint"], "天赋诊断期间引擎发生变化，请更新完成后重新 evaluate。")
-        for node_id, query in zip(missing_nodes, queried["catalog_batch"]):
-            node = next((entry for entry in query["entries"] if entry["id"] == node_id), None)
-            detail = {"id": node_id, "found": node is not None}
-            if node:
-                detail.update({key: node[key] for key in ("name", "ascendancy_name", "reachable", "points_to_allocate", "path") if key in node})
-                detail["name"] = node.get("display_name", node["name"])
-            tree_diagnostics.append(detail)
-    errors, warnings = mechanical_issues(document, result, intent)
-    mechanical_errors = list(errors)
-    constraint_errors = check_constraints(original, document, baseline, result, intent, plan)
-    errors.extend(constraint_errors)
-    audit = readiness(result, intent, plan)
-    errors.extend(audit["errors"])
-    warnings.extend(audit["warnings"])
-    requirements = material_requirements(original, document, baseline, result)
-    budget = budget_summary(plan, intent, requirements)
-    if budget["over_budget"]: errors.append("已列出的成本上限超过预算。")
-    warnings.extend(budget["warnings"])
-    if baseline["level"] != result["level"]:
-        warnings.append("候选包含升级收益；对比不是相同等级。")
-    if baseline["class"] != result["class"]:
-        warnings.append("此方案需要重新练角色，不是对原角色直接洗点。")
-    if plan.get("operations", {}).get("items") and not plan.get("legality_notes"):
-        warnings.append("新装备的游戏内词缀合法性/可获取性尚无说明；PoB 解析成功不等于装备可获得。")
-    comparison_notes = []
-    if baseline.get("warnings"):
-        comparison_notes.append("原始方案带有引擎诊断提示，原面板不是已验证的实战基准。")
-    if baseline["level"] != result["level"]:
-        comparison_notes.append("前后等级不同。")
-    if baseline["main_skill"] != result["main_skill"]:
-        comparison_notes.append("前后主技能不同，覆盖范围、操作与伤害口径需逐项核对。")
-    baseline_flasks = [item["slot"] for item in baseline["equipped"] if item["slot"].startswith("Flask ") and item.get("active")]
-    if bool(baseline["stats"].get("GuardSkillActive")) != audit["conditions"]["guard_active"] or baseline_flasks != audit["conditions"]["active_flasks"]:
-        comparison_notes.append("前后守护/药剂开启条件不同。")
-    if plan.get("operations", {}).get("config"):
-        comparison_notes.append("候选包含独有战斗条件，收益须结合覆盖依据理解。")
-    if comparison_notes:
-        warnings.append("只提供诊断数值差，不输出同条件实战提升百分比：" + "".join(comparison_notes))
-    xml = roundtrip(root, result, document)
-    version_proof = facts.version_fact(intent["version_source"], intent["game_version"], intent["league"], run / ".poe-evidence", result["engine_fingerprint"])
-    if version_proof["status"] != "source_observed": warnings.append("目标赛季版本正文未核实：" + version_proof.get("reason", "缺少依据"))
-    destination = run / "candidates" / args.name
-    write_text(destination / "candidate.xml", xml)
-    outcome = {"skill_version": VERSION, "name": plan.get("name", args.name), "evaluated_at": now(), "engine_version": result["engine_version"], "engine_fingerprint": result["engine_fingerprint"],
-               "intent_hash": state["intent_hash"], "original_sha256": state["original_sha256"], "xml_sha256": bx.digest(xml),
-               "status": "invalid" if errors else "validated", "roundtrip_verified": True,
-               "validation": {"mechanical": "passed" if not mechanical_errors + audit["errors"] else "failed",
-                              "user_constraints": "passed" if not constraint_errors else "failed",
-                              "version_basis": version_proof["status"], "mechanics_sources": "requires_review", "delivery_data": "roundtrip_verified",
-                              "scope": "validated 表示已实现的机械/资源/用户约束通过；网页论据与设计文字另行审查。"},
-               "actual_changes": actual_changes(baseline, result),
-               "tree_diagnostics": tree_diagnostics,
-               "target_version_evidence": version_proof,
-               "baseline_warnings": baseline.get("warnings", []),
-               "errors": list(dict.fromkeys(errors)), "warnings": list(dict.fromkeys(warnings)), "budget": budget, "readiness": audit,
-               "comparison_notes": comparison_notes, "comparison": compare(baseline, result, not comparison_notes), "plan": plan, "crafted_items": crafted_items, "result": {k: v for k, v in result.items() if k != "xml"}}
-    write_json(destination / "evaluation.json", outcome)
-    write_json(destination / "plan.json", plan)
-    state["phase"] = "evaluated"
-    state["updated_at"] = now()
-    write_json(run / "run.json", state)
-    return {"candidate": str(destination), "status": outcome["status"], "errors": outcome["errors"], "warnings": outcome["warnings"], "budget": budget,
-            "baseline_warnings": outcome["baseline_warnings"], "tree_diagnostics": tree_diagnostics,
-            "comparison": outcome["comparison"], "readiness": audit, "roundtrip_verified": True,
-            "next": "读取 evaluation.json 中实际技能/触发/伤害分项及计划说明，审查是否达到用户目标。有辅助选择空间时用 probe 比较，再将选定方案 evaluate/export。" if not errors else
-                    "先解决 errors；保持已确认的目标、进度和下限，修改方案后重新 evaluate。" + (" tree_diagnostics 列出前8个丢失节点：found=false 只表示当前树/珠宝配置未找到；found=true 时核对升华归属和相对已保留树的 path，不把缺连接当引擎不支持。path 含目标节点，需合并并检查点数，不能代替整个节点表。" if tree_diagnostics else "")}
-
+        queried=native_queries(root,[{"kind":"nodes","query":"id:"+str(v),"limit":1} for v in missing_nodes],result["xml"])
+        bx.require(queried["engine_fingerprint"]==result["engine_fingerprint"],"天赋诊断期间引擎变化，请重算。")
+        for node_id,row in zip(missing_nodes,queried["catalog_batch"]):
+            node=next((e for e in row["entries"] if e["id"]==node_id),None)
+            tree_diagnostics.append({"id":node_id,"found":node is not None,**({k:node[k] for k in ("name","ascendancy_name","reachable","points_to_allocate","path") if k in node} if node else {})})
+    xml=roundtrip(root,result,document)
+    result["xml_sha256"]=bx.digest(xml)
+    assessment=assess_candidate(original,document,baseline,result,intent,plan,plan_path.parent,Path(state.get("intent_evidence_folder",str(plan_path.parent))))
+    destination=run/"candidates"/args.name
+    requested=bx.serialise(document)
+    write_text(destination/"requested.xml",requested)
+    write_text(destination/"candidate.xml",xml)
+    write_json(destination/"plan.json",plan)
+    outcome={"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"name":plan.get("name",args.name),"evaluated_at":now(),
+             "engine_version":result["engine_version"],"engine_fingerprint":result["engine_fingerprint"],"intent_hash":state["intent_hash"],
+             "original_sha256":state["original_sha256"],"xml_sha256":bx.digest(xml),"requested_sha256":bx.digest(requested),"roundtrip_verified":True,
+             "evidence_folder":str(plan_path.parent),"baseline":baseline,"result":{k:v for k,v in result.items() if k!="xml"},
+             "plan":plan,"crafted_items":crafted,"tree_diagnostics":tree_diagnostics,**assessment}
+    write_json(destination/"evaluation.json",outcome)
+    state.setdefault("candidates",{})[args.name]={"evaluation_sha256":bx.digest((destination/"evaluation.json").read_text(encoding="utf-8"))}
+    state.update(phase="evaluated",updated_at=now(),engine_fingerprint=result["engine_fingerprint"])
+    write_json(run/"run.json",state)
+    return {"candidate":str(destination),"status":outcome["status"],"errors":outcome["errors"],"pending":outcome["pending"],"warnings":outcome["warnings"],
+            "budget":outcome["budget"],"readiness":outcome["readiness"],"roundtrip_verified":True,
+            "comparison":{k:v for k,v in outcome["comparison"].items() if k in METRICS},"baseline_warnings":baseline.get("warnings",[]),
+            "tree_diagnostics":tree_diagnostics,
+            "next":"按 evaluation.json 的实际数值、缺口和引用修订。probe 可用于草案；明确重大方向权限后更新 intent。scoped_result 仍有声明的判断范围，不代表实战认证。"}
 
 def actual_changes(before, after):
     """Use recalculated objects for the delivery summary, never stale plan prose."""
@@ -764,216 +870,202 @@ def scenario_summary(result):
 
 
 def report_html(state, outcome):
-    esc = lambda value: html.escape(str(value), quote=True)
-    intent, plan = state["intent"], outcome["plan"]
-    result = outcome["result"]
-    def listing(values):
-        return "<ul>" + "".join("<li>" + esc(v) + "</li>" for v in values) + "</ul>" if values else "<p>无。</p>"
-    rows = []
-    for key, metric in outcome["comparison"].items():
-        rows.append(f"<tr><th>{esc(METRICS[key])}</th><td>{metric['before']:,.2f}</td><td>{metric['after']:,.2f}</td><td>{metric['delta']:+,.2f}</td></tr>")
-    skill_rows = []
-    for gem in outcome["result"]["gems"]:
-        if not gem.get("group_enabled") or gem.get("source") or not active_slot(gem.get("slot", ""), outcome["result"]):
-            continue
-        state_label = "启用" if gem.get("enabled") else "未启用（仍占孔）"
-        skill_rows.append(f"<tr><td>{esc(gem.get('slot', ''))} · 第 {gem['group']} 组 / 第 {gem['index']} 个</td><td>{esc(gem.get('display_name',gem.get('name',gem.get('id'))))}</td><td>{gem.get('level',1)} 级 / {gem.get('quality',0)} 品质</td><td>+{gem.get('socket_quality_bonus',0)} 品质</td><td>{state_label}</td></tr>")
-    sources = []
-    for source in plan.get("sources", []):
-        url = source.get("url", "")
-        label = esc(source.get("title", url))
-        if url.startswith(("http://", "https://")):
-            label = f'<a href="{esc(url)}" rel="noreferrer">{label}</a>'
-        elif url:
-            label += " · " + esc(url)
-        sources.append(f'<li>{label} · {esc(source.get("version","版本待核实"))} · {esc(source.get("checked_at",""))}</li>')
-    shopping = []
-    labels = {"owned": "已有/无需购买", "verified_cn": "国服价格已查证", "estimate": "估计", "unknown": "待核实"}
-    for item in plan.get("shopping", []):
-        price = "" if item.get("status") in ("owned", "unknown") else f" · {item.get('low')}–{item.get('high')} {item.get('currency')}"
-        shopping.append(item["description"] + " · " + labels.get(item.get("status", "unknown"), "待核实") + price)
-    b = outcome["budget"]
-    materials = [item["description"] + " · " + labels[item["status"]] for item in b.get("materials", [])]
-    audit = outcome.get("readiness", {})
-    conditions = audit.get("conditions", {})
-    condition_summary = ("常态" if conditions.get("mode") == "steady" else "条件") + "面板；守护增益：" + ("开启" if conditions.get("guard_active") else "关闭") + "；启用药剂：" + ("、".join(conditions.get("active_flasks", [])) or "无")
-    resources = []
-    for item in audit.get("resources", []):
-        note = f"{item['resource']}：每秒消耗 {item['cost_per_second']:.2f}，扣除自身持续伤害后净秒回 {item['regeneration']:.2f}，命中吸取 {item['leech_on_hit']:.2f}，计入充能 {item.get('recharge', 0):.2f}。"
-        if item.get("automatic_cost_per_second"):
-            note += f"其中自动触发额外消耗 {item['automatic_cost_per_second']:.2f}/秒。"
-        if item.get("maximum_burst_seconds") is not None:
-            note += f"静态净消耗估算最多连续 {item['maximum_burst_seconds']:.2f} 秒；不代表可持续。"
-        resources.append(note)
-    active_skill_rows = []
-    for skill in outcome["result"].get("active_skills", []):
-        if skill.get("disabled"): continue
-        costs = skill.get("costs", {})
-        active_skill_rows.append("<tr>" + "".join("<td>" + esc(value) + "</td>" for value in (
-            skill.get("display_name", skill["name"]), "守护收益未计入；保留使用检查" if skill.get("benefit_excluded") else "主技能" if skill.get("is_main") else "其他启用技能",
-            skill.get("trigger") or skill.get("info") or "按操作说明使用",
-            " / ".join(f"{costs[key]:g}" if key in costs else "—" for key in ("ManaCost", "LifeCost", "ESCost")))) + "</tr>")
-    skill_table = '<h3>主动技能与单次资源</h3><p>单次消耗依次为魔力 / 生命 / 直接能盾；EB 会改变实际支付池。表格不把手动技能全部假定为同时满速使用。</p><table><tr><th>技能</th><th>作用</th><th>引擎触发/使用信息</th><th>单次消耗</th></tr>' + ''.join(active_skill_rows) + '</table>'
-    damage_rows = []
-    for source in outcome["result"].get("damage_sources", []):
-        damage_rows.append("<tr>" + "".join("<td>" + esc(value) + "</td>" for value in (
-            source.get("display_name", source.get("name", "")), source.get("count", 1), f"{source.get('dps',0):,.1f}", source.get("skillPart", ""), source.get("trigger", ""))) + "</tr>")
-    damage_table = ('<h3>原生 Full DPS 分项</h3><p>仅包含 XML 中勾选计入总伤害的技能，数量与覆盖须结合实际玩法。主技能综合 DPS 不是所有已装技能的总和。</p><table><tr><th>技能/来源</th><th>计入数量</th><th>分项 DPS</th><th>技能部分</th><th>触发</th></tr>' + ''.join(damage_rows) + '</table>') if damage_rows else '<p>本方案没有原生 Full DPS 分项；不要把主技能面板解释为所有已装技能的总伤害。</p>'
-    scenario = json.dumps(intent["scenario"], ensure_ascii=False)
-    actual_scenario = json.dumps(result["config_values"], ensure_ascii=False, indent=2)
-    changes = json.dumps(plan.get("operations", {}), ensure_ascii=False, indent=2)
-    condition_notes = json.dumps(plan.get("config_evidence", {}), ensure_ascii=False, indent=2)
-    crafted_note = ""
-    if outcome.get("crafted_items"):
-        crafted_note = '<h3>目标稀有装备的词缀依据</h3><p>以下目标装由本机普通词缀库生成，已核对基底适用、物等、词缀冲突及最多三前缀/三后缀。它们是采购/制作目标；当前供给、制作方法和费用仍需核实。</p>'
-        crafted_note += listing([item["base"] + f"：{sum(a['type'] == 'Prefix' for a in item['affixes'])} 前缀 / {sum(a['type'] == 'Suffix' for a in item['affixes'])} 后缀；具体属性见采购清单与配装文件。" for item in outcome["crafted_items"]])
-    baseline_note = ""
-    if outcome.get("baseline_warnings"):
-        baseline_note = '<p class="note">原始方案存在下列诊断提示；有资源不足等问题时，其面板仅作诊断参考，不能视为游戏内可持续达到的表现。</p>' + listing(outcome["baseline_warnings"])
-    version_note = "已抓取官方版本正文；具体机制与国服差异另行核对。" if outcome.get("target_version_evidence", {}).get("status") == "source_observed" else "待核实草案：未完成目标版本正文核对，不能据此确认适用于目标赛季。"
-    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>POE 配装说明</title>
-<style>body{{font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif;background:#f5f4f0;color:#1f2933;max-width:1040px;margin:32px auto;padding:0 24px}}header,section{{background:white;border:1px solid #dddcd6;border-radius:12px;padding:24px;margin:18px 0}}h1{{font-size:30px;margin:0}}h2{{font-size:21px;color:#235b53}}small{{color:#58666c}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:right;padding:9px;border-bottom:1px solid #e5e7eb}}th:first-child{{text-align:left}}pre{{white-space:pre-wrap;word-break:break-word;font-size:13px}}a{{color:#17695e}}.note{{background:#fff8df;padding:14px;border-radius:8px}}@media print{{body{{margin:0}}section{{break-inside:avoid}}}}</style>
-<header><small>POE 配装助手 · {esc(outcome['evaluated_at'])} · PoB {esc(outcome['engine_version'])} · 游戏数据 {esc(outcome['result']['data_version'])}</small><h1>{esc(outcome['name'])}</h1><p>已按最终 XML 复算并回读。预算状态：{esc(labels[b['status']])}。<a href="{esc(intent['version_source'])}">赛季版本依据</a>（{esc(intent['version_checked_at'])} 查阅）</p><p>{esc(version_note)}</p><p>程序核对计算、资源和已记录的用户约束；来源论据与设计说明仍需核对，不代表已经游戏实战验证。</p></header>
-<section><h2>实际改动</h2>{listing(outcome['actual_changes'])}</section>
-<section><h2>你的目标</h2><p>{esc(intent['goal'])}</p><p>{esc(intent['league'])} · 目标等级 {intent['target_level']} · 预算 {esc(intent['budget']['amount'])} {esc(intent['budget']['currency'])}</p><p>{esc(intent['notes'])}</p></section>
-<section><h2>前后对比</h2><p>原角色：{esc(state.get('baseline_label','用户导入角色'))}；候选：{esc(outcome['result']['main_skill_name'])}。总 DPS 只汇总勾选计入的技能，不能代替实际刷图速度。</p>{baseline_note}<table><thead><tr><th>指标</th><th>原方案</th><th>新方案</th><th>变化</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
-<section><h2>技能与插槽安排</h2><p>按下列顺序镶嵌，连线以 XML 中装备为准。本机识别到匹配孔色品质加成为 {esc(result.get('matching_socket_quality_bonus', '未确认'))}。表内为本机按孔位计算的部分，其他装备或辅助的品质影响以 PoECharm 最终面板为准；实际游戏规则须与目标版本一致。</p><table><tr><th>位置与顺序</th><th>宝石</th><th>基础等级 / 品质</th><th>匹配孔色加成</th><th>状态</th></tr>{''.join(skill_rows)}</table></section>
-<section><h2>购买与准备</h2><p>已列成本：{b['low']:g}–{b['high']:g} {esc(b['currency'])}。待核实项目未计入这个范围；原 XML 也不代表游戏仓库盘点。</p><h3>程序从前后 XML 检测到的物品准备</h3>{listing(materials)}<h3>采购、制作和其他步骤</h3>{listing(shopping)}{crafted_note}<h2>切换顺序</h2>{listing(plan.get('migration_steps',[]))}</section>
-<section><h2>计算条件与待核实项</h2><p>{esc(condition_summary)}</p><p>{esc(scenario_summary(result))}</p><p>共同场景：<code>{esc(scenario)}</code></p><details><summary>引擎实际采用的配置与文件核对依据</summary><p>以下为本次计算读回的配置输入，含引擎填入的默认值；选中条件的实战覆盖由设计说明解释。</p><pre>{esc(actual_scenario)}</pre><p>配装 XML SHA256：<code>{esc(outcome['xml_sha256'])}</code><br>计算文件指纹：<code>{esc(outcome['engine_fingerprint'])}</code></p></details>{listing(resources)}{skill_table}{damage_table}{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
-<section><h2>资料依据与设计说明</h2><ul>{''.join(sources)}</ul><p>{esc(plan['summary'])}</p><details><summary>具体改动及条件依据</summary><pre>{esc(changes)}</pre><pre>{esc(condition_notes)}</pre></details></section>
-<section><h2>如何使用</h2><p>在 PoECharm 中打开同目录的“改进配装.xml”，核对当前主技能、装备与天赋；按照上面的准备顺序在游戏内调整。它不会修改服务器角色。</p></section></html>'''
-
+    esc=lambda value:html.escape(str(value))
+    show=lambda value:"未知" if value is None else f"{value:,.2f}" if type(value) in (int,float) else esc(value)
+    plan,result,budget=outcome["plan"],outcome["result"],outcome["budget"]
+    status={"blocked":"未满足要求", "draft":"待核实草案", "scoped_result":"已完成所列范围的评审"}[outcome["status"]]
+    def bullets(values): return "<ul>"+"".join("<li>"+esc(v)+"</li>" for v in values)+"</ul>"
+    displayed=set(METRICS)|set(state["intent"].get("minimum_stats",{}))
+    rows="".join(f"<tr><td>{esc(METRICS.get(key,key))}</td><td>{show(row['before'])}</td><td>{show(row['after'])}</td><td>{show(row['delta'])}</td></tr>" for key,row in outcome["comparison"].items() if key in displayed)
+    resources="".join(f"<tr><td>{esc(row['resource'])}</td><td>{show(row['pool'])}</td><td>{show(row['single_cost'])}</td><td>{show(row['cost_per_second'])}</td><td>{show(row['regeneration'])}</td><td>{show(row['leech_on_hit'])}</td><td>{show(row['net_cost'])}</td></tr>" for row in outcome["readiness"]["resources"])
+    materials="".join(f"<tr><td>{esc(row['requirement_id'])}</td><td>{row['quantity']}</td><td>{row['declared_owned']}</td><td>{esc(row['status'])}</td></tr>" for row in budget["materials"])
+    claims="".join(f"<li><b>{esc(c['claim_id'])}</b> [{esc(c['status'])}] {esc(c['text'])}{bullets(c['conditions']+c['uncertainties'])}<small>依据：{esc(', '.join(c['evidence_refs']))}</small></li>" for c in outcome["claims"])
+    evidence="".join(f"<li>{esc(key)}：{esc(row['status'])}；{esc(row.get('origin',''))}；{esc(row.get('excerpt',row.get('text',row.get('value',''))))} {('<a href='+chr(34)+esc(row['url'])+chr(34)+'>来源</a>') if row.get('url','').startswith(('https://','http://')) else ''}</li>" for key,row in outcome["evidence"].items())
+    groups={}
+    for gem in result["gems"]: groups.setdefault(gem["group"],[]).append(gem)
+    damage=esc(json.dumps(result.get("damage_sources",[]),ensure_ascii=False,indent=2))
+    links=bullets([f"{gems[0].get('slot') or '未装备'} / {'参与计算' if gems[0].get('group_enabled') else '不参与计算但非空槽仍占孔'}："+" — ".join(str(g.get('display_name',g.get('name',g.get('id'))))+f" {g.get('level')}/{g.get('quality')}" for g in gems) for gems in groups.values()])
+    detail=esc(json.dumps({"usage":plan.get("usage",[]),"resources":outcome["readiness"]["resources"],"config":result.get("config_values",{}),"assessment":plan.get("assessment",{}),"budget":budget,"crafted_items":outcome.get("crafted_items",[]),"xml_sha256":outcome["xml_sha256"],"engine_fingerprint":outcome["engine_fingerprint"]},ensure_ascii=False,indent=2))
+    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(outcome['name'])}</title>
+<style>body{{font:16px/1.7 system-ui;background:#f5f6f8;color:#202a38;max-width:1050px;margin:auto;padding:28px}}section{{background:white;padding:24px;margin:18px 0;border-radius:12px}}table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}small{{color:#526174}}h1{{margin-bottom:6px}}</style>
+<h1>{esc(outcome['name'])}</h1><p>{esc(status)} · PoECharm {esc(outcome['engine_version'])}</p>
+<section><h2>目标与结论</h2><p>{esc(state['intent']['goal'])}</p><p>{esc(plan['summary'])}</p><p>{esc(outcome['validation']['scope'])}</p>{bullets(outcome['errors']+outcome['pending']+outcome['warnings'])}</section>
+<section><h2>实际改动与准备</h2>{bullets(outcome['actual_changes'])}{bullets(plan.get('migration_steps',[]))}<p>{esc(scenario_summary(result))}</p>{bullets(outcome['comparison_notes'])}</section>
+<section><h2>原生计算数值</h2><p>下表为当前配置快照；使用频率或覆盖时间改变后，未重算的 DPS 不能作为持续输出。</p><table><tr><th>指标</th><th>原方案</th><th>候选</th><th>数值差</th></tr>{rows}</table></section>
+<section><h2>技能与资源</h2>{links}<table><tr><th>资源</th><th>可用池</th><th>单次费用</th><th>每秒费用</th><th>净秒回</th><th>命中吸取</th><th>净消耗</th></tr>{resources}</table><p>吸取需要命中；充能、时序与额外操作的条件见依据及明细。未知项不按零计算。</p></section>
+<section><h2>原生 Full DPS 分项</h2><p>只包括本机当前实际计入的技能与数量；数量与覆盖条件须与上方模型判断对应。</p><pre>{damage}</pre></section>
+<section><h2>物资与预算</h2><p>状态：{esc(budget['status'])}；{'完整所列报价' if budget['totals_complete'] else '部分已列金额，缺项未计入'} {show(budget['low'])}–{show(budget['high'])} {esc(budget['currency'] or '通货待定')}；用户预算 {show(budget['limit'])}。持有声明不等于已独立盘点；报价不保证成交。</p><table><tr><th>新增需求</th><th>数量</th><th>声明持有</th><th>状态</th></tr>{materials}</table></section>
+<section><h2>判断与证据</h2><ul>{claims}</ul><details><summary>证据索引</summary><ul>{evidence}</ul></details><details><summary>配置、操作与成本明细</summary><pre>{detail}</pre></details></section>
+<section><h2>使用</h2><p>在 PoECharm 中打开同目录 XML。草案需先处理上方缺口；按准备条件逐项落实后再在游戏内切换。文件不会修改服务器角色。</p></section></html>'''
 
 def read_candidate(args):
-    run, state = read_run(args.run)
-    bx.require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", args.name), "候选名称无效。")
-    folder = run / "candidates" / args.name
-    outcome = read_json(folder / "evaluation.json")
-    bx.require(outcome.get("skill_version") == VERSION, "技能校验规则已更新，请用当前版本重新 evaluate。")
-    bx.require(outcome.get("status") == "validated" and outcome.get("roundtrip_verified"), "候选仍有校验错误，请先修正并重新 evaluate。")
-    bx.require(outcome["intent_hash"] == state.get("intent_hash") and outcome["original_sha256"] == state["original_sha256"], "意图或原角色已变化，必须重新 evaluate。")
-    xml = (folder / "candidate.xml").read_text(encoding="utf-8")
-    bx.require(bx.digest(xml) == outcome["xml_sha256"], "候选文件在计算后被修改，请重新 evaluate。")
-    root = engine.resolve_root(args.pob or state["pob_path"])
-    bx.require(engine.check(root)["engine_fingerprint"] == outcome.get("engine_fingerprint"), "引擎、规则数据或适配器已变化，请重新 evaluate；版本号相同也不能沿用旧结果。")
-    return run, state, outcome, xml, root
-
+    run,state=read_run(args.run)
+    bx.require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}",args.name),"候选名称无效。")
+    folder=run/"candidates"/args.name
+    raw=(folder/"evaluation.json").read_text(encoding="utf-8")
+    bx.require(bx.digest(raw)==state.get("candidates",{}).get(args.name,{}).get("evaluation_sha256"),"候选记录被修改或未完成计算，请重新 evaluate。")
+    outcome=json.loads(raw)
+    bx.require(outcome.get("schema_version")==SCHEMA_VERSION and outcome.get("skill_version")==VERSION,"协议或技能已变化，请重新 evaluate。")
+    bx.require(outcome["intent_hash"]==state.get("intent_hash") and outcome["original_sha256"]==state["original_sha256"],"意图或原始角色变化，请重算。")
+    xml=(folder/"candidate.xml").read_text(encoding="utf-8")
+    bx.require(bx.digest(xml)==outcome["xml_sha256"],"候选 XML 被修改，请重新 evaluate。")
+    bx.require(bx.digest((folder/"requested.xml").read_text(encoding="utf-8"))==outcome["requested_sha256"],"请求 XML 被修改，请重新 evaluate。")
+    root=engine.resolve_root(args.pob or state["pob_path"])
+    bx.require(engine.check(root)["engine_fingerprint"]==outcome["engine_fingerprint"],"引擎、数据或适配器变化，请重新 evaluate。")
+    return run,state,outcome,xml,root
 
 def probe(args):
-    """Compare one gem slot in a single native worker, without changing a candidate."""
-    run, state, outcome, xml, root = read_candidate(args)
-    ids = [value.strip() for value in args.ids.split(",")]
-    bx.require(1 <= len(ids) <= 11 and all(re.fullmatch(r"[A-Za-z0-9_]+", value) for value in ids) and len(set(ids)) == len(ids), "--ids 需要 1–11 个不同的本机宝石 skill_id，以逗号分隔。")
-    source = bx.parse(xml)
-    group = bx.index_one(bx.groups(source), args.group, "技能组")
-    bx.require(group.get("enabled", "true") != "false" and not group.get("source"), "probe 只比较当前启用的普通宝石组。")
-    bx.index_one(group.findall("Gem"), args.index, "宝石")
-    documents = []
-    for skill_id in ids:
-        change = {"group": args.group, "index": args.index, "skill_id": skill_id}
-        for field in ("level", "quality"):
-            value = getattr(args, field, None)
-            if value is not None: change[field] = value
-        documents.append(bx.apply_plan(source, {"mode": outcome["plan"]["mode"], "summary": "单个宝石比较", "operations": {"gems": [change]}}))
-    calculations = engine.calculate(root, xml_batch=[xml] + [bx.serialise(document) for document in documents])["calculations"]
-    baseline = calculations[0]
-    original = bx.read_document(run / "original.xml")
-    before = read_json(run / "baseline.json")
-    rows = []
-    keys = ("CombinedDPS", "MinionCombinedDPS", "FullDPS", "HitChance", "Life", "EnergyShield", "ManaCost", "ManaPerSecondCost", "ManaRegenRecovery", "ManaLeechGainRate", "LifePerSecondCost", "LifeRegenRecovery", "LifeLeechGainRate", "ESCost", "ESPerSecondCost", "EnergyShieldRegenRecovery", "EnergyShieldLeechGainRate", "NetLifeRegen", "NetEnergyShieldRegen")
-    dps_metric = "MinionCombinedDPS" if any(skill.get("is_main") and skill.get("minion") for skill in baseline.get("active_skills", [])) else "CombinedDPS"
-    for skill_id, document, result in zip(ids, documents, calculations[1:]):
-        errors, warnings = mechanical_issues(document, result, state["intent"])
-        errors.extend(check_constraints(original, document, before, result, state["intent"], outcome["plan"]))
-        audit = readiness(result, state["intent"], outcome["plan"])
-        errors.extend(audit["errors"])
-        warnings.extend(audit["warnings"])
-        gem = next(gem for gem in result["gems"] if gem["group"] == args.group and gem["index"] == args.index)
-        rows.append({"skill_id": skill_id, "name": gem.get("display_name", gem.get("name")), "level": gem.get("level"), "quality": gem.get("quality"),
-                     "stats": {key: result["stats"].get(key) for key in keys},
-                     "dps_metric": dps_metric, "dps_delta": result["stats"].get(dps_metric, 0) - baseline["stats"].get(dps_metric, 0),
-                     "errors": list(dict.fromkeys(errors)), "warnings": list(dict.fromkeys(warnings))})
-    return {"status": "screened", "baseline": {key: baseline["stats"].get(key) for key in keys}, "alternatives": rows,
-            "next": "这是同一配装中单个宝石的比较，不改文件。结合清图/首领、资源和操作选取，不只取最高 DPS。选定后写回完整 plan 并重新 evaluate/export；获取成本及最终 XML 回读尚未在此验证。"}
+    run,state,outcome,xml,root=read_candidate(args)
+    source=bx.parse(xml)
+    baseline=engine.calculate(root,xml)
+    if getattr(args,"node_ids",None):
+        ids=[int(v) for v in args.node_ids.split(",")]
+        bx.require(ids and len(set(ids))==len(ids) and all(v>0 for v in ids),"--node-ids 使用不同的正整数节点 ID。")
+        screened=engine.calculate(root,xml,node_probes=[[v] for v in ids])
+        bx.require(screened["engine_fingerprint"]==outcome["engine_fingerprint"],"筛选期间引擎变化。")
+        return {"status":"screened","engine_fingerprint":screened["engine_fingerprint"],"xml_sha256":bx.digest(xml),"alternatives":screened["node_screening"],
+                "next":"仅为原生节点词缀筛选，不含连接路径、点数或组合认证；选定完整路径后用 --variants 实算，再 evaluate。"}
+    if getattr(args,"variants",None):
+        request=read_json(args.variants)
+        bx.require(set(request)=={"variants"},"比较文件只接受 variants。")
+        variants=request["variants"]
+    else:
+        bx.require(getattr(args,"ids",None) and getattr(args,"group",None) and getattr(args,"index",None),"使用 --variants，或同时提供 --ids/--group/--index。")
+        ids=[v.strip() for v in args.ids.split(",")]
+        bx.require(ids and len(set(ids))==len(ids) and all(re.fullmatch(r"[A-Za-z0-9_]+",v) for v in ids),"--ids 需要不同的本机 skill_id。")
+        group=bx.index_one(bx.groups(source),args.group,"技能组")
+        bx.require(not group.get("source"),"来源技能请修改实际装备/天赋来源。")
+        bx.index_one(group.findall("Gem"),args.index,"宝石")
+        variants=[]
+        for skill_id in ids:
+            change={"group":args.group,"index":args.index,"skill_id":skill_id}
+            change.update({k:getattr(args,k) for k in ("level","quality") if getattr(args,k,None) is not None})
+            variants.append({"id":skill_id,"operations":{"gems":[change]}})
+    bx.require(isinstance(variants,list) and variants,"variants 需要非空数组。")
+    seen=set()
+    for variant in variants:
+        bx.require(isinstance(variant,dict) and set(variant)=={"id","operations"} and isinstance(variant["id"],str) and variant["id"] and variant["id"] not in seen,"每个变体使用唯一 id 和完整 operations。")
+        seen.add(variant["id"])
+    metrics=getattr(args,"metrics",None)
+    metrics=metrics.split(",") if metrics else list(METRICS)
+    bx.require(all(k and isinstance(k,str) for k in metrics),"metrics 使用本次数值输出中的指标名。")
+    dps_metric="MinionCombinedDPS" if any(skill.get("is_main") and skill.get("minion") for skill in baseline.get("active_skills",[])) else "CombinedDPS"
+    original=bx.read_document(run/"original.xml")
+    rows=[]
+    for offset in range(0,len(variants),12):
+        prepared_variants=[]
+        for variant in variants[offset:offset+12]:
+            try:
+                plan={"mode":outcome["plan"]["mode"],"summary":"候选局部或组合比较","operations":variant["operations"]}
+                resolved,crafts=materialize_items(plan,root)
+                document=bx.apply_plan(source,resolved,native=baseline)
+                prepared_variants.append((variant,document,plan,crafts))
+            except (ValueError,KeyError,TypeError,IndexError) as exc:
+                rows.append({"id":variant["id"],"status":"blocked","errors":[str(exc)]})
+        if not prepared_variants: continue
+        inputs=[bx.serialise(v[1]) for v in prepared_variants]
+        try:
+            batch=engine.calculate(root,xml_batch=inputs)
+            calculations=batch["calculations"]
+        except engine.EngineError:
+            calculations=[]
+            for text in inputs:
+                try: calculations.append(engine.calculate(root,text))
+                except engine.EngineError as exc: calculations.append({"failure":str(exc)})
+        for (variant,document,plan,crafts),result in zip(prepared_variants,calculations):
+            if "failure" in result:
+                rows.append({"id":variant["id"],"status":"blocked","errors":[result["failure"]]}); continue
+            bx.require(result["engine_fingerprint"]==outcome["engine_fingerprint"],"比较期间引擎变化，请重算。")
+            errors,warnings,pending=mechanical_issues(document,result,state["intent"])
+            ce,cp=check_constraints(original,document,outcome["baseline"],result,state["intent"],plan)
+            audit=readiness(result,state["intent"],plan,[])
+            context_changes=[k for k in ("config_values","level","class","main_skill") if baseline.get(k)!=result.get(k)]
+            comparison=compare(baseline,result,not context_changes)
+            rows.append({"id":variant["id"],**({"skill_id":variant["id"]} if not getattr(args,"variants",None) else {}),"status":"blocked" if errors+ce+audit["errors"] else "screened",
+                         "engine_fingerprint":result["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"operations":variant["operations"],"crafted_items":crafts,
+                         "stats":{k:result["stats"].get(k) for k in metrics},"comparison":{k:v for k,v in comparison.items() if k in metrics},"context_changes":context_changes,
+                         "dps_metric":dps_metric,"dps_delta":comparison.get(dps_metric,{}).get("delta"),"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
+                         "errors":errors+ce+audit["errors"],"pending":pending+cp+audit["pending"],"warnings":warnings+audit["warnings"],"readiness":audit})
+    return {"status":"screened","alternatives":rows,"next":"各变体均为独立完整原生实算；组合必须单列变体，不能相加单项收益。未继承旧操作/证据判断，不改候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
 
 
 def export(args):
-    run, state, outcome, xml, root = read_candidate(args)
-    verification = engine.calculate(root, xml)
-    current_errors, _ = mechanical_issues(bx.parse(xml), verification, state["intent"])
-    current_errors.extend(readiness(verification, state["intent"], outcome["plan"])["errors"])
-    bx.require(not current_errors, "最终校验发现问题，请重新 evaluate：" + "；".join(current_errors))
-    bx.require(semantics(verification) == semantics(outcome["result"]), "最终复算的角色数据与候选记录不同。")
-    for key in METRICS:
-        a, b = verification["stats"].get(key), outcome["result"]["stats"].get(key)
-        if a is None and b is None: continue
-        bx.require(isinstance(a,(int,float)) and isinstance(b,(int,float)) and math.isclose(a,b,rel_tol=1e-8,abs_tol=1e-5), "最终复算数值变化：" + key)
-    output = run / "output"
-    intent = state["intent"]
-    outcome["target_version_evidence"] = facts.version_fact(intent["version_source"], intent["game_version"], intent["league"], run / ".poe-evidence", verification["engine_fingerprint"])
-    facts_ready = outcome["target_version_evidence"]["status"] == "source_observed"
-    write_text(output / "改进配装.xml", xml)
-    write_text(output / "配装说明.html", report_html(state, outcome))
-    state["phase"] = "exported" if facts_ready else "exported_draft"
-    state["selected_candidate"] = args.name
-    state["updated_at"] = now()
-    write_json(run / "run.json", state)
-    stats = verification["stats"]
-    minion_main = any(skill.get("is_main") and skill.get("minion") for skill in verification.get("active_skills", []))
-    damage_keys = ("MinionCombinedDPS", "FullDPS") if minion_main else ("CombinedDPS",)
-    hit_key = "MinionHitChance" if minion_main else "HitChance"
-    user_summary = [f"配装 XML 已通过本机 PoECharm 计算及保存回读。目标：{state['intent']['league']} / {state['intent']['game_version']}。",
-                    scenario_summary(verification),
-                    "当前计算场景下：" + "；".join(f"{METRICS[key]} {stats[key]:,.1f}" for key in damage_keys + ("Life", "EnergyShield", hit_key, "ChaosResist") if key in stats) + "。"]
-    if not facts_ready:
-        user_summary.insert(0, "这是待核实草案：目标版本官方正文尚未核实，暂不能确认为目标赛季可用方案。")
-    if outcome.get("comparison_notes"):
-        user_summary.append("前后计算存在条件或有效性差异，不提供同条件提升百分比；原面板仅供诊断，比较限制见说明。")
-    user_summary.append("DPS 已包含引擎的命中计算。以上是当前主技能口径，其他技能的贡献见说明中实际计入的 Full DPS 分项；实战操作与机制覆盖仍需核实。")
-    if outcome["budget"]["status"] in {"unknown", "estimate"}:
-        user_summary.append("国服完整采购成本尚未核实，不能承诺预算内买齐。先备齐核心装备和宝石，再按说明切换。")
-    if any(resource.get("leech_on_hit", 0) for resource in outcome["readiness"]["resources"]):
-        user_summary.append("吸取回复依赖命中；空挥、无敌阶段与转场的续航请看说明中的资源明细。")
-    if any(skill.get("is_main") and skill.get("generals_cry") for skill in verification.get("active_skills", [])):
-        user_summary.append("此方案由将军之吼幻影攻击，依赖尸体来源与战吼循环；幻影吸取未计入玩家回复。")
-    user_summary.append("先打开“配装说明.html”查看准备与切换顺序，再在 PoECharm 中打开“改进配装.xml”。这是规划文件，原角色保持不变。")
-    return {"status": state["phase"], "target_version_evidence": outcome["target_version_evidence"], "files": [str(output / "改进配装.xml"), str(output / "配装说明.html")],
-            "user_summary": "\n\n".join(user_summary), "final_reply_policy": "交付文件后原样发送 user_summary 作为聊天结论；具体机制、对比和采购步骤已在 HTML，不另行补算或扩写收益。", "budget_status": outcome["budget"]["status"], "warnings": outcome["warnings"]}
+    run,state,outcome,xml,root=read_candidate(args)
+    folder=run/"candidates"/args.name
+    verification=engine.calculate(root,xml,cache=False)
+    verification["xml_sha256"]=bx.digest(xml)
+    bx.require(verification["engine_fingerprint"]==outcome["engine_fingerprint"],"最终复算期间引擎变化。")
+    bx.require(semantics(verification)==semantics(outcome["result"]),"最终复算角色状态与候选记录不同，请重算。")
+    for key in verification["stats"].keys()|outcome["result"]["stats"].keys():
+        a,b=verification["stats"].get(key),outcome["result"]["stats"].get(key)
+        equal=math.isclose(a,b,rel_tol=1e-8,abs_tol=1e-5) if type(a) in (int,float) and type(b) in (int,float) else a==b
+        bx.require(equal,"最终复算数值变化："+key)
+    requested=bx.read_document(folder/"requested.xml")
+    assessment=assess_candidate(bx.read_document(run/"original.xml"),requested,outcome["baseline"],verification,state["intent"],outcome["plan"],Path(outcome["evidence_folder"]),Path(state.get("intent_evidence_folder",outcome["evidence_folder"])))
+    outcome.update(assessment)
+    output=run/"output"/args.name
+    write_json(output/"final-assessment.json",outcome)
+    write_text(output/"配装说明.html",report_html(state,outcome))
+    if outcome["status"]=="blocked":
+        return {"status":"blocked","file_exported":False,"files":[str(output/"配装说明.html")],"errors":outcome["errors"],"pending":outcome["pending"],"next":"已生成诊断说明；先解决已知矛盾并重新 evaluate。"}
+    filename="配装草案.xml" if outcome["status"]=="draft" else "改进配装.xml"
+    write_text(output/filename,xml)
+    state.update(phase="exported",selected_candidate=args.name,updated_at=now())
+    write_json(run/"run.json",state)
+    stats=verification["stats"]
+    selected=("MinionCombinedDPS",) if any(s.get("is_main") and s.get("minion") for s in verification.get("active_skills",[])) else ("CombinedDPS",)
+    values="；".join(f"{METRICS[k]} {stats[k]:,.1f}" for k in selected+("Life","EnergyShield","ChaosResist") if type(stats.get(k)) in (int,float))
+    summary=("待核实草案已导出。" if outcome["status"]=="draft" else "已导出完成所列范围评审的配装。")+" XML 已通过本机计算、保存回读与最终复算。\n\n"+scenario_summary(verification)+"\n"+values+"。以上为原生配置快照。\n\n预算状态："+outcome["budget"]["status"]+"。"
+    if outcome["pending"]: summary+="未解决项："+"、".join(outcome["pending"])+"。"
+    if outcome["comparison_notes"]: summary+="前后计算有口径差异，不提供同条件提升百分比。"
+    if outcome["budget"]["status"] in {"unknown","uncertain_range"}: summary+="成本或物资缺口未补齐，不能承诺预算内买齐。"
+    if any(s.get("is_main") and s.get("generals_cry") for s in verification.get("active_skills",[])): summary+="幻影吸取未计入玩家回复，供尸、触发与操作条件见说明。"
+    return {"status":outcome["status"],"file_exported":True,"files":[str(output/filename),str(output/"配装说明.html")],"facts_summary":summary,
+            "pending":outcome["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
+            "reply_policy":"交付两份文件和事实摘要；可自然解释已引用的 claims、取舍与操作，不添加未实算数值或超出评审范围的保证。"}
+
+def native_queries(root,queries,xml="",class_id=None):
+    bx.require(isinstance(queries,list) and queries,"queries 应为非空数组。")
+    result=None
+    rows=[]
+    for offset in range(0,len(queries),30):
+        chunk=engine.calculate(root,xml,queries=queries[offset:offset+30],class_id=class_id)
+        if result is not None: bx.require(chunk["engine_fingerprint"]==result["engine_fingerprint"],"分批查询期间引擎变化，请重试。")
+        else: result=chunk
+        rows.extend(chunk["catalog_batch"])
+    result["catalog_batch"]=rows
+    return result
 
 
 def catalog(args):
-    root = engine.resolve_root(args.pob)
-    class_id = getattr(args, "class_id", None)
-    bx.require(class_id is None or not args.input, "--class-id 用于新角色起点查询，不能与 --input 混用。已有角色以 XML 为准。")
-    bx.require(class_id is None or args.kind != "translations", "翻译查询不需要 --class-id。")
-    if getattr(args, "batch", None):
-        queries = read_json(args.batch).get("queries")
-        bx.require(isinstance(queries, list) and 1 <= len(queries) <= 30, "batch 的 queries 应包含 1–30 项。")
+    root=engine.resolve_root(args.pob)
+    class_id=getattr(args,"class_id",None)
+    bx.require(class_id is None or not args.input,"--class-id 不能与 --input 混用。")
+    kinds={"gems","skills","nodes","uniques","config","links","classes","bases","affixes","rules","metrics"}
+    document=bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
+    if getattr(args,"batch",None):
+        queries=read_json(args.batch).get("queries")
+        bx.require(isinstance(queries,list) and queries,"queries 应为非空数组。")
         for query in queries:
-            bx.require(isinstance(query, dict) and set(query) <= {"kind", "query", "limit"}, "批量查询仅接受 kind/query/limit。")
-            bx.require(query.get("kind") in {"gems", "skills", "nodes", "uniques", "config", "links", "classes", "bases", "affixes"}, "批量查询不含 translations，请单独查询翻译。")
-            bx.require(isinstance(query.get("query", ""), str) and type(query.get("limit", 20)) is int and 1 <= query.get("limit", 20) <= 100, "查询文字或 limit 无效。")
-        document = bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
-        result = engine.calculate(root, document, queries=queries, class_id=class_id)
-        return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"],
-                "engine_fingerprint": result["engine_fingerprint"], "tree_context": result["tree_context"], "socket_limits": result["socket_limits"], "queries": result["catalog_batch"]}
-    bx.require(args.kind, "catalog 需要 --kind 或 --batch。")
-    if args.kind == "translations":
-        entries = []
-        folder = root.parent / "Data" / "Translate" / "zh-rCN"
-        bx.require(folder.is_dir(), "该安装目录没有 PoECharm 简体中文翻译数据。")
-        for path in sorted(folder.glob("*.csv"), key=lambda path: (path.name != "Items_Gems.txt.csv", path.name)):
-            with path.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
+            bx.require(isinstance(query,dict) and set(query)<={"kind","query","limit","offset"} and query.get("kind") in kinds,"查询使用 kind/query/limit/offset；translations 单独查询。")
+            bx.require(isinstance(query.get("query",""),str) and type(query.get("limit",20)) is int and 1<=query.get("limit",20)<=100 and type(query.get("offset",0)) is int and query.get("offset",0)>=0,"limit=1–100，offset 为非负整数。")
+        result=native_queries(root,queries,document,class_id)
+        return {k:result.get(k) for k in ("engine_version","tree_version","data_version","engine_fingerprint","tree_context","socket_limits","rules")} | {"queries":result["catalog_batch"]}
+    bx.require(args.kind,"catalog 需要 --kind 或 --batch。")
+    offset=getattr(args,"offset",0)
+    bx.require(type(offset) is int and offset>=0,"offset 应为非负整数。")
+    if args.kind=="translations":
+        entries=[]
+        folder=root.parent/"Data"/"Translate"/"zh-rCN"
+        bx.require(folder.is_dir(),"此安装没有 PoECharm 简体中文翻译数据。")
+        for path in sorted(folder.glob("*.csv"),key=lambda p:(p.name!="Items_Gems.txt.csv",p.name)):
+            with path.open(encoding="utf-8-sig",errors="replace",newline="") as stream:
                 for row in csv.reader(stream):
-                    if len(row) >= 2 and any(args.query.casefold() in cell.casefold() for cell in row[:2]):
-                        entries.append({"english": row[0], "chinese": row[1], "source": path.name, "preferred_gem_name": path.name == "Items_Gems.txt.csv"})
-                        if len(entries) >= args.limit: return {"entries": entries, "truncated": True}
-        return {"entries": entries, "truncated": False}
-    document = bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
-    result = engine.calculate(root, document, catalog=args.kind, query=args.query, limit=args.limit, class_id=class_id)
-    return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"],
-            "engine_fingerprint": result["engine_fingerprint"], "tree_context": result["tree_context"], "socket_limits": result["socket_limits"], "total": result.get("catalog_total"), "entries": result.get("catalog", [])}
-
+                    if len(row)>=2 and any(args.query.casefold() in cell.casefold() for cell in row[:2]): entries.append({"english":row[0],"chinese":row[1],"source":path.name})
+        selected=entries[offset:offset+args.limit]
+        return {"entries":selected,"total":len(entries),"offset":offset,"next_offset":offset+len(selected) if offset+len(selected)<len(entries) else None}
+    result=engine.calculate(root,document,catalog=args.kind,query=args.query,limit=args.limit,offset=offset,class_id=class_id)
+    return {k:result.get(k) for k in ("engine_version","tree_version","data_version","engine_fingerprint","tree_context","socket_limits","rules")} | {"total":result.get("catalog_total"),"entries":result.get("catalog",[]),"offset":result.get("catalog_offset"),"next_offset":result.get("catalog_next_offset")}
 
 def research(args):
     output = Path(args.out).resolve()
@@ -998,15 +1090,174 @@ def research(args):
         return {"file": str(output), **record, "next": "阅读正文摘录核对目标赛季；unverified 时联网寻找官方公告，再加 --source URL 重试。不要读取工具内部输出目录或把缺失依据改成 verified。"}
     bx.require(not args.league and not args.source, "--league / --source 仅用于 research --version。")
     ids = args.gems.split(",")
-    bx.require(1 <= len(ids) <= 60 and len(set(ids)) == len(ids) and all(re.fullmatch(r"[A-Za-z0-9_]+", value) for value in ids), "--gems 需要 1–60 个不同的本机 skill_id。")
-    calculation = engine.calculate(root, queries=[{"kind": "gems", "query": "id:" + value, "limit": 2} for value in ids])
+    bx.require(ids and len(set(ids)) == len(ids) and all(re.fullmatch(r"[A-Za-z0-9_]+", value) for value in ids), "--gems 需要不同的本机 skill_id；程序自动分批。")
+    calculation = native_queries(root, [{"kind": "gems", "query": "id:" + value, "limit": 2} for value in ids])
     gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] for entry in query["entries"] if entry["skill_id"] in ids}
     bx.require(set(gems) == set(ids), "部分宝石 ID 未识别，请先 catalog gems 查询。")
-    evidence = facts.gem_facts(gems, output.parent / ".poe-evidence", calculation["engine_fingerprint"], engine.require_data_version(calculation))
+    evidence = facts.gem_facts(gems, output.parent / ".poe-evidence", calculation["engine_fingerprint"], calculation.get("data_version"), calculation["classes"])
     write_json(output, {"gems": evidence, "engine_fingerprint": calculation["engine_fingerprint"], "data_version": calculation["data_version"]})
     return {"file": str(output), "source_checked": [key for key, value in evidence.items() if value["status"] == "source_checked"],
             "unverified": [key for key, value in evidence.items() if value["status"] != "source_checked"],
             "next": "读取 gems[skill_id].native 的技能原文、使用门槛和 level_requirements[].base_resources 基础资源，以及 choices 的网页章节/任务/NPC/职业。基础数据不等于完整连线实算；两类依据不能互相替代。已返回字段无需重复 catalog。未核实条目需另查，不能自填 verified。"}
+
+
+def route_snapshots(route,native,root,folder,output):
+    """Materialize declared key stages through the same XML and native interfaces."""
+    records={}
+    for stage in route["stages"]:
+        if "snapshot" not in stage: continue
+        sid=stage["stage_id"]; snap=stage["snapshot"]
+        record={"status":"unsupported","assumptions":snap.get("assumptions",[]),"scope":"仅代表所声明装备、天赋、宝石与配置的条件快照，不是保证按时取得或安全通关。"}
+        records[sid]=record
+        try:
+            if stage.get("level") is None:
+                record["reason"]="未确认角色等级，不能生成精确实算。"; continue
+            if snap.get("template_xml"):
+                path=Path(snap["template_xml"])
+                source=bx.read_document(path if path.is_absolute() else folder/path)
+            else:
+                source=bx.parse(native["xml"])
+            operations=copy.deepcopy(snap.get("operations",{}))
+            bx.require(isinstance(operations,dict) and set(operations)<={"items","equip","tree","config","main_group","weapon_set","gems","groups"},"阶段等级和基础技能列表来自 stage；snapshot.operations 不能另设 level/replace_skills。")
+            for change in operations.get("gems",[]):
+                bx.require(not set(change)&{"skill_id","level","quality","enabled"},"阶段宝石身份/等级/品质/启用来自 stage；快照 gems 仅补数量、技能部位等原生状态。")
+            for change in operations.get("groups",[]):
+                bx.require(set(change)<={"index","main_active_skill","include_in_full_dps","group_count"},"阶段组位置/启用来自 stage；快照 groups 仅补主主动、计数和总伤害选择。")
+            tree=operations.setdefault("tree",{})
+            bx.require("class_id" not in tree or tree["class_id"]==route["class_id"],"快照职业与路线不一致。")
+            tree["class_id"]=route["class_id"]
+            selected=next(c for c in native["classes"] if c["id"]==route["class_id"])
+            asc=next((a for a in selected["ascendancies"] if a["name"]==route.get("ascendancy")),None)
+            asc_id=asc["id"] if stage["ascendancy_allocated_nodes"] and asc else 0
+            bx.require("ascendancy_id" not in tree or tree["ascendancy_id"]==asc_id,"快照升华与本阶段路线不一致。")
+            tree["ascendancy_id"]=asc_id
+            if "nodes" in tree: tree["nodes"]=sorted(set(tree["nodes"])|set(stage["ascendancy_allocated_nodes"]))
+            else: tree["nodes_add"]=sorted(set(tree.get("nodes_add",[]))|set(stage["ascendancy_allocated_nodes"]))
+            operations["level"]=stage["level"]
+            operations["replace_skills"]=[{"label":g["name"],"slot":g["slot"],"enabled":g.get("enabled",True),"gems":[{k:v[k] for k in ("skill_id","level","quality") if k in v} for v in g["gems"]]} for g in stage["skill_groups"]]
+            plan={"mode":"rebuild","summary":"路线阶段条件快照","operations":operations}
+            resolved,crafts=materialize_items(plan,root)
+            document=bx.apply_plan(source,resolved,native=native)
+            calculated=engine.calculate(root,bx.serialise(document))
+            bx.require(calculated["engine_fingerprint"]==native["engine_fingerprint"],"路线阶段计算期间引擎变化。")
+            saved=roundtrip(root,calculated,document)
+            calculated["xml_sha256"]=bx.digest(saved)
+            directory=output.parent/(output.stem+".calculations")/bx.digest(sid)[:12]
+            write_text(directory/"snapshot.xml",saved)
+            record.update(status="calculated",xml_path=str(directory/"snapshot.xml"),xml_sha256=bx.digest(saved),engine_fingerprint=calculated["engine_fingerprint"],
+                          result=calculated,document=document,directory=directory,crafted_items=crafts)
+        except (ValueError,KeyError,TypeError,IndexError,OSError) as exc:
+            record.update(status="unsupported",reason=str(exc))
+    return records
+
+
+def route_command(args):
+    bx.require(args.invoked,"仅在用户明确调用技能后规划路线。")
+    path=Path(args.file).resolve(); output=Path(args.out).resolve()
+    bx.require(output.suffix.lower()==".html" and output!=path,"--out 需要独立 HTML 文件。")
+    route=read_json(path)
+    ids=routes.gem_ids(route)
+    queries=[{"kind":"gems","query":"id:"+v,"limit":2} for v in ids]
+    queries += [{"kind":"links","query":v,"limit":1} for v in routes.link_queries(route)]
+    queries += [{"kind":"bases","query":"id:"+v,"limit":2} for v in routes.base_names(route)]
+    root=engine.resolve_root(args.pob)
+    calculation=native_queries(root,queries,class_id=route.get("class_id"))
+    catalogs=calculation["catalog_batch"]
+    gems={e["skill_id"]:e for q in catalogs if q["kind"]=="gems" for e in q["entries"]}
+    links={q["query"]:q["entries"][0] for q in catalogs if q["kind"]=="links"}
+    bases={e["name"]:e for q in catalogs if q["kind"]=="bases" for e in q["entries"]}
+    nodes=[]; offset=0
+    if route.get("ascendancy"):
+        while offset is not None:
+            page=engine.calculate(root,catalog="nodes",query=route["ascendancy"],limit=100,offset=offset,class_id=route.get("class_id"))
+            bx.require(page["engine_fingerprint"]==calculation["engine_fingerprint"],"路线查询期间引擎发生变化。")
+            nodes+=page["catalog"]; offset=page.get("catalog_next_offset")
+    context={"engine_fingerprint":calculation["engine_fingerprint"],"league":route.get("league"),"game_version":route.get("game_version")}
+    registry=facts.load_evidence(route.get("evidence",[]),path.parent,context)
+    claims=facts.assess_claims(route.get("claims",[]),registry,{"catalog":calculation})
+    checked,warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],evidence=registry,claims=claims)
+    snapshots=route_snapshots(checked,calculation,root,path.parent,output)
+    if snapshots:
+        native={"catalog":calculation,**{"stage:"+sid:r["result"] for sid,r in snapshots.items() if "result" in r}}
+        claims=facts.assess_claims(route.get("claims",[]),registry,native)
+        checked,warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],evidence=registry,claims=claims)
+    snapshot_failed=False
+    stage_materials={}
+    for stage in checked["stages"]:
+        sid=stage["stage_id"]
+        for item in stage.get("required_items",[]): stage_materials[facts.material_ref(item)]=item
+        if sid not in snapshots: continue
+        record=snapshots[sid]
+        if "result" not in record:
+            stage["calculation"]=record
+            checked["pending"].append("native:snapshot:"+sid)
+            continue
+        value=record.pop("result"); document=record.pop("document"); directory=record.pop("directory")
+        errors,notes,gaps=mechanical_issues(document,value,checked)
+        if value["ascendancy_points"]!=stage["ascendancy_used"]: errors.append("快照实际升华点数与阶段路径不一致。")
+        actual_bases={r["slot"]:r["base"] for r in value["equipped"]}
+        for slot,base in stage.get("bases",{}).items():
+            if actual_bases.get(slot)!=base: errors.append("快照装备与阶段声明的基底不一致："+slot)
+        relevant=[c for c in claims if {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
+        audit=readiness(value,checked,{"usage":stage["snapshot"].get("usage",[])},relevant)
+        errors+=audit["errors"]; notes+=audit["warnings"]; gaps+=audit["pending"]
+        texts={int(i.get("id")):bx.normal_item(bx.text_item(i)) for i in document.findall("Items/Item")}
+        for item in value["equipped"]:
+            need=stage_materials.get("item:"+str(item["id"]),{})
+            if need.get("spec_sha256")!=bx.digest(texts.get(item["id"],"")): gaps.append("material:item:"+str(item["id"]))
+        metrics=stage["snapshot"].get("metrics",list(METRICS))
+        bx.require(isinstance(metrics,list) and all(isinstance(k,str) and k for k in metrics),"snapshot.metrics 应为指标名数组。")
+        missing=[k for k in metrics if k not in value["stats"]]
+        gaps += ["metric:"+k for k in missing]
+        record.update(status="blocked" if errors else "draft" if gaps else "calculated",stats={k:value["stats"].get(k) for k in metrics},errors=errors,pending=gaps,
+                      config_values=value["config_values"],readiness=audit,main_skill=value["main_skill"],active_skills=value["active_skills"],roundtrip_verified=True)
+        write_json(directory/"evaluation.json",{**record,"native":{k:v for k,v in value.items() if k!="xml"}})
+        record["evidence_path"]=str(directory/"evaluation.json")
+        stage["calculation"]=record
+        snapshot_failed=snapshot_failed or bool(errors)
+        checked["pending"] += ["stage:"+sid+":"+gap for gap in gaps]
+        warnings+=notes
+    fact_folder=path.parent/".poe-evidence"
+    gem_evidence=facts.gem_facts(gems,fact_folder,calculation["engine_fingerprint"],calculation.get("data_version"),calculation["classes"])
+    acquisition_warnings,unresolved=facts.reconcile_acquisitions(checked,gem_evidence)
+    warnings+=acquisition_warnings; checked["pending"]+=unresolved
+    trials=facts.trial_facts(fact_folder,calculation["engine_fingerprint"],calculation.get("data_version")) if any(s["ascendancy_used"] for s in checked["stages"]) else {"status":"not_required"}
+    tw,tm=facts.reconcile_trial_progress(checked,trials); warnings+=tw
+    if tm: checked["pending"].append("trial_progress")
+    version=facts.version_fact(route.get("version_source"),route.get("game_version"),route["league"],fact_folder,calculation["engine_fingerprint"])
+    if version["status"]!="source_observed": checked["pending"].append("version:target")
+    checked["pending"]=list(dict.fromkeys(checked["pending"]))
+    checked["fact_evidence"]={"gems":gem_evidence,"trials":trials,"version":version}
+    requirements={}
+    for stage in checked["stages"]:
+        for item in stage.get("required_items",[]):
+            ref=facts.material_ref(item)
+            if ref in requirements: requirements[ref]["quantity"]+=item["quantity"]
+            else: requirements[ref]=copy.deepcopy(item)
+    # A route's explicit held-instance records are already inventory declarations.
+    # Reuse their evidence instead of making the model duplicate the same input.
+    owned={}
+    for stage in checked["stages"]:
+        for item in stage.get("required_items",[]):
+            if item.get("evidence_status")!="user_declared": continue
+            ref=facts.material_ref(item)
+            if ref not in owned: owned[ref]={k:v for k,v in item.items() if k in {"kind","skill_id","level","quality","item_id","service_id","spec_sha256","quantity","evidence_refs"}}
+            else:
+                owned[ref]["quantity"]+=item["quantity"]
+                owned[ref]["evidence_refs"]=sorted(set(owned[ref].get("evidence_refs",[])+item.get("evidence_refs",[])))
+    declared={facts.material_ref(item):item for item in route.get("inventory",[])}
+    budget=budget_summary({**route,"inventory":list({**owned,**declared}.values())},route,list(requirements.values()),registry,claims)
+    checked["budget_assessment"]=budget
+    if route.get("budget") is not None:
+        if budget["status"] in {"unknown","uncertain_range"} or budget["high"]>route["budget"]["amount"]: checked["pending"].append("budget")
+    warnings+=budget["warnings"]
+    checked["pending"]=list(dict.fromkeys(checked["pending"]+["material:"+ref for ref in budget["unresolved"]]))
+    checked["delivery_status"]="blocked" if budget["over_budget"] or snapshot_failed else "draft" if checked["pending"] else "scoped_result"
+    evidence_file=output.with_suffix(".evidence.json")
+    write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings})
+    write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"]))
+    return {"status":checked["delivery_status"],"file_exported":True,"files":[str(output),str(evidence_file)],"stages":len(checked["stages"]),"pending":checked["pending"],"warnings":warnings,
+            "scope":"目录核对与实际阶段快照分别列出；仅 calculation 中的数值经过所声明完整输入实算，未物化阶段不宣称精确 DPS/生存/续航。获取位置不证明当前已完成任务。", "next":"按阶段进入条件推进；缺口处理前仅作为草案。阶段快照存于工作区 calculations，最终角色继续使用 evaluate/export。"}
 
 
 def parser():
@@ -1022,28 +1273,37 @@ def parser():
         if name in {"evaluate", "probe", "export"}: cmd.add_argument("--name", required=True)
         if name == "evaluate": cmd.add_argument("--plan", required=True)
         if name == "probe":
-            cmd.add_argument("--group", type=int, required=True)
-            cmd.add_argument("--index", type=int, required=True)
-            cmd.add_argument("--ids", required=True)
+            cmd.add_argument("--group", type=int)
+            cmd.add_argument("--index", type=int)
+            variant = cmd.add_mutually_exclusive_group(required=True)
+            variant.add_argument("--ids")
+            variant.add_argument("--variants", help="JSON variants 使用现有 operations；可含装备、天赋、宝石和组合")
+            variant.add_argument("--node-ids", help="逗号分隔 ID，仅快速比较未分配节点词缀")
             cmd.add_argument("--level", type=int)
             cmd.add_argument("--quality", type=int)
+            cmd.add_argument("--metrics", help="按需返回的原生数值指标，以逗号分隔")
+            cmd.add_argument("--out", help="完整比较矩阵保存到工作区 JSON")
         if name == "decode": cmd.add_argument("--out", required=True)
         if name == "inspect":
             cmd.add_argument("--calculate", action="store_true")
+            cmd.add_argument("--metrics", help="按需读取 Calcs 原生明细的指标名，以逗号分隔")
+            cmd.add_argument("--skill-ref", help="inspect 返回的 active_skills[].skill_ref；默认当前主技能")
+            cmd.add_argument("--actor", choices=["player","minion","mirage"], help="默认选定技能的原生主体")
             cmd.add_argument("--out")
         if name == "catalog":
-            cmd.add_argument("--kind", choices=["gems", "skills", "nodes", "uniques", "config", "translations", "links", "classes", "bases", "affixes"])
+            cmd.add_argument("--kind", choices=["gems", "skills", "nodes", "uniques", "config", "translations", "links", "classes", "bases", "affixes", "rules", "metrics"])
             cmd.add_argument("--batch")
             cmd.add_argument("--query", default="")
             cmd.add_argument("--input")
             cmd.add_argument("--class-id", type=int, help="新角色的本机职业 ID，按该职业起点查天赋；不能与 --input 同用")
             cmd.add_argument("--out", help="将完整查询保存到工作区 JSON，终端只返回索引")
             cmd.add_argument("--limit", type=int, default=20)
+            cmd.add_argument("--offset", type=int, default=0)
         if name == "research":
             subject = cmd.add_mutually_exclusive_group(required=True)
             subject.add_argument("--gems", help="逗号分隔的本机宝石 skill_id")
             subject.add_argument("--version", action="store_true", help="读取官方公告正文并返回简短版本依据")
-            subject.add_argument("--trials", action="store_true", help="读取当前版本前三次迷宫的剧情试炼位置")
+            subject.add_argument("--trials", action="store_true", help="读取当前页面观测到的试炼位置，不推导奖励或玩家进度")
             cmd.add_argument("--league", help="用户确认的目标赛季或永久区，用于 --version")
             cmd.add_argument("--source", help="公开官方公告 URL；本机版本没有已有来源时填写")
             cmd.add_argument("--out", required=True, help="工作区事实记录 JSON")
@@ -1055,6 +1315,8 @@ def parser():
 
 
 def main(argv=None):
+    started=time.perf_counter()
+    engine.PERFORMANCE.update(requests=0,worker_calls=0,cache_hits=0,worker_seconds=0.0)
     args = parser().parse_args(argv)
     try:
         if args.command == "doctor":
@@ -1064,8 +1326,11 @@ def main(argv=None):
                 bx.require(Path(args.out).resolve() != Path(args.input).resolve(), "检查结果不能覆盖原始角色文件。请为 --out 使用不同文件名。")
             document = bx.read_document(Path(args.input))
             result = bx.summary(document)
+            if args.metrics: args.calculate=True
+            bx.require(not (args.skill_ref or args.actor) or args.metrics,"--skill-ref/--actor 需要 --metrics。")
             if args.calculate:
-                computed = engine.calculate(engine.resolve_root(args.pob), bx.serialise(document))
+                breakdowns=[{"metric":metric,**({"skill_ref":args.skill_ref} if args.skill_ref else {}),**({"actor":args.actor} if args.actor else {})} for metric in args.metrics.split(",")] if args.metrics else None
+                computed = engine.calculate(engine.resolve_root(args.pob), bx.serialise(document),breakdowns=breakdowns)
                 result["calculation"] = {key: value for key, value in computed.items() if key not in {"xml", "config_keys", "config_lists"}}
                 result["diagnosis_summary"] = diagnosis_summary(computed)
             if args.out:
@@ -1081,7 +1346,15 @@ def main(argv=None):
         elif args.command == "start": result = begin(args)
         elif args.command == "intent": result = set_intent(args)
         elif args.command == "evaluate": result = evaluate(args)
-        elif args.command == "probe": result = probe(args)
+        elif args.command == "probe":
+            result = probe(args)
+            if args.out:
+                output=Path(args.out).resolve()
+                bx.require(output.suffix.lower()==".json" and not output.is_relative_to(Path(args.run).resolve()) and (not args.variants or output!=Path(args.variants).resolve()),"probe --out 使用会话目录外的独立 JSON，不能覆盖候选或变体输入。")
+                write_json(output,result)
+                result={"status":result["status"],"probe_file":str(output),"alternatives":[{"id":v.get("id",v.get("nodes")),"status":v["status"]} for v in result["alternatives"]],"next":result["next"]}
+            else:
+                bx.require(len(json.dumps(result,ensure_ascii=False))<=12000,"比较结果较大；请加 --out '<工作区>/比较.json'，按字段读取，避免平台截断或转存内部目录。")
         elif args.command == "export": result = export(args)
         elif args.command == "research": result = research(args)
         elif args.command == "catalog":
@@ -1098,50 +1371,11 @@ def main(argv=None):
                           "next": "完整结果已保存到工作区。按 queries[].entries 或单项 entries 读取需要的字段；不要一次输出整份大 JSON。"}
             else:
                 bx.require(len(json.dumps(result, ensure_ascii=False)) <= 12000, "查询结果较大；请加 --out '<工作区>/查询结果.json' 保存完整结果，再按相关字段读取，避免 TeleAgent 截断或转存至额外授权目录。")
-        elif args.command == "route":
-            bx.require(args.invoked, "仅在用户明确调用技能后规划开荒路线。")
-            route = read_json(args.file)
-            ids = routes.gem_ids(route)
-            queries = [{"kind": "gems", "query": "id:" + skill_id, "limit": 2} for skill_id in ids]
-            queries += [{"kind": "links", "query": query, "limit": 1} for query in routes.link_queries(route)]
-            queries += [{"kind": "bases", "query": "id:" + name, "limit": 2} for name in routes.base_names(route)]
-            queries.append({"kind": "nodes", "query": route["ascendancy"], "limit": 100})
-            calculation = engine.calculate(engine.resolve_root(args.pob), queries=queries)
-            gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] if query["kind"] == "gems" for entry in query["entries"]}
-            compatibility = {query["query"]: query["entries"][0] for query in calculation["catalog_batch"] if query["kind"] == "links"}
-            nodes = [entry for query in calculation["catalog_batch"] if query["kind"] == "nodes" for entry in query["entries"]]
-            bases = {entry["name"]: entry for query in calculation["catalog_batch"] if query["kind"] == "bases" for entry in query["entries"]}
-            checked, warnings = routes.validate(route, gems, engine.require_data_version(calculation), calculation["classes"], compatibility, nodes,
-                                                socket_limits=calculation["socket_limits"], bases=bases)
-            output = Path(args.out).resolve()
-            bx.require(output != Path(args.file).resolve(), "路线说明不能覆盖输入 JSON。")
-            bx.require(output.suffix.lower() == ".html", "--out 请指定 HTML 文件。")
-            evidence_folder = output.parent / ".poe-evidence"
-            evidence = facts.gem_facts(gems, evidence_folder, calculation["engine_fingerprint"], engine.require_data_version(calculation))
-            fact_warnings, unresolved = facts.reconcile_acquisitions(checked, evidence)
-            warnings += fact_warnings
-            trial_proof = facts.trial_facts(evidence_folder, calculation["engine_fingerprint"], checked["game_version"]) if any(stage["ascendancy_points"] for stage in checked["stages"]) else {"status": "not_required"}
-            trial_warnings, trials_unverified = facts.reconcile_trial_progress(checked, trial_proof)
-            warnings += trial_warnings
-            version_source = next((source for source in checked["sources"] if source["id"] == checked.get("version_source")), {})
-            version_proof = facts.version_fact(version_source.get("url", ""), checked["game_version"], checked["league"], evidence_folder, calculation["engine_fingerprint"])
-            checked["fact_evidence"] = {"gems": evidence, "version": version_proof, "trials": trial_proof}
-            if version_proof["status"] != "source_observed": warnings.append("赛季正文依据未完成程序核对：" + version_proof.get("reason", "未核实"))
-            facts_ready = not unresolved and not trials_unverified and version_proof["status"] == "source_observed"
-            checked["delivery_status"] = "route_checked" if facts_ready else "route_draft"
-            evidence_file = output.with_suffix(".evidence.json")
-            write_json(evidence_file, {"engine_fingerprint": calculation["engine_fingerprint"], "checked_route": checked, "warnings": warnings})
-            write_text(output, routes.render(checked, warnings, calculation["engine_version"], calculation["tree_version"]))
-            result = {"status": checked["delivery_status"], "file": str(output), "evidence_file": str(evidence_file), "unverified_gems": unresolved, "trial_evidence_status": trial_proof["status"],
-                      "stages": len(checked["stages"]), "gem_types_checked": len(gems), "engine_version": calculation["engine_version"], "warnings": warnings, "not_calculated": "路线等级与依赖校验；未实算完整阶段装备 DPS/生存。需要具体阶段 XML 时，继续建立完整配装候选并 evaluate/export。"}
-            result["user_summary"] = (f"已生成《{checked['name']}》，共 {len(checked['stages'])} 个阶段，详见 {output.name}。\n\n"
-                                      + ("宝石获取已逐项对应实际抓取的任务表/通用商店依据，已找到所填版本的官方正文。" if facts_ready else "这是待核实草案：宝石获取、迷宫试炼或官方版本正文存在依据缺口，暂不作为可直接照做的攻略。") + "\n\n"
-                                      "本机已检查宝石等级、主辅兼容、物理孔位、升华连接，以及章节、职业和偏好约束。来源符合不等于国服差异与全部机制正确，仍需核对目标赛季。\n\n"
-                                      "尚未使用完整阶段装备实算伤害、生存和续航。按每段的领取进度与切换条件推进；实际角色形成后，可提供新的 XML 继续计算。")
-            result["reply_policy"] = "交付 HTML 后原样使用 user_summary；不要在最终聊天重复编写一套未经实算的伤害、抗性或续航承诺。"
+        elif args.command == "route": result = route_command(args)
         else:
             run, state = read_run(args.run)
             result = {"run": str(run), "phase": state["phase"], "pob_path": state["pob_path"], "engine_version": state["engine_version"], "skill_version": VERSION, "intent": state.get("intent"), "candidates": [p.parent.name for p in (run / "candidates").glob("*/evaluation.json")]}
+        result["runtime"]={**engine.PERFORMANCE,"elapsed_seconds":round(time.perf_counter()-started,4)}
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, allow_nan=False))
         return 0
     except (ValueError, OSError, KeyError, TypeError, IndexError) as exc:

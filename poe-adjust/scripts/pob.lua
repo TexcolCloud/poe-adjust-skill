@@ -34,9 +34,6 @@ if request.class_id ~= nil then
   build.buildFlag = true
 end
 local hasTreeContext = request.xml ~= "" or request.class_id ~= nil
--- Give derived socket and tree state a chance to settle before saving/calculating.
-for i = 1, 3 do runCallback("OnFrame") end
-local output = build.calcsTab.mainOutput
 local function scalarTable(tbl)
   local values = {}
   for key, value in pairs(tbl or {}) do
@@ -45,15 +42,43 @@ local function scalarTable(tbl)
   end
   return values
 end
+-- Observe convergence within an engineering bound instead of assuming three frames.
+local previous, stable, frames = nil, 0, 0
+for i = 1, 12 do
+  runCallback("OnFrame")
+  local stats = scalarTable(build.calcsTab.mainOutput)
+  local keys, parts = {}, {}
+  for key in pairs(stats) do table.insert(keys, key) end
+  table.sort(keys)
+  for _, key in ipairs(keys) do table.insert(parts, key .. "=" .. tostring(stats[key])) end
+  local signature = table.concat(parts, "|") .. ":" .. tostring(build.spec:CountAllocNodes()) .. ":" .. #build.skillsTab.socketGroupList
+  stable = signature == previous and stable + 1 or 0
+  previous, frames = signature, i
+  if i >= 3 and stable >= 2 and not build.buildFlag then break end
+end
+assert(stable >= 2 and not build.buildFlag, "Native calculation did not converge within the frame bound")
+local output = build.calcsTab.mainOutput or {}
 local result = {stats = scalarTable(output), minion = scalarTable(output.Minion), warnings = {}, gems = {}, equipped = {}, nodes = {}, errors = {}, excluded_guard_checks = {}}
+result.convergence = {stable_frames = stable + 1, frames = frames, scope = "Scalar output, point count, group count and native build flag"}
 if output.Minion then
   result.stats.MinionCombinedDPS = output.Minion.CombinedDPS
   result.stats.MinionHitChance = output.Minion.HitChance
 end
 result.resource_rules = {energy_shield_protects_mana = build.calcsTab.mainEnv.modDB:Flag(nil, "EnergyShieldProtectsMana") or false}
+result.resource_cost_types = {}
+for id, rule in pairs(data.costs or {}) do
+  local entry = scalarTable(rule)
+  entry.id = id
+  table.insert(result.resource_cost_types, entry)
+end
+table.sort(result.resource_cost_types, function(a,b) return a.id < b.id end)
 result.level = build.characterLevel
 result.class = build.spec.curClassName
 result.ascendancy = build.spec.curAscendClassName
+result.class_id = build.spec.curClassId
+result.ascendancy_id = build.spec.curAscendClassId
+result.secondary_ascendancy_id = build.spec.curSecondaryAscendClassId
+result.secondary_ascendancy = build.spec.curSecondaryAscendClassName
 result.tree_version = build.spec.treeVersion
 result.tree_context = {basis = request.xml ~= "" and "input_xml" or request.class_id ~= nil and "class_start" or "unspecified"}
 if hasTreeContext then
@@ -69,6 +94,10 @@ result.capabilities = {
   native_gem_requirements = type(data.gems) == "table",
   native_corpse_sources = SkillType.CreatesCorpse ~= nil,
   excluded_guard_validation = SkillType.Guard ~= nil,
+  granted_passives = type(build.calcsTab.mainEnv.grantedPassives) == "table",
+  equipment_slots = type(build.itemsTab.slots) == "table",
+  calcs_breakdown = type(build.calcsTab.calcs.buildOutput) == "function",
+  node_screening = type(build.calcsTab.GetNodeCalculator) == "function",
 }
 result.classes = {}
 for id, class in pairs(build.spec.tree.classes) do
@@ -80,9 +109,31 @@ for id, class in pairs(build.spec.tree.classes) do
   table.insert(result.classes, {id = id, name = class.name, ascendancies = ascendancies})
 end
 table.sort(result.classes, function(a,b) return a.id < b.id end)
+result.secondary_ascendancies = setmetatable({}, {__jsontype = "array"})
+for id, entry in pairs(build.spec.tree.alternate_ascendancies or {}) do
+  table.insert(result.secondary_ascendancies, {id = id, name = entry.name})
+end
+table.sort(result.secondary_ascendancies, function(a,b) return a.id < b.id end)
+result.slots = {}
+for name, slot in pairs(build.itemsTab.slots) do
+  table.insert(result.slots, {name = name, weapon_set = slot.weaponSet, active = slot.weaponSet == nil or slot.weaponSet == (build.itemsTab.activeItemSet.useSecondWeaponSet and 2 or 1)})
+end
+table.sort(result.slots, function(a,b) return a.name < b.name end)
+result.rules = {
+  {id = "character_level", status = "observed", meaning = "engine_state", value = result.level, source = "build.characterLevel", scope = "Loaded value, not a game-level upper bound"},
+  {id = "quest_passive_points", status = "unsupported", meaning = "game_limit", reason = "No structured reward-limit interface; use player progress and applicable sources"},
+  {id = "ascendancy_points", status = "unsupported", meaning = "game_limit", reason = "CountAllocNodes gives usage, not completed trial rewards"},
+  {id = "gem_base_quality_limit", status = "unsupported", meaning = "game_limit", reason = "Native calculation accepts quality input; it does not prove attainable gem quality"},
+  {id = "gem_base_level", status = "observed", meaning = "native_fact", source = "data.gems.naturalMaxLevel", scope = "Natural trainable levels; corruption, variants and effective levels are separate"},
+  {id = "socket_quality", status = result.capabilities.matching_socket_quality and "observed" or "unsupported", meaning = "native_fact", value = result.matching_socket_quality_bonus, source = "data.misc.MatchingSocketQualityBonus"},
+}
 local function socketCategory(base)
   local weapon = data.weaponTypeInfo[base.type]
-  return weapon and (weapon.oneHand and "one_hand" or weapon.flag == "Bow" and "bow" or "two_hand") or base.type
+  if not weapon then return base.type end
+  if weapon.oneHand then return "one_hand" end
+  if weapon.flag == "Bow" then return "bow" end
+  if weapon.twoHand then return "two_hand" end
+  return "unknown:" .. tostring(base.type)
 end
 result.socket_limits = {}
 for name, base in pairs(data.itemBases) do
@@ -107,10 +158,11 @@ result.damage_sources, result.active_skills = {}, {}
 for _, row in ipairs(output.SkillDPS or {}) do table.insert(result.damage_sources, scalarTable(row)) end
 local mainEnv = build.calcsTab.mainEnv
 result.granted_passives = setmetatable({}, {__jsontype = "array"})
-for id in pairs(assert(mainEnv.grantedPassives, "Native granted-passive evidence is unavailable")) do
-  local node = assert(mainEnv.allocNodes[id], "Granted passive is missing from native allocated nodes")
-  table.insert(result.granted_passives, {id = id, name = node.name, stats = node.sd,
-    allocated_on_tree = build.spec.allocNodes[id] ~= nil})
+for id in pairs(mainEnv.grantedPassives or {}) do
+  local node = mainEnv.allocNodes and mainEnv.allocNodes[id]
+  if node then
+    table.insert(result.granted_passives, {id = id, name = node.name, stats = node.sd, allocated_on_tree = build.spec.allocNodes[id] ~= nil})
+  else result.capabilities.granted_passives = false end
 end
 table.sort(result.granted_passives, function(a, b) return a.id < b.id end)
 local costKeys = {"ManaCost", "LifeCost", "ESCost", "ManaPerSecondCost", "LifePerSecondCost", "ESPerSecondCost", "Cooldown", "Speed", "SkillTriggerRate"}
@@ -124,17 +176,28 @@ local function supportLevelLimit(effect)
   end
 end
 for _, skill in ipairs(mainEnv.player.activeSkillList) do
-  local cached = GlobalCache.cachedData[mainEnv.mode][cacheSkillUUID(skill, mainEnv)]
+  local cache = GlobalCache.cachedData and GlobalCache.cachedData[mainEnv.mode]
+  local cached = cache and type(cacheSkillUUID) == "function" and cache[cacheSkillUUID(skill, mainEnv)]
   local computed = cached and cached.Env.player.mainSkill or skill
   local costs = {}
   for _, key in ipairs(costKeys) do costs[key] = cached and cached.Env.player.output[key] or nil end
+  for key, value in pairs(cached and cached.Env.player.output or {}) do
+    if type(key) == "string" and key:match("Cost$") and type(value) == "number" then costs[key] = value end
+  end
+  local noCost = computed.skillModList and computed.skillModList:Flag(computed.skillCfg, "HasNoCost")
   local groupIndex
   for index, group in ipairs(build.skillsTab.socketGroupList) do if skill.socketGroup == group then groupIndex = index; break end end
   local limit = supportLevelLimit(computed.triggeredBy)
   local instance = skill.activeEffect.srcInstance
+  local gemIndex
+  for index, gem in ipairs(skill.socketGroup and skill.socketGroup.gemList or {}) do if gem == instance then gemIndex = index; break end end
+  local actor = computed.skillData.triggeredByGeneralsCry and "mirage" or computed.skillFlags.minion and "minion" or "player"
   local requiredLevel = limit and instance and instance.gemData and assert(instance.reqLevel, "Native trigger target requirement is unavailable")
   table.insert(result.active_skills, {id = skill.activeEffect.grantedEffect.id, name = skill.activeEffect.grantedEffect.name,
-    group = groupIndex, slot = skill.socketGroup and skill.socketGroup.slot,
+    group = groupIndex, index = gemIndex, slot = skill.socketGroup and skill.socketGroup.slot,
+    skill_ref = tostring(groupIndex)..":"..tostring(gemIndex)..":"..skill.activeEffect.grantedEffect.id..":"..actor..":"..tostring(skill.socketGroup and skill.socketGroup.source or "gem")..":"..tostring(build.itemsTab.activeItemSet.useSecondWeaponSet and 2 or 1),
+    actor = actor, cost_scope = "Native player output for this skill; actor recovery attribution must be respected",
+    no_cost = noCost, no_cost_source = "Native skillModList:Flag(skillCfg, HasNoCost)",
     is_main = skill == mainEnv.player.mainSkill, disabled = computed.skillFlags.disable or false,
     minion = computed.skillFlags.minion or false, trigger = computed.infoTrigger,
     creates_corpses = SkillType.CreatesCorpse ~= nil and skill.activeEffect.grantedEffect.skillTypes[SkillType.CreatesCorpse] or false,
@@ -186,8 +249,13 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
     table.insert(result.gems, {group = groupIndex, index = gemIndex, id = gem.skillId, name = gem.nameSpec,
       enabled = gem.enabled, group_enabled = group.enabled, slot = group.slot, source = group.source, level = gem.level, quality = gem.quality,
       count = gem.count or 1, group_count = group.groupCount or 1,
-      max_base_level = gem.gemData and ((gem.gemData.naturalMaxLevel or 20) + 1),
-      color = grantedEffect and ({"R", "G", "B", "W"})[grantedEffect.color] or "W",
+      skill_part = gem.skillPart, skill_stage_count = gem.skillStageCount, skill_minion = gem.skillMinion,
+      -- SkillsTab.Load uses first active and false when these optional fields
+      -- are absent (new granted groups); normalize that native save contract.
+      main_active_skill = group.mainActiveSkill or 1, include_in_full_dps = group.includeInFullDPS == true,
+      natural_max_level = gem.gemData and gem.gemData.naturalMaxLevel,
+      native_level_present = grantedEffect and grantedEffect.levels and grantedEffect.levels[gem.level] ~= nil,
+      color = grantedEffect and ({"R", "G", "B", "W"})[grantedEffect.color] or "unknown",
       support = grantedEffect and grantedEffect.support or false,
       supports_skills = supported, support_applied = #supported > 0,
       matches_socket = gem.matchesSocket or false,
@@ -206,7 +274,8 @@ for name, slot in pairs(build.itemsTab.slots) do
       end
     end
     table.insert(result.equipped, {slot = name, id = slot.selItemId, name = item.name, base = item.baseName, base_recognised = item.base ~= nil,
-      active = slot.active, sockets = item.sockets,
+      active = slot.active, sockets = item.sockets, weapon_set = slot.weaponSet,
+      valid_for_slot = build.itemsTab:IsItemValidForSlot(item, name),
       socket_colours_always_match = item.sockets and item.sockets.colourAlwaysMatches or false,
       requirements = item.requirements, unparsed = unparsed})
   end
@@ -221,9 +290,8 @@ if request.crafts then
   result.crafted_items = {}
   for _, spec in ipairs(request.crafts) do
     local item = ordinaryRare(spec.base)
-    assert(spec.ilvl >= (item.base.req.level or 1), "Item level is below base requirement: " .. spec.base)
     item.itemLevel = spec.ilvl
-    item.quality = spec.quality or 20
+    item.quality = spec.quality or 0
     local header = {"Rarity: RARE", "POE Target", spec.base, "Crafted: true", "Item Level: " .. spec.ilvl, "Quality: " .. item.quality}
     for _, defence in ipairs({"Armour", "Evasion", "EnergyShield", "Ward"}) do
       if item.base.armour and item.base.armour[defence .. "BaseMin"] then table.insert(header, defence .. "BasePercentile: 0.5") end
@@ -246,7 +314,11 @@ if request.crafts then
       assert(not seen[mod.group], "Conflicting modifier group: " .. mod.group)
       seen[mod.group] = true
       counts[mod.type] = counts[mod.type] + 1
-      assert(counts[mod.type] <= 3, "Too many " .. mod.type .. " modifiers")
+      local nativeLimit
+      if mod.type == "Prefix" then nativeLimit = item.prefixes.limit else nativeLimit = item.suffixes.limit end
+      nativeLimit = nativeLimit or item.affixLimit and item.affixLimit / 2
+      assert(type(nativeLimit) == "number", "Native affix limit is unavailable")
+      assert(counts[mod.type] <= nativeLimit, "Too many " .. mod.type .. " modifiers for current native item")
       local roll = affix.roll or 0.5
       table.insert(header, mod.type .. ": {range:" .. roll .. "}" .. affix.id)
       table.insert(audit, {id = affix.id, type = mod.type, group = mod.group, required_item_level = mod.level, roll = roll})
@@ -258,10 +330,11 @@ if request.crafts then
     item = new("Item", table.concat(header, "\n"))
     item:Craft()
     table.insert(result.crafted_items, {id = spec.id, text = item:BuildRaw(), base = spec.base, affixes = audit,
-      scope = "Ordinary uninfluenced modifier pool, item level, exclusive groups and 3 prefixes/3 suffixes only. Availability, crafting process and prices are not verified."})
+      affix_limits = {total = item.affixLimit, prefix = item.prefixes.limit or item.affixLimit / 2, suffix = item.suffixes.limit or item.affixLimit / 2},
+      scope = "Ordinary native modifier pool, modifier item-level requirements, exclusive groups and native item affix limits. Base availability, quality attainability, crafting process and prices require evidence."})
   end
 end
-local function queryCatalog(kind, query, limit)
+local function queryCatalog(kind, query, limit, offset)
   local entries = {}
   local q = string.lower(query or "")
   local function matches(value) return q == "" or string.find(string.lower(value or ""), q, 1, true) end
@@ -271,14 +344,14 @@ local function queryCatalog(kind, query, limit)
         local skill = data.skills[gem.grantedEffectId]
         local requirements = {}
         for level, values in pairs(skill and skill.levels or {}) do
-          if level <= (gem.naturalMaxLevel or 20) then
+          if type(level) == "number" then
             local resources = {}
             for key, value in pairs(values) do
               if type(key) == "string" and (key == "cost" or key == "manaMultiplier" or string.find(key, "Reservation", 1, true)) then
                 resources[key] = value
               end
             end
-            table.insert(requirements, {gem_level = level, character_level = values.levelRequirement,
+            table.insert(requirements, {gem_level = level, character_level = values.levelRequirement, naturally_trainable = gem.naturalMaxLevel ~= nil and level <= gem.naturalMaxLevel,
               strength = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqStr or 0),
               dexterity = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqDex or 0),
               intelligence = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqInt or 0),
@@ -304,31 +377,30 @@ local function queryCatalog(kind, query, limit)
   elseif kind == "links" then
     local ids = {}
     for id in string.gmatch(query or "", "[^,%s]+") do table.insert(ids, id) end
-    local errors, supports = {}, {}
-    local maxSockets = 0
-    for _, limits in pairs(result.socket_limits) do maxSockets = math.max(maxSockets, limits.max) end
-    if #ids < 1 or #ids > maxSockets then table.insert(errors, "links query requires an active skill and fits at most " .. maxSockets .. " native equipment sockets") end
-    local main = ids[1] and data.skills[ids[1]]
-    if not main then table.insert(errors, "Unknown main skill: " .. tostring(ids[1]))
-    elseif main.support then table.insert(errors, "Main skill must be active: " .. ids[1]) end
-    for i = 2, #ids do
-      local skill = data.skills[ids[i]]
-      if not skill then table.insert(errors, "Unknown support: " .. ids[i])
-      elseif not skill.support then table.insert(errors, "Expected support gem: " .. ids[i])
-      else table.insert(supports, {grantedEffect = skill}) end
+    local errors, supports, actives, relations = {}, {}, {}, {}
+    for index, id in ipairs(ids) do
+      local skill = data.skills[id]
+      if not skill then table.insert(errors, "Unknown skill: " .. id)
+      elseif skill.support then table.insert(supports, {grantedEffect = skill, input_index = index})
+      else table.insert(actives, {skill = skill, id = id, input_index = index}) end
     end
-    local compatible, incompatible = {}, {}
+    if #ids == 0 then table.insert(errors, "links query requires gem IDs") end
+    local applied = {}
     if #errors == 0 then
-      local active = build.calcsTab.calcs.createActiveSkill({grantedEffect = main, gemData = data.gems[data.gemForSkill[ids[1]]]}, supports, build.calcsTab.mainEnv.player)
-      for _, support in ipairs(supports) do
-        local found = false
-        for _, effect in ipairs(active.effectList) do if effect == support then found = true end end
-        table.insert(found and compatible or incompatible, support.grantedEffect.id)
+      for _, entry in ipairs(actives) do
+        local active = build.calcsTab.calcs.createActiveSkill({grantedEffect = entry.skill, gemData = data.gems[data.gemForSkill[entry.id]]}, supports, build.calcsTab.mainEnv.player)
+        for _, support in ipairs(supports) do
+          local found = false
+          for _, effect in ipairs(active.effectList) do if effect == support then found = true end end
+          if found then applied[support.input_index] = true end
+          table.insert(relations, {active_index = entry.input_index, support_index = support.input_index, applied = found})
+        end
       end
     end
-    table.insert(entries, {id = query, skill_id = ids[1], compatible = compatible, incompatible = incompatible, errors = errors,
-      valid = #errors == 0 and #incompatible == 0,
-      scope = "Native skill-type compatibility only; excludes actual equipment, trigger level/cooldown, resources and damage conversion."})
+    local compatible, incompatible = {}, {}
+    for _, support in ipairs(supports) do table.insert(applied[support.input_index] and compatible or incompatible, support.grantedEffect.id) end
+    table.insert(entries, {id = query, relations = relations, compatible = compatible, incompatible = incompatible, errors = errors,
+      valid = #errors == 0, scope = "Native skill-type relations by input position; unused supports are diagnostics. Actual sockets, trigger levels, costs and cooldowns require a character calculation."})
   elseif kind == "classes" then
     for _, class in ipairs(result.classes) do
       if matches(class.name) or tostring(class.id) == q then table.insert(entries, class) end
@@ -386,6 +458,18 @@ local function queryCatalog(kind, query, limit)
     for _, group in pairs(data.uniques) do
       for _, raw in pairs(group) do if matches(raw) then table.insert(entries, {raw = raw}) end end
     end
+  elseif kind == "rules" then
+    for _, rule in ipairs(result.rules) do if matches(rule.id) then table.insert(entries, rule) end end
+    if matches("slots") then table.insert(entries, {id = "slots", status = "observed", meaning = "engine_constraint", value = result.slots, source = "build.itemsTab.slots"}) end
+    if matches("secondary_ascendancies") then table.insert(entries, {id = "secondary_ascendancies", status = "observed", meaning = "native_fact", value = result.secondary_ascendancies, source = "build.spec.tree.alternate_ascendancies"}) end
+  elseif kind == "metrics" then
+    assert(request.xml ~= "", "metrics requires an actual character XML; a default character is not your character")
+    for key, value in pairs(result.stats) do
+      if type(value) == "number" and matches(key) then
+        table.insert(entries, {id = key, value = value, source = "stats." .. key, actor = key:match("^Minion") and "minion" or "player",
+          scope = "Native output under this XML and resolved configuration; consult the native metric meaning before comparing"})
+      end
+    end
   elseif kind == "config" then
     for _, section in ipairs(configOptions) do
       if section.var and (matches(section.var) or matches(section.label) or matches(type(section.tooltip) == "string" and section.tooltip or "")) then
@@ -402,27 +486,139 @@ local function queryCatalog(kind, query, limit)
   else error("Unknown catalog") end
   table.sort(entries, function(a,b)
     if kind == "nodes" then
-      local da, db = a.points_to_allocate or 1000, b.points_to_allocate or 1000
-      if da ~= db then return da < db end
       return a.id < b.id
     end
     return tostring(a.id or a.raw or a.var) < tostring(b.id or b.raw or b.var)
   end)
   local selected = {}
-  for i = 1, math.min(#entries, limit or 30) do selected[i] = entries[i] end
-  return {kind = kind, query = query, total = #entries, entries = selected}
+  offset = offset or 0
+  for i = offset + 1, math.min(#entries, offset + (limit or 30)) do table.insert(selected, entries[i]) end
+  if kind == "bases" then
+    for _, entry in ipairs(selected) do
+      local item = new("Item", "Rarity: RARE\nPOE Catalog\n" .. entry.name .. "\nCrafted: true")
+      entry.valid_slots = setmetatable({}, {__jsontype = "array"})
+      for slotName in pairs(build.itemsTab.slots) do
+        if build.itemsTab:IsItemValidForSlot(item, slotName) then table.insert(entry.valid_slots, slotName) end
+      end
+      table.sort(entry.valid_slots)
+      entry.affix_limits = {total = item.affixLimit, prefix = item.prefixes and item.prefixes.limit, suffix = item.suffixes and item.suffixes.limit}
+    end
+  end
+  return {kind = kind, query = query, total = #entries, offset = offset, next_offset = offset + #selected < #entries and offset + #selected or nil, entries = selected}
 end
 if request.catalog and request.catalog ~= "" then
-  local catalog = queryCatalog(request.catalog, request.query, request.limit)
+  local catalog = queryCatalog(request.catalog, request.query, request.limit, request.offset)
   result.catalog_total, result.catalog = catalog.total, catalog.entries
+  result.catalog_offset, result.catalog_next_offset = catalog.offset, catalog.next_offset
 end
 if request.queries then
   result.catalog_batch = {}
   for _, query in ipairs(request.queries) do
-    table.insert(result.catalog_batch, queryCatalog(query.kind, query.query, query.limit))
+    table.insert(result.catalog_batch, queryCatalog(query.kind, query.query, query.limit, query.offset))
   end
 end
 result.xml = assert(build:SaveDB("POE Adjust"))
+-- Optional evidence is captured after saving, so Calcs selection never changes
+-- the exported build. Copy only JSON-safe native values; disclose omissions.
+local function evidenceTable(value)
+  local omissions, seen, count = {}, {}, 0
+  local function visit(v, path, depth)
+    count = count + 1
+    if count > 8000 or depth > 12 then table.insert(omissions, path .. ": size/depth bound"); return nil end
+    if type(v) == "string" or type(v) == "boolean" then return v end
+    if type(v) == "number" and v == v and math.abs(v) ~= math.huge then return v end
+    if type(v) ~= "table" or seen[v] then table.insert(omissions, path .. ": " .. type(v) .. " or cycle"); return nil end
+    seen[v] = true
+    local out = {}
+    for k, child in pairs(v) do
+      if type(k) == "string" or type(k) == "number" then out[k] = visit(child, path .. "/" .. tostring(k), depth+1) end
+      if count > 8000 then break end
+    end
+    seen[v] = nil
+    return out
+  end
+  return visit(value, "", 0), omissions
+end
+if request.node_probes then
+  result.node_screening = {}
+  local calculator, base
+  if result.capabilities.node_screening then calculator, base = build.calcsTab:GetNodeCalculator() end
+  for _, ids in ipairs(request.node_probes) do
+    local nodes, issue = {}, not calculator and "Native node calculator unavailable" or nil
+    for _, id in ipairs(ids) do
+      local node = build.spec.nodes[id]
+      if not node then issue = "Unknown current-tree node"
+      elseif node.alloc or mainEnv.grantedPassives[id] then issue = "Already allocated or granted"
+      else table.insert(nodes,node) end
+    end
+    if issue then table.insert(result.node_screening,{nodes=ids,status="unsupported",reason=issue})
+    else
+      local computed = calculator(nodes)
+      table.insert(result.node_screening,{nodes=ids,status="screened",baseline=scalarTable(base),stats=scalarTable(computed),minion=scalarTable(computed.Minion),
+        scope="Native node-modifier screening only; excludes path cost, allocation legality and combined-build certification"})
+    end
+  end
+end
+if request.breakdowns then
+  result.breakdowns = {}
+  local environments = {}
+  for _, query in ipairs(request.breakdowns) do
+    local target, skill
+    for index, row in ipairs(result.active_skills) do
+      if query.skill_ref and row.skill_ref == query.skill_ref or not query.skill_ref and row.is_main then
+        target, skill = row, mainEnv.player.activeSkillList[index]; break
+      end
+    end
+    local row = {metric=query.metric,actor=query.actor or target and target.actor or "unknown",skill_ref=target and target.skill_ref,
+      status="unsupported",scope="Native CALCS in EFFECTIVE mode, using the input build's combat configuration and selected skill state"}
+    if not target or not skill or not target.group then row.reason = "Requested active skill is unavailable in this XML"
+    elseif row.actor == "mirage" and target.actor ~= "mirage" then row.reason = "No native mirage actor for this skill"
+    else
+      local env = environments[target.skill_ref]
+      if not env then
+        for _, group in ipairs(build.skillsTab.socketGroupList) do
+          group.mainActiveSkillCalcs = group.mainActiveSkill
+          for _, gem in ipairs(group.gemList) do
+            local keys = {}
+            for key in pairs(gem) do if type(key)=="string" and key:match("^skill.*Calcs$") then table.insert(keys,key) end end
+            for _, key in ipairs(keys) do gem[key] = gem[key:gsub("Calcs$","")] end
+          end
+        end
+        local group = build.skillsTab.socketGroupList[target.group]
+        local chosen
+        for index, active in ipairs(group.displaySkillList or {}) do
+          if active.activeEffect.grantedEffect.id == target.id and active.activeEffect.srcInstance == group.gemList[target.index] then chosen=index; break end
+        end
+        if chosen and result.capabilities.calcs_breakdown then
+          group.mainActiveSkillCalcs = chosen
+          build.calcsTab.input.skill_number = target.group
+          build.calcsTab.input.misc_buffMode = "EFFECTIVE"
+          env = build.calcsTab.calcs.buildOutput(build,"CALCS")
+          environments[target.skill_ref] = env
+        end
+      end
+      local actor = env and (row.actor == "minion" and env.minion or (row.actor == "player" or row.actor == "mirage") and env.player)
+      if not actor then row.reason = "Requested native actor or skill selection is unavailable"
+      else
+        row.native_actor = row.actor == "mirage" and "player_output_for_mirage_skill" or row.actor
+        row.selected_skill_id = env.player.mainSkill.activeEffect.grantedEffect.id
+        row.value = actor.output[query.metric]
+        row.main_value = target.is_main and (row.actor=="minion" and result.minion or result.stats)[query.metric] or row.actor=="player" and target.costs[query.metric] or nil
+        if type(row.value)=="number" and type(row.main_value)=="number" then row.matches_main_value = math.abs(row.value-row.main_value) <= math.max(0.00001,math.abs(row.main_value)*0.00000001) end
+        row.available_metrics = {}
+        for key,value in pairs(actor.breakdown or {}) do if type(key)=="string" and type(value)=="table" then table.insert(row.available_metrics,key) end end
+        table.sort(row.available_metrics)
+        local detail = actor.breakdown and actor.breakdown[query.metric]
+        if type(detail)=="table" then
+          row.detail,row.omissions = evidenceTable(detail)
+          row.status = #row.omissions == 0 and "observed" or "partial"
+          if row.matches_main_value == false then row.status="different_context"; row.reason="CALCS value differs from MAIN; this breakdown cannot explain the MAIN value without further investigation" end
+        else row.reason = "No native breakdown for this metric; use an isolated input change and full recalculation for a bounded comparison" end
+      end
+    end
+    table.insert(result.breakdowns,row)
+  end
+end
 -- Global-effect toggles remove guards from PoB's active-skill list entirely.
 -- Inspect their real links and costs in a separate in-memory calculation while
 -- preserving the original XML, permanent output, and recovery values above.

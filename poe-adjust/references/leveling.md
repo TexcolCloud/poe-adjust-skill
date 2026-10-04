@@ -1,128 +1,109 @@
-# 开荒路线
+# 开荒与成长路线（schema_version 2）
 
-本分支用于用户明确调用后的新角色/开荒推荐，不需要先有角色 XML。已有角色要改进具体装备时仍走 SKILL.md 的实算流程。
+用户明确调用后，按本文件规划没有完整角色 XML 的阶段路线。已有角色的精确配装继续使用 [命令协议](commands.md) 的 evaluate/export。单一路线是有先后顺序的 stages；不同方向用独立路线候选，不另建分支执行框架。
 
-## 对话与研究
+## 从用户目标设计
 
-每轮最多两题，确认赛季/国服、职业或偏好、剧情到什么阶段、交易还是自力、初始通货与已备物资、手动按键/近战/召唤等接受程度。能从上下文知道的别重复问。给 2–3 个有资料支持的方向，解释核心依赖、早期弱点与转型成本，再根据用户选择整理完整路线。
+确认实际起点与终点、赛季、交易或 SSF、已有物资、预算、职业/技能偏好及操作负担。用户已说过的内容直接复用；未知不自动填 false、零预算或全新开荒。模型选择攻略数量、候选数量、阶段数量和切换时机。路线可从当前角色开始，同一级可因任务、装备或宝石取得分成多段；不套固定起止等级或至少三个阶段。
 
-**在提出方向前核对核心机制**：用 catalog 的 classes 取职业/升华名称，nodes 查将要声称提供生存或伤害的具体升华节点及 stats，skills 查主技能原文，再与联网来源对照。对用户沿用 display_name；有条件的效果同时说清条件。分别说明伤害是否命中、伤害类型、抗性与穿透适用范围；持续伤害仍需核对对应抗性和装备增益。生存优势要落到实际防线、取得阶段与装备门槛，不能单凭升华名字评价“非常硬”。
+职业与升华来自当前 classes；宝石、基底和连线来自当前目录。当前目标游戏版本与国服公告分开核对，不能从赛季编号猜机制版本。资料以实际版本正文、原作者具体攻略和本机数据为依据；不把作者首页或旧搬运链接当完整路线证明。路线规模按需要，不为目录查询下载不相关整套构筑。
 
-操作量按清图、首领、应急三个场景列出实际需要手动使用的技能，计入双主技能、位移、诅咒/曝光、召回及资源药剂；常驻光环单列为一次开启。没有核实自动触发或覆盖率时，按手动计算，不承诺全程固定两键。
+使用 `research --gems` 读取所选 ID 的原生逐等级要求、类型、基础资源及网页取得行。任务奖励/商店分别核对章节、任务、NPC、职业和实际完成条件；可使用后续商店、小号、交易、掉落、制作或用户持有等真实来源。只读到某个早期职业行不表示其他职业永远拿不到。不得凭通用商店印象编造解锁任务。领取同一任务的多种奖励时核对选择数量与费用，不能把一行一个奖励当全部免费同时得到。
 
-升华查询按本机显示名称匹配，内部旧名由适配器映射。查询完整升华时，`ascendancy_path_names` 列出起点之后必经的大小点，`ascendancy_path_cost` 为累计点数；按真实前置说明顺序，不能用其他分支替代。多条路径共享的小点只计一次，route 会合并计算，并在 HTML 列出所有必经大点。节点的 `no_tree_connection=true` 表示无法通过普通树连线取得，必须另查实际授予来源与获取门槛；不能因它出现在查询中就承诺开荒升华可点。截断查询不提供完整升华路径，改用升华英文名与足够的 limit。
+升华路径读取当前 nodes 的起点/linked；点数包括连接点。`research --trials` 只提供网页观测位置与区域等级，不证明解锁、已通关或奖励总点数。按实际已完成或计划进入条件评审 progress claim，不能从等级或一张固定奖励表推算玩家已获点数。
 
-普通天赋用 `catalog --kind nodes --query '<节点名>' --class-id <classes 返回的职业ID> --out '<工作区>/nodes.json'` 查询该职业起点路径。核对 tree_context 后，将目标、连接方向和先后写成新手能搜索的节点名；关键阶段都要落实，不能后半段只写“完成核心集群”。path 从目标回溯，反序才是加点顺序；共享路径合并计数，多条独立路径不等于完整最佳树。已有角色改点则使用真实 --input，不再指定职业。未选上下文时程序不返回角色相关路径，不能补猜。
+## 技能、物资与过渡
 
-完整路线覆盖开局、主技能解锁、核心辅助/第一次升华、中后剧情、剧情结束与异界初期。分段按角色等级设里程碑，章节进度另写，不能假定玩家必定在某一级做完某章。用户只问局部则 scope=partial。
+每组表示同一物理连线，可以多个主动共享辅助，也可以放练级宝石。use 是自由用途描述，没有 main/aura/utility 固定决策枚举。辅助未作用时如实记录；若保留练级用途，不把它算成伤害辅助。仍插着的禁用组占孔；确实未装备才写空 slot。
 
-联网读取当前版本公告、原作者攻略和宝石任务/商店表。国服与资料版本映射先用 `research --version --league '<用户确认的赛季>' --out '<路线目录>/版本依据.json'` 读取官方正文摘录，缺来源再联网搜索并加 --source；没查证就 version_status=unverified，不能把本机 3_29 或文件名 S29 自动当作国服当前赛季。官方公告优先；社区原始配装需标注作者、版本及演示条件。不给脱离版本的“必然最强”排名。
+每颗宝石有稳定 instance_id。同一 ID 的两颗宝石需两个实例；同一颗跨阶段升级沿用实例，不能换 skill_id 后仍称同一颗。自动等级 `auto` 仅在明确请求时选择当前数据可练且角色等级可用的最大值，不代表最优、已练到或已取得。升品质、特殊等级或降级处理说明加工路径和代价，必要时另记物资。
 
-选择一份实际读取的当前版本原作者路线作为主线，记录具体攻略页，不只引用作者首页。若其过渡技能与玩家偏好冲突，先解释并确认取舍；不能把旧版搬运的过渡、另一构筑的升华和当前版本装备拼成一条未经验证的路线。任务奖励与商店购买按宝石页面的 Quest 表逐行核对任务、NPC 和职业，不能只写“Act 1 商店”。
+顶层 gems 只复用目录 ID；取得依据绑定首次使用阶段的 required_items 与实例，不能用一个全局“已拥有”解释两颗同时使用。跨阶段同一实例不重复采购；提前练级/储备可列为实际已安排的位置或未装备组，并说明取得与成长条件。库存声明要匹配规格、数量；用户不必提供游戏截图来证明普通持有，报告注明按用户声明。
 
-确定候选技能后运行 `research --gems '<逗号分隔的 skill_id>' --out '<路线输出目录>/宝石依据.json'`，同一宝石的 `native` 提供本机最低使用等级、类型、原文和逐等级的 `level_requirements`，其中 `base_resources` 为基础消耗/保留/辅助倍率。`choices` 提供网页获取行；已有字段无需再次 catalog。对光环开关和降级取舍，比较真实等级资源数据；不能假定所有光环相同或降级必减保留。基础数值尚未计入辅助、天赋和装备，不证明最终续航。最低使用等级与取得章节分别满足后才能安排入阶段。程序抓取每颗宝石的 Quest 表并区分任务奖励、NPC、章节和职业；通用商店另查规则。路线选取实际来源行，保留 quest/npc 来避免同章来源歧义。网页抓取失败时 native 仍只是本机依据，获取状态保留 unverified；采用能确认的过渡或明确交草案，不编造职业/章节来凑通过。不读取工具内部受限输出目录。
+每阶段 bases 映射当前原生槽位到具体基底，程序核对 valid_slots 与最大孔数。基底最大容量不证明实物已经有该连数、孔色或特殊效果；实际物品需在进入条件中落实，精确影响用角色 XML 实算。没有具体基底则容量未知，不猜同类武器都一样。weapon_setup 可写自由描述，不再用五种固定布局裁决玩法。
 
-某个早期任务行没有当前职业，不代表该职业永远无法取得宝石；继续核对后续通用商店与任务解锁。第三章图书馆 Siosa 的任务与宝石层级解锁规则有[官方依据](https://www.pathofexile.com/forum/view-thread/1839765)，仍须核对当前版本与具体宝石，不能把图书馆商店写成城镇 NPC。任务奖励通常需要选择，不把同任务列出的多颗宝石都当成同时免费领取；其余宝石说明购买方式与货币。阶段升华同时核对迷宫前置试炼和章节，首次开荒不能只到角色等级就视为已解锁后续迷宫；已有角色共享试炼进度须由用户确认。
+核心物资不确定时，模型可以延后切换、等待取得、选择其他流派或安排可执行过渡。用户已备齐、接受取得后再切换的目标，不强制普通备用宝石。声称有过渡就写成具体阶段及连线、装备/属性、资源和进入条件，不能只给 fallback 名称。SSF 禁止依赖交易来自用户明确限制；“不玩召唤”的具体范围按用户意图解释，不把任何 minion 标签都自动禁用。
 
-安排升华前运行 `research --trials --out '<路线目录>/试炼依据.json'`，读取当前来源的剧情试炼位置。route 会自动核对前三次迷宫的章节前置，HTML 按实际来源列出地点。没有已确认的同赛季共享试炼进度时，shared_trials 默认 false；不能为通过检查改为 true。来源格式或版本未核实时保留草案。area_level 是迷宫区域等级，不是最低进入等级或推荐安全通关等级；第四次迷宫的等级、此前迷宫完成和祭品仍须查证，不能由已有六点自动视为八点。
+没有完整阶段 XML 时，只报告本机类型/等级/基础资源、基底容量、路径和来源校验。不虚构精确 DPS、血量、抗性或续航。对关键切换，需要这些承诺时沿用完整角色候选的 evaluate/export；目标装备若是假设，说明假设而非已有实物。手动诅咒、位移、供尸、开关光环等必须落实实际技能和操作，不隐去成本。
 
-原生宝石等级用 catalog 批量查询，职业/升华用 classes 核对。查全部职业的升华节点 ID 和原文时直接 `catalog --kind nodes --query '英文升华名' --out '<工作区>/nodes.json'`，不加 --input；无需创建角色 XML 或下载模板来查节点。route 自动校验所有技能组的主辅兼容、装备孔数和升华实际点数；仍须核查触发等级、武器、转换等具体条件。技能能使用的等级不等于该职业能从商店购买的进度：两者分别核对。逐项写领取章节/任务/NPC/职业限制；例如任务奖给另一个职业时，不能写本职业也免费领取。转化、瓦尔、觉醒、掉落限定宝石和特殊暗金需要普通宝石或不依赖该装备的替代。
-
-主方案连线数量由已确认的物资、预算和实际取得进度决定，程序不把四连写成统一设计上限。高连尚未保证时，使用可取得的基础连线，把高连放为可选 upgrade_gems；确有高连物资时可直接作为基础方案。正文的装备要求、达标检查和过渡条件必须与该选择一致，不能机械通过后仍暗中要求另一套装备。每组安排实际位置，容量读取本机 socket_limits/bases；未指定基底时只用该类别共同容量，需要更多孔才用阶段 bases 明确具体装备，特殊装备另核。每段给装备属性优先级、升级判断、合理生命/抗性目标、天赋先后、资源办法和切换条件。防御目标需有该阶段依据。升华按本机大点和连接累计；换分支说明退点，不承诺实际点数之外的节点。
-
-交付前逐段交叉核对：resources 中引用的技能确实在本段技能组中；位移、诅咒、召回和辅助技能仍计入魔力与操作；主技能升级不会移除构筑依赖的状态。若常驻效果、双技能或高施放频率与用户少按键目标冲突，解释取舍并调整路线。
-
-每项核心收益按“依据 → 本段实现 → 条件与代价”审阅并写入 resources：依据给本机技能/节点 ID 或 sources 中的具体页面，本段实现指出已经安排的技能、节点、装备或操作，条件说明覆盖率、资源和未取得时的过渡。引用页面并不代表页面支持你的推论。报告自动列出已选升华原文、宝石说明和该等级基础资源，正文重点写操作与取舍，避免再抄一套数值。原文中的受益对象、触发、范围、时限与限制都保留；看不出因果就明确待核实。自伤/高消耗方案还须核对实际资源供给；无阶段 XML 时写可观察的切换条件并保留过渡，不承诺固定等级即可转型。随机装备不是已取得物资，提供可执行替代。
-
-## 路线文件与命令
-
-把已确认的路线写 route.json，执行：
+## 文件与调用
 
 ```powershell
-python '<技能目录>/scripts/poe.py' route --invoked --file '<route.json>' --out '<工作区>/开荒路线.html'
+python '<技能目录>/scripts/poe.py' route --invoked --file '<工作区>/route.json' --out '<工作区>/开荒路线.html'
 ```
 
-返回 ok:false 则按实际错误修正。route 会复用当前引擎指纹下的网页快照，核对来源行并自动生成取得说明，保存同名 `.evidence.json` 供核查。route_checked 表示已实现的结构/获取/版本来源检查通过；route_draft 表示尚有获取或版本依据缺口，不能当可直接照做的攻略。两者都不表示对完整阶段装备实算。用 TeleAgent 文件工具交付 HTML，并原样发送 user_summary；具体操作与机制保留在已核对正文，不另写收益承诺，不把技能草图包装成完整 XML。
+route 自动分批读取当前宝石、连线、基底和完整升华目录，并核对证据。输出 HTML 及同名 `.evidence.json`。按照 pending 修订；最终 status 是 draft/scoped_result 或预算已知矛盾的 blocked。阶段是否实算以 calculation 及对应 XML/证据记录为准，路线状态不代替实算范围。用 TeleAgent 文件工具交付 HTML，简要说明范围和缺口；可解释已引用 claims，不另造一套收益数字。
 
 顶层字段：
 
-| 字段 | 含义 |
+| 字段 | 内容 |
 |---|---|
-| confirmed | 用户已明确方向，true |
-| name / goal / league | 中文标题、目标、用户确认的国服赛季 |
-| game_version | 本路线依据的机制版本（如 3.29）；必须与本机数据匹配，国服 S30 对应 3.29，不能从 S29 编号推断 |
-| class_id / ascendancy | 职业 ID 与预定升华；0 贵族、1 野蛮人、2 游侠、3 女巫、4 决斗者、5 圣堂武僧、6 暗影刺客 |
-| trade_mode | ssf 或 trade |
-| allow_minions / allow_mule | 布尔值：是否允许召唤、是否愿意另建小号领取并转交宝石；根据用户偏好填写，未允许则 false。魔像也属于召唤 |
-| shared_trials | 可选布尔值，默认 false；只有用户明确确认本赛季已有角色完成相关剧情试炼才可为 true，本角色仍须逐次通关迷宫 |
-| budget | amount/currency，初始可投入通货 |
-| version_status / version_source | verified 或 unverified；verified 时 version_source 为实际支持国服版本映射的来源 ID |
-| scope | maps（默认，完整至异界）、campaign（完整剧情）、partial（局部） |
-| sources | id/title/url/checked_at/version 数组；url 为实际网页，checked_at 从本机日期记录，格式 YYYY-MM-DD 或带 +08:00 / Z 的 ISO 时间；未来时间会被拒绝 |
-| gems | 以原生 skill_id 为键的获取总表；每种宝石只记录一次来源，结构如下 |
-| stages | 按 level 严格递增的 1–12 个阶段，完整路线至少三段，从不高于 5 级覆盖至至少 68 级 |
-| risks / notes | 风险文字数组及补充说明 |
+| schema_version / confirmed | 2 / true，先完成必要的方向问询 |
+| name / goal / league / scope | 名称、真实用户目标、国服目标赛季、实际起终点与覆盖范围 |
+| class_id / ascendancy | 当前目录职业 ID 与升华英文名；升华尚未定可省略 |
+| game_version / version_source | 目标机制版本和实际官方公告 URL；未核实保留缺口，不自填状态 |
+| trade_mode | 用户明确选择 ssf/trade，未知省略 |
+| allow_minions / allow_mule | 仅在用户明确表达时填布尔值；具体召唤限制由 preference:allow_minions claim 解释 |
+| budget | 已确认的 amount/currency，未知省略；与配装相同的有限非负格式 |
+| gems | `{本机skill_id:{note:"可选目录备注"}}`，不再存获取/备用策略 |
+| stages | 非空执行阶段数组，同级允许，等级不倒退；当前前往章节可回访 |
+| evidence / claims / constraint_sources / assessment | 沿用命令协议，用户 goal/trade_mode/budget/allow_* 对应用户表达；模型方案不冒充用户约束 |
+| inventory / shopping | 沿用命令协议的规格、数量、整条总价与引用 |
+| risks / notes | 文字数组，补充局限和操作提醒，不用非空说明替代证据 |
 
 每个 stage：
 
-| 字段 | 含义 |
+| 字段 | 内容 |
 |---|---|
-| name / level / act | 阶段名、角色等级、剧情进度；act 为第 1–10 章，11 为异界，允许同章多个等级阶段。不能凭等级默认已经完成某任务 |
-| weapon_setup | one_hand_shield / dual_wield / two_hand / bow / unarmed_shield |
-| bases | 可选的装备位置→本机基底英文名，如 `{"Weapon 1":"Stone Axe"}`。未指定时按本机该类别最小容量规划；需要更多孔时先 catalog bases 查询并明确具体基底。未使用的位置无需为孔数补基底；这不声称已获得连线或满足物等/属性 |
-| skill_groups | 按实际装备位置安排的技能组数组，结构如下；至少一组 use=main |
-| gear / passives | 装备属性优先级、天赋分配先后，均为非空文字数组；被动关键节点要查本机名字和连接，不凭空写 ID |
-| ascendancy_points | 本阶段已经完成迷宫所得 0/2/4/6/8 点；结合章节与迷宫进度，不凭等级自动完成 |
-| ascendancy_nodes | 本阶段累计取得的升华大点 ID 数组；用 catalog nodes 查询该升华，程序自动计入连接小点 |
-| ascendancy_respec_reason | 本阶段移除前段升华大点时必填：准备洗点通货、退点和重新分配顺序 |
-| resources | 本段资源取得、维持和实际操作办法，文字 |
-| checks / transition | 本段达标检查与转入下段的条件，非空文字数组 |
-| required_items | 可选核心物品数组，每项 name/acquisition/source_id；随机、交易或迷宫获取须写 fallback；不需要暗金则省略 |
+| stage_id / name | 唯一稳定 ID 与名称 |
+| level | 角色等级，未知可省略/null；auto 宝石等级需要已知角色等级 |
+| act / completed_act | 当前前往章节与已完成章节进度分开，正整数/非负整数；章节号不能代替具体任务完成 |
+| entry_conditions | 该阶段条件 claim_id 数组，claim.subjects 包含 `stage:<stage_id>` |
+| bases / weapon_setup | `{原生槽位:完整基底名}`；武器布局可选自由说明 |
+| skill_groups | `[{name,slot,use,enabled,gems:[{instance_id,skill_id,level,quality}]}]`；level可填auto，quality默认0 |
+| gear / passives / checks / transition | 各为文字或文字数组，说明目标属性、天赋顺序、可观察检查与下一段条件 |
+| ascendancy_points / ascendancy_nodes | 本阶段声明可用升华点数与累计目标节点 ID；程序合并当前原生连接路径，不只数大点；留点允许 |
+| resources | 费用、回复、操作与限制的文字说明；引用相应 stage/usage 判断，不作为精确实算结果 |
+| required_items | 本阶段新增取得/加工需求，下面说明 |
 
-顶层 gems 获取总表：
-
-```json
-{
-  "原生skill_id": {
-    "acquisition": "vendor",
-    "source_id": "实际来源 ID",
-    "source_note": "实际查到的章节、任务、NPC、适用职业及必要步骤",
-    "available_from_act": 3,
-    "quest": "A Fixture of Fate",
-    "npc": "Siosa",
-    "class_ids": [0, 1, 2, 3, 4, 5, 6]
-  }
-}
-```
-
-获取方式 acquisition 为 quest/vendor/drop/trade/lab/owned。trade 在自力模式下拒绝；随机、迷宫、交易或特殊宝石须提供 fallback_skill_id，普通替代必须在该阶段可用，主辅类型一致。替代属于卡住时的过渡，仍须核对其连线和武器，不能随便塞一个低级技能。总表中的每种宝石须安排到至少一个阶段。
-
-文字数组字段也可传一段非空文字，程序统一规范为单项数组，保留完整原文，不按标点猜测拆分。不要将本应包含多步操作的内容缩成缺少步骤的口号。
-
-每颗宝石的 `available_from_act`、`class_ids`、`quest`、`npc` 从 research 的同一 choice 取得，别把不同来源拼接。第三章全职业示例只说明格式。`via_mule: true` 仅用于用户已允许的小号，并写明职业与转交步骤。程序会将声明与实际网页行比较，拒绝不存在的行和扩大职业范围；无法核实时保留草案。报告的取得说明由已匹配行生成，计划 source_note 不能覆盖它。任务奖励通常任选一颗，同任务其他宝石仍需另查购买办法。
-
-每个 skill_groups 条目：
+宝石 required_items 条目：
 
 ```json
 {
-  "name": "主输出",
-  "slot": "Body Armour",
-  "use": "main",
-  "gems": [
-    {"skill_id": "实际主动宝石ID", "level": 1, "quality": 0},
-    {"skill_id": "实际辅助宝石ID", "level": 1, "quality": 0}
-  ]
+  "kind":"gem", "instance_id":"fireball-one", "skill_id":"Fireball",
+  "level":1, "quality":0, "quantity":1,
+  "acquisition":"vendor",
+  "available_from_act":1, "quest":"使用 research 实际返回的任务", "npc":"实际 NPC",
+  "class_ids":[4], "evidence_refs":["对应来源记录"]
 }
 ```
 
-slot 为 Body Armour/Helmet/Gloves/Boots/Weapon 1/Weapon 2。use 为 main/movement/utility/aura；每组第一颗主动，其余辅助，第二主动技能另建组。aura 仅用于本机确认为光环/捷的常驻技能。所有组均验证辅助兼容，utility 不能用来跳过连线检查。同装备各组总孔数不能超过容量，各组独立连线。
+以上仅展示格式，不认证 Fireball 在此职业/阶段的取得方式；必须替换成实际查询行。装备使用 kind:item/item_id/spec_sha256，服务用 kind:service/service_id，quantity 均正整数。acquisition 可表达 owned/quest/vendor/trade/drop/lab/craft 等实际来源，不强制随机来源附普通替代。
 
-基础 gems 必须非空且不超过该装备孔数，四连还是高连由实际取得条件决定。可选 upgrade_gems 是**完整**的升级后列表，第一颗主动不变、数量更多且不超过孔数；没取得升级所需物资时继续基础列表。程序同时核对所有组能一起装备，但不证明装备已获得或预算能买齐。特殊装备提供的额外辅助应走具体 XML 实算，不能冒充普通孔数。
+owned 需要 user_statement 记录，subject 匹配物资引用，context 包含实例对应的 instance_id 与 quantity。购入物资同时关联 inventory/shopping 的规格；不要将同一实例的首次购入费用重复列在后续阶段。quest/vendor 须对应当前页面唯一行，程序不能证明任务已做或奖励选择；由 `acquisition:<instance_id>` claim 解释进入条件、成长到所填等级、费用与限制。其他来源用实际取得的证据及同对象 claim；不能只写一句“能刷到”。
 
-level 是本段目标宝石等级，不是角色等级。通常填写 `"level": "auto"`，程序按本机数据选取该角色等级能练到的最高普通宝石等级，并在 HTML 中显示具体数值；不要填写“角色等级减几级”。需要压低活力保留、触发门槛或属性需求时填写明确的整数宝石等级。auto 不会让尚未解锁的宝石提前可用，不证明已取得宝石或已经练满经验。等级错误会一次列出各阶段的问题与可用上限，按来源进度修正后重试，不自动替换技能。
+route 的 claims 可引用声明的网页/资料，以及本次 `native:catalog#/...` 下实际存在的目录字段。初次可用空 claims 得到草案，读取 evidence 文件后补精确引用。必要 subjects：`goal`、`stage:<stage_id>`、`acquisition:<instance_id>`；安排升华用 `progress:<stage_id>`，换分支用 `respec:<stage_id>`，同实例调整特殊规格用 `transformation:<stage_id>:<instance_id>`。这些是对象引用契约，具体策略由模型决定。
 
-catalog 的 level_requirements 包含原生力量/敏捷/智慧需求，HTML 自动列出基础与升级宝石的属性门槛。它们不证明无装备的角色已经满足；自力路线要安排属性来源或暂缓升级，另核对装备本身需求。后续阶段沿用获取总表，避免重复来源。所有国服价格无证据时保持未知，不用预算 0 推导一切免费。
+assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[]}`；scope 不能缩掉用户已明确要求的终点。每段判断核对所列资源技能确实安排、切换前后依赖未丢、操作满足偏好，以及取得条件可执行。来源观测与模型判断分开显示；缺一条实际来源时保留相应缺口，不凭非空文字消除。
 
-catalog 与 HTML 优先采用本机 Items_Gems 中文名称，并保留英文便于核对。3.29 普通孔色不限制宝石插入，匹配色提供品质加成；开荒缺资源时先满足连线和基础防御，不能把旧版强制改色流程当作必要花费。
+弃用字段：version_status、shared_trials 默认值、upgrade_gems、fallback_skill_id、ascendancy_respec_reason，以及旧固定武器/用途枚举。其有效内容分别进入真实用户声明、后续阶段或有引用的 claims。旧字段不能在新 schema 静默忽略。
 
-需要具体阶段 XML 时，取得可信同版本模板并按真实/明确目标装备建立配装候选，走 intent/evaluate/export；不能只写几颗宝石就宣称完成伤害、生存和续航验证。用户推进后可以上传新的角色 XML，继续计算下一步。
+## 关键阶段内部 XML
+
+模型依据本次目标识别依赖变化明显的阶段（技能/装备/资源切换等），标注 `key_transition: true`。关键阶段缺少 `snapshot` 会保留待办。阶段数量、进入等级和选择何时切换仍由模型决定，不用固定剧情模板。
+
+`snapshot` 字段：
+
+- `template_xml` 可选，指向真实角色模板；省略时复用当前原生职业空角色。程序生成内部 XML，不要求玩家先有角色，也不要手写最小 XML。
+- `operations` 复用配装协议的 items/equip/tree/config/main_group/weapon_set。角色等级与基础技能组来自本阶段。gems 仅补计数、技能部位等状态；groups 仅补 main_active_skill/include_in_full_dps/group_count，不能在快照偷偷换掉阶段列出的宝石、等级或位置。
+- `assumptions` 为 claim_id 数组，对应 claim.subjects 含 `snapshot:<stage_id>`。说明实际假设的装备词缀/孔连、天赋、操作和何时取得；资料只证明某物品存在时，不能说用户已经拥有。
+- `usage` 与配装协议相同，引用阶段实际 skill_ref；需要时先运行 route，读取该阶段 calculation.active_skills 后补全。
+- `metrics` 可选指标名数组。只取实际原生输出，不在当前结果中的指标保持未知。
+
+同一次 route 会生成阶段 XML、回读并绑定摘要，然后解析 `native:stage:<stage_id>#/stats/Life` 等实际引用。因此 stage/snapshot/resource 等相关判断可同时引用该阶段原生结果；与资源有关的 claim 还需标明 `stage:<stage_id>` 或 `snapshot:<stage_id>`，避免把另一个阶段的使用说明混入。
+
+内部文件位于输出 HTML 同级 `<输出名>.calculations/<阶段摘要>/snapshot.xml` 和 evaluation.json。`calculation` 分开列明完整装备条件、数值、孔位/属性/天赋检查和资源缺口；没有完整输入或计算失败的阶段不生成虚构统计。现有模板遗留的装备/节点也会进入实算，核对它们是否属于本阶段。
+
+本阶段实际装备需与 bases 一致，具体物品及规格摘要需出现在截至此阶段的 required_items 中。快照是条件规划，已回读不代表装备可得、剧情完成或目标达到。HTML 和 evidence.json 的状态仍取决于各阶段与来源缺口。
+
+物理实例的 required_items 只登记首次取得，后续沿用不重复计费。再次购买另一颗同名宝石使用新 instance_id；对旧实例升级或改造记录实际转换依据与服务/材料。已匹配的 owned 实例声明自动用于库存核对，无须在 inventory 重抄；显式 inventory 同规格记录会优先使用，但仍核对声明数量和规格。不能重复使用同一份数量凭据抵消多颗物品。
