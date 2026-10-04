@@ -66,6 +66,9 @@ def diagnosis_summary(result):
     minion = any(skill.get("is_main") and skill.get("minion") for skill in result.get("active_skills", []))
     damage, hit = ("MinionCombinedDPS", "MinionHitChance") if minion else ("CombinedDPS", "HitChance")
     rows = [f"当前主技能：{result.get('main_skill_name', result.get('main_skill', '未识别'))}。"]
+    rows.append(f"本机统计已分配：普通天赋 {result['points']} 点，升华 {result['ascendancy_points']} 点（包含连接小点）。这不是剩余点数；可用上限仍须结合本次确认的等级与任务进度。")
+    if result.get("secondary_ascendancy_points"):
+        rows.append(f"另有次级升华已分配 {result['secondary_ascendancy_points']} 点，不能混入普通天赋或主升华点数。")
     rows += [f"{METRICS[key]}：{stats[key]:g}" for key in (damage, hit, "Life", "EnergyShield", "ChaosResist", "ManaUnreserved") if key in stats]
     rows.append("DPS 已包含引擎的命中计算，不再乘命中率。其他技能是否计入总输出以 damage_sources 的实际分项为准，不能根据装备着召唤宝石推断。")
     if stats.get("ManaUnreserved", 0) < 0:

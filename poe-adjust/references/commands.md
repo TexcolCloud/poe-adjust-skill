@@ -22,7 +22,7 @@ python $entry status --run '<工作区>/配装任务/会话'
 
 `--run` 始终指向同一个会话目录。首次 start 要求目录为空或尚不存在；原始文件和已有诊断放在其他目录也可以。`inspect --calculate --out` 仍直接返回简短的 `diagnosis_summary`，向玩家原样报告这段诊断，不再乘命中率或另造“有效 DPS”。完整文件也包含该摘要。进一步读诊断时用 `Get-Content -Raw -Encoding UTF8 ... | ConvertFrom-Json`，选取相关 `calculation.stats`、`calculation.warnings`、`calculation.active_skills` 和 `calculation.damage_sources`，不需要逐行读完整大文件。
 
-start 返回 overview，已含职业、等级、两个版本和技能组，不需要为了首次问询再 inspect。inspection 文件保留原 XML 字段：skill_groups[].gems[].skillId/nameSpec；计算结果则为 calculation.gems[].id/name。不要反复试猜字段名。任务点/升华进度仍由用户确认，不能从缓存的 unallocatedPassives 推断已完成任务数。
+start 返回 overview，已含职业、等级、两个版本和技能组，不需要为了首次问询再 inspect。inspection 文件保留原 XML 字段：skill_groups[].gems[].skillId/nameSpec；计算结果则为 calculation.gems[].id/name。不要反复试猜字段名。诊断摘要中的已分配普通/升华点数直接来自原生 CountAllocNodes，包含连接小点；不要仅数大点或节点数组长度。任务点/升华进度仍由用户确认，不能从已分配点数或缓存的 unallocatedPassives 推断已完成任务数。
 
 doctor/start 自动读取本机发布记录和 GameVersions 元数据，并执行启动、查询、XML 保存与回读自检。`data_version_basis.status=corroborated` 表示两份本机依据一致；`unresolved` 时可查询，但不能认证方案。`engine_fingerprint` 覆盖实际计算代码、数据、适配器与译名，版本号相同但内容变化也会使缓存失效。升级后 evaluate 保留原始快照和已确认意图，重跑自检与基线；若规则版本变化则先重新确认目标。旧指纹候选不能直接 export。`capabilities` 是已检测接口能力，不是未来所有机制均正确的保证。历史 version_evidence 缺少新版本链接时，由联网工具寻找官方公告，不改版本数字。
 

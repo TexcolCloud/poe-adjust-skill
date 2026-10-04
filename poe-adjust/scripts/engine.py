@@ -192,6 +192,9 @@ def validate_contract(result):
     for key, kind in required.items():
         if not isinstance(result.get(key), kind):
             raise EngineError(f"本机接口缺少有效 {key}；当前适配不能完成此项计算，请维护者检查接口变化。")
+    for key in ("points", "ascendancy_points", "secondary_ascendancy_points"):
+        if type(result.get(key)) is not int or result[key] < 0:
+            raise EngineError("本机接口缺少有效已分配点数：" + key)
     if not result["capabilities"].get("excluded_guard_validation"):
         raise EngineError("本机接口不能识别守护技能；无法核对排除短时收益后的连线与资源，请维护者检查接口变化。")
     for key in ("Life", "Str", "Dex", "Int", "ManaUnreserved"):

@@ -90,18 +90,23 @@ class DocumentTests(unittest.TestCase):
             self.assertEqual(bx.digest(path.read_bytes()), bx.digest(text))
 
     def test_diagnosis_preserves_native_damage_and_distinguishes_resource_pools(self):
-        result = {"main_skill_name": "Spectral Shield Throw", "stats": {"CombinedDPS": 33770, "HitChance": 56, "ManaUnreserved": -275}}
+        result = {"main_skill_name": "Spectral Shield Throw", "points": 103, "ascendancy_points": 6, "stats": {"CombinedDPS": 33770, "HitChance": 56, "ManaUnreserved": -275}}
         summary = poe.diagnosis_summary(result)
         self.assertIn("主技能综合 DPS：33770", summary)
         self.assertNotIn("18911", summary)
         self.assertIn("不再乘命中率", summary)
         self.assertIn("不能据此断言所有技能都不能使用", summary)
+        self.assertIn("普通天赋 103 点，升华 6 点（包含连接小点）", summary)
+        self.assertIn("这不是剩余点数", summary)
+        self.assertNotIn("次级升华", summary)
+        result["secondary_ascendancy_points"] = 2
         result["active_skills"] = [{"is_main": True, "minion": True}]
         result["stats"].update(MinionCombinedDPS=1234, MinionHitChance=95)
         summary = poe.diagnosis_summary(result)
         self.assertIn("召唤物单体综合 DPS：1234", summary)
         self.assertIn("召唤物命中率 %：95", summary)
         self.assertNotIn("33770", summary)
+        self.assertIn("次级升华已分配 2 点", summary)
 
     def test_inspection_never_overwrites_input(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1128,6 +1133,10 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual((axe["name"], axe["sockets"], axe["socket_category"]), ("Stone Axe", 6, "two_hand"))
         self.assertEqual((rod["name"], rod["sockets"], rod["socket_category"]), ("Fishing Rod", 4, "two_hand"))
         self.assertEqual((result["socket_limits"]["two_hand"]["min"], result["socket_limits"]["two_hand"]["max"]), (4, 6))
+        for key, invalid in (("points", None), ("ascendancy_points", True), ("secondary_ascendancy_points", -1)):
+            damaged = {**result, key: invalid}
+            with self.assertRaisesRegex(ValueError, "已分配点数"):
+                engine.validate_contract(damaged)
         self.assertIn("Champion", [a["name"] for a in result["catalog_batch"][1]["entries"][0]["ascendancies"]])
         templar = result["catalog_batch"][2]["entries"][0]
         self.assertEqual(templar["name_cn"], "圣堂武僧")
@@ -1360,6 +1369,7 @@ class RealEngineTests(unittest.TestCase):
         saved = poe.read_json(path)
         self.assertEqual(result["diagnosis_summary"], saved["diagnosis_summary"])
         self.assertIn(f"主技能综合 DPS：{saved['calculation']['stats']['CombinedDPS']:g}", result["diagnosis_summary"])
+        self.assertIn(f"普通天赋 {saved['calculation']['points']} 点，升华 {saved['calculation']['ascendancy_points']} 点", result["diagnosis_summary"])
         self.assertIn("不再乘命中率", result["diagnosis_summary"])
         self.assertIn("原样", result["reply_policy"])
         self.assertLess(len(stdout.getvalue()), 3000)
