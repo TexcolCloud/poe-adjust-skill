@@ -56,6 +56,8 @@ python $entry catalog --batch '<queries.json>' --out '<工作区>/catalog-result
 
 局部调整优先 `tree.nodes_add` / `tree.nodes_remove`，由程序保留其他节点，避免手抄整个列表遗漏连接或珠宝节点。nodes_add 要包含 catalog 返回的完整 path；nodes_remove 只接受确实已点的节点。不要与完整 nodes 混用。增量操作不自动修补移除节点造成的断路，evaluate 会拒绝丢失的节点，须按真实连接修复。换升华时也需移除不再适用的原升华节点。
 
+局部增改专精用 `tree.masteries_add: {"节点ID": 效果ID}`，其他已选专精自动保留。退掉某专精节点时用 nodes_remove，其效果也会清除。`masteries` 是整张专精表完整替换，不能仅填写本次新增的一项，也不能与 masteries_add 混用；遗漏仍已分配节点的原专精会明确拒绝。遇到多枚专精同时丢失，先检查是否误用了完整替换，不要盲目删节点或猜测为星团断路。
+
 升华节点返回 `ascendancy_name` 和 `is_ascendancy_start`；用升华英文名（如 Champion）可一次查齐该升华节点及原生路径，不能按节点 ID 大小猜测归属。升华起点不消耗点数，分配结果以 evaluate 的 `ascendancy_points` 为准。
 
 `gems` 用于查找可装配宝石；`skills` 用于读取技能说明，也包括装备赋予的技能（`from_item=true`），不能把这些技能当成可以买到的独立宝石。`config` 同时检索配置键、标签和提示文字，可查实际增益/负面层数的解释。先用这些只读命令及网络资料查机制，通常无需搜索整个安装目录或读取引擎源码。
@@ -144,7 +146,7 @@ python $entry catalog --batch '<queries.json>' --out '<工作区>/catalog-result
 | replace_skills | 完整替换当前技能方案的技能组数组；其他未启用方案保留。每组包含 slot、enabled、include_in_full_dps、main_active_skill 等组字段，以及 gems 数组；新宝石至少提供 skill_id，默认 1 级 0 品质 |
 | items | 数组：`{"id":20,"text":"Rarity: RARE\n名称\n基底\n..."}` 或 `{"id":20,"craft":{...}}`；原 ID 替换，新 ID 新增。text 用真实/已核实来源；普通稀有目标优先 craft |
 | equip | 数组：`{"slot":"Weapon 2","item_id":20}`；flask 可附 `active:false`；`Jewel 12345` 表示天赋珠宝插槽；0 表示移除 |
-| tree | 对象：nodes 完整替换，或 nodes_add/nodes_remove 增量添加/移除；class_id、ascendancy_id、secondary_ascendancy_id 可选；masteries 为 `{"节点ID":效果ID}`。沿用输入天赋版本，不能靠改 treeVersion 强行迁移 |
+| tree | 对象：nodes 完整替换，或 nodes_add/nodes_remove 增量添加/移除；class_id、ascendancy_id、secondary_ascendancy_id 可选；masteries_add 局部增改专精，masteries 完整替换，均为 `{"节点ID":效果ID}`。沿用输入天赋版本，不能靠改 treeVersion 强行迁移 |
 | level | 1–100，必须等于用户确认的 target_level |
 | main_group | 当前技能组的 1 起始序号 |
 | weapon_set | 1 或 2 |

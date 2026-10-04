@@ -244,8 +244,10 @@ def apply_plan(source, plan):
         active_set(root, "Items", "ItemSet", "activeItemSet").set("useSecondWeaponSet", attr(operations["weapon_set"] == 2))
     if "tree" in operations:
         data = operations["tree"]
-        require(not (set(data) - {"nodes", "nodes_add", "nodes_remove", "class_id", "ascendancy_id", "secondary_ascendancy_id", "masteries"}), "tree 包含未知字段；天赋版本沿用输入文件。")
+        require(not (set(data) - {"nodes", "nodes_add", "nodes_remove", "class_id", "ascendancy_id", "secondary_ascendancy_id", "masteries", "masteries_add"}), "tree 包含未知字段；天赋版本沿用输入文件。")
         spec = active_spec(root)
+        prior_masteries = {int(node): int(effect) for node, effect in re.findall(r"\{(\d+),(\d+)\}", spec.get("masteryEffects", ""))}
+        require(not ("masteries" in data and "masteries_add" in data), "masteries 完整替换不能与 masteries_add 局部修改混用。")
         require(not ("nodes" in data and ("nodes_add" in data or "nodes_remove" in data)), "tree.nodes 完整替换不能与 nodes_add/nodes_remove 增量调整混用。")
         if "nodes_add" in data or "nodes_remove" in data:
             current = {int(n) for n in spec.get("nodes", "").split(",") if n}
@@ -269,9 +271,20 @@ def apply_plan(source, plan):
             if key in data:
                 require(isinstance(data[key], int) and 0 <= data[key] <= 10, "升华编号无效。")
                 spec.set(xml_key, str(data[key]))
-        if "masteries" in data:
-            require(isinstance(data["masteries"], dict), "masteries 应为节点 ID 到专精效果 ID 的映射。")
-            spec.set("masteryEffects", ",".join("{%d,%d}" % (int(k), int(v)) for k, v in data["masteries"].items()))
+        if any(key in data for key in ("nodes", "masteries", "masteries_add")):
+            allocated = {int(node) for node in spec.get("nodes", "").split(",") if node}
+            field = "masteries" if "masteries" in data else "masteries_add"
+            updates = data.get(field, {})
+            require(isinstance(updates, dict) and all(str(node).isdigit() and int(node) > 0 and type(effect) is int and effect > 0 for node, effect in updates.items()), field + " 应为正整数节点 ID 到正整数专精效果 ID 的映射。")
+            updates = {int(node): effect for node, effect in updates.items()}
+            require(set(updates) <= allocated, "专精效果指向未分配的节点；先用 nodes_add 加入相应节点与连接路径。")
+            if field == "masteries":
+                missing = (set(prior_masteries) & allocated) - set(updates)
+                require(not missing, "masteries 是完整替换，会清除仍保留节点的其他专精：" + ",".join(map(str, sorted(missing))) + "。局部修改请改用 masteries_add，程序会保留其他专精；退点使用 nodes_remove。不能把专精丢失当作普通天赋断路。")
+                selected = updates
+            else:
+                selected = {**prior_masteries, **updates}
+            spec.set("masteryEffects", ",".join("{%d,%d}" % (node, effect) for node, effect in sorted(selected.items()) if node in allocated))
     if "main_group" in operations:
         index_one(groups(root), operations["main_group"], "主技能组")
         build.set("mainSocketGroup", str(operations["main_group"]))

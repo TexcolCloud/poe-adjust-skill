@@ -85,6 +85,21 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(bx.groups(self.root)[0].find("Gem").get("skillId"), "ShieldCrush")
         self.assertEqual(changed.find("Extension").text, "preserve me")
 
+    def test_mastery_delta_preserves_others_and_full_replacement_cannot_drop_selections(self):
+        bx.active_spec(self.root).set("masteryEffects", "{1,11},{2,22}")
+        plan = {"mode": "refine", "summary": "只增加一个专精", "operations": {"tree": {"nodes_add": [3], "masteries_add": {"3": 33}}}}
+        changed = bx.apply_plan(self.root, plan)
+        self.assertEqual(bx.active_spec(changed).get("masteryEffects"), "{1,11},{2,22},{3,33}")
+        changed = bx.apply_plan(changed, {**plan, "operations": {"tree": {"nodes_remove": [2], "masteries_add": {"1": 12}}}})
+        self.assertEqual(bx.active_spec(changed).get("masteryEffects"), "{1,12},{3,33}")
+        self.assertEqual(bx.active_spec(self.root).get("masteryEffects"), "{1,11},{2,22}")
+        with self.assertRaisesRegex(ValueError, "完整替换.*其他专精"):
+            bx.apply_plan(self.root, {**plan, "operations": {"tree": {"masteries": {"1": 12}}}})
+        with self.assertRaisesRegex(ValueError, "未分配"):
+            bx.apply_plan(self.root, {**plan, "operations": {"tree": {"masteries_add": {"3": 33}}}})
+        changed = bx.apply_plan(self.root, {**plan, "operations": {"tree": {"masteries": {"1": 12, "2": 22}}}})
+        self.assertEqual(bx.active_spec(changed).get("masteryEffects"), "{1,12},{2,22}")
+
     def test_rebuild_replaces_only_selected_skill_set(self):
         result = bx.apply_plan(self.root, {"mode": "rebuild", "summary": "switch", "operations": {"replace_skills": [{"slot": "Boots", "gems": [{"skill_id": "Fireball", "level": 10}]}]}})
         self.assertEqual(len(result.findall("Skills/SkillSet")), 2)
@@ -896,6 +911,18 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("不再乘命中率", result["diagnosis_summary"])
         self.assertIn("原样", result["reply_policy"])
         self.assertLess(len(stdout.getvalue()), 3000)
+
+    def test_26_native_partial_mastery_edit_preserves_allocated_masteries(self):
+        import re
+        masteries = {int(node): int(effect) for node, effect in re.findall(r"\{(\d+),(\d+)\}", bx.active_spec(self.original).get("masteryEffects", ""))}
+        self.assertGreater(len(masteries), 1)
+        node, effect = next(iter(masteries.items()))
+        plan = copy.deepcopy(self.refine)
+        plan["operations"]["tree"] = {"masteries_add": {str(node): effect}}
+        outcome = self.evaluate_plan(plan, "mastery-delta")
+        self.assertEqual(outcome["status"], "validated", outcome["errors"])
+        result = poe.read_json(self.run_dir / "candidates/mastery-delta/evaluation.json")["result"]
+        self.assertTrue(set(masteries) <= set(result["nodes"]))
 
     def test_24_catalog_failure_explains_character_free_queries(self):
         invalid = '<PathOfBuilding><Build className="Marauder" ascendClassName="Chieftain" level="1" targetVersion="3_0"/><Tree><Spec treeVersion="3_29" ascendancyName="Chieftain"><URL>https://www.pathofexile.com/passive-skill-tree/AAAABgAA</URL></Spec></Tree><Skills/><Items/></PathOfBuilding>'
