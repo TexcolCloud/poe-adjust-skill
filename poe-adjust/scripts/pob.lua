@@ -233,10 +233,17 @@ local function queryCatalog(kind, query, limit)
         local requirements = {}
         for level, values in pairs(skill and skill.levels or {}) do
           if level <= (gem.naturalMaxLevel or 20) then
+            local resources = {}
+            for key, value in pairs(values) do
+              if type(key) == "string" and (key == "cost" or key == "manaMultiplier" or string.find(key, "Reservation", 1, true)) then
+                resources[key] = value
+              end
+            end
             table.insert(requirements, {gem_level = level, character_level = values.levelRequirement,
               strength = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqStr or 0),
               dexterity = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqDex or 0),
-              intelligence = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqInt or 0)})
+              intelligence = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqInt or 0),
+              base_resources = next(resources) and resources or nil})
           end
         end
         table.sort(requirements, function(a,b) return a.gem_level < b.gem_level end)

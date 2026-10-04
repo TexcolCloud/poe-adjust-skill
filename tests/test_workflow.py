@@ -440,6 +440,24 @@ class RouteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "version_source"):
             routes.validate(self.route, self.gems)
 
+    def test_route_resource_evidence_uses_actual_level_and_keeps_unknown_explicit(self):
+        entry = self.gems["ShieldCrush"]
+        entry["description"] = "Fixture <native> description"
+        entry["level_requirements"][0]["base_resources"] = {"cost": {"Mana": 5}, "manaReservationPercent": 23}
+        entry["level_requirements"][1]["base_resources"] = {"manaReservationFlat": 147, "manaMultiplier": 20}
+        self.route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = 20
+        self.route["stages"][-1]["level"] = 70
+        checked, _ = routes.validate(self.route, self.gems)
+        first = checked["stages"][0]["skill_groups"][0]["gems"][0]
+        self.assertEqual(first["base_resources"], {"cost": {"Mana": 5}, "manaReservationPercent": 23})
+        self.assertNotIn("base_resources", self.route["stages"][0]["skill_groups"][0]["gems"][0])
+        report = routes.render(checked, [], "fixture", "fixture")
+        for expected in ("单次基础消耗：魔力 5", "魔力保留 23%", "固定魔力保留 147", "倍率 120%", "Fixture &lt;native&gt; description", "未计入辅助倍率"):
+            self.assertIn(expected, report)
+        del entry["level_requirements"][0]["base_resources"]
+        checked, _ = routes.validate(self.route, self.gems)
+        self.assertIn("不能推断为零消耗", routes.render(checked, [], "fixture", "fixture"))
+
     def test_route_attributes_cover_utility_and_optional_links_without_summing(self):
         self.gems["ShieldCrush"]["level_requirements"][0].update(strength=33, dexterity=0, intelligence=0)
         for skill_id, active, attribute, amount in (("UtilityFixture", True, "intelligence", 80), ("SupportFixture", False, "dexterity", 111)):
@@ -556,10 +574,12 @@ class FactTests(unittest.TestCase):
         self.assertIn("timeout", warnings[0])
         with patch.object(facts, "fetch", side_effect=OSError("offline")):
             result = facts.gem_facts({"Example": {"skill_id": "Example", "name": "Example", "min_level": 12,
-                                                 "description": "Native fixture description", "tags": {"spell": True}}}, ".unused", "test")
+                                                 "description": "Native fixture description", "tags": {"spell": True},
+                                                 "level_requirements": [{"gem_level": 1, "base_resources": {"manaReservationPercent": 23}}]}}, ".unused", "test")
         self.assertEqual(result["Example"]["status"], "unverified")
         self.assertEqual(result["Example"]["native"]["min_level"], 12)
         self.assertEqual(result["Example"]["native"]["description"], "Native fixture description")
+        self.assertEqual(result["Example"]["native"]["level_requirements"][0]["base_resources"]["manaReservationPercent"], 23)
         self.assertFalse(result["Example"]["choices"])
 
     def test_support_names_use_the_actual_source_page(self):
@@ -923,12 +943,22 @@ class RealEngineTests(unittest.TestCase):
                                                    {"kind": "gems", "query": "id:Sunder", "limit": 2},
                                                    {"kind": "gems", "query": "id:Determination", "limit": 2},
                                                    {"kind": "gems", "query": "id:Grace", "limit": 2},
-                                                   {"kind": "gems", "query": "id:Discipline", "limit": 2}])
-        self.assertEqual(len(result["catalog_batch"]), 5)
+                                                   {"kind": "gems", "query": "id:Discipline", "limit": 2},
+                                                   {"kind": "gems", "query": "id:Hatred", "limit": 2},
+                                                   {"kind": "gems", "query": "id:Clarity", "limit": 2},
+                                                   {"kind": "gems", "query": "id:SupportMinionDamage", "limit": 2}])
+        self.assertEqual(len(result["catalog_batch"]), 8)
         gems = {entry["skill_id"]: entry for query in result["catalog_batch"] for entry in query["entries"]}
-        self.assertEqual(set(gems), {"ShieldCrush", "Sunder", "Determination", "Grace", "Discipline"})
+        self.assertEqual(set(gems), {"ShieldCrush", "Sunder", "Determination", "Grace", "Discipline", "Hatred", "Clarity", "SupportMinionDamage"})
         self.assertEqual(gems["ShieldCrush"]["min_level"], 1)
         self.assertEqual(gems["Sunder"]["min_level"], 12)
+        for skill_id, amount in (("Discipline", 35), ("Hatred", 50)):
+            for row in gems[skill_id]["level_requirements"]:
+                self.assertEqual(row["base_resources"]["manaReservationPercent"], amount)
+        clarity = gems["Clarity"]["level_requirements"]
+        self.assertLess(clarity[0]["base_resources"]["manaReservationFlat"], clarity[-1]["base_resources"]["manaReservationFlat"])
+        self.assertGreater(gems["ShieldCrush"]["level_requirements"][0]["base_resources"]["cost"]["Mana"], 0)
+        self.assertGreater(gems["SupportMinionDamage"]["level_requirements"][0]["base_resources"]["manaMultiplier"], 0)
         for skill_id, attribute in (("Determination", "strength"), ("Grace", "dexterity"), ("Discipline", "intelligence")):
             level_20 = next(row for row in gems[skill_id]["level_requirements"] if row["gem_level"] == 20)
             self.assertEqual(level_20["character_level"], 70)

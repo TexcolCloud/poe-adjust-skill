@@ -105,6 +105,9 @@ def validate_group(group, stage, gems, library, compatibility, capacity, warning
                 bx.require(bool(fallback.get("tags", {}).get("grants_active_skill")) == active, label + "替代宝石的主辅类型不一致。")
                 warnings.append(label + "的 " + entry["name"] + " 获取不稳定；未取得先使用 " + fallback.get("display_name", fallback["name"]) + "，复查替代连线和属性。")
             skill["name"] = entry.get("display_name", entry["name"])
+            native_level = next(row for row in entry["level_requirements"] if row["gem_level"] == skill["level"])
+            skill["base_resources"] = copy.deepcopy(native_level.get("base_resources", {}))
+            skill["description"] = entry.get("description", "")
         if compatibility is not None:
             checked = compatibility.get(",".join(ids))
             bx.require(checked, label + "缺少原生辅助兼容性结果。")
@@ -234,6 +237,16 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
 def render(route, warnings, engine_version, tree_version):
     esc = lambda value: html.escape(str(value), quote=True)
     listing = lambda values: "<ul>" + "".join("<li>" + esc(v) + "</li>" for v in values) + "</ul>"
+    def resources_text(values):
+        parts = []
+        pools = {"Mana": "魔力", "Life": "生命", "EnergyShield": "能量护盾", "Rage": "怒火"}
+        for pool, amount in values.get("cost", {}).items():
+            parts.append(f"单次基础消耗：{pools.get(pool, pool)} {amount:g}")
+        for key, label in (("manaReservationPercent", "魔力保留"), ("lifeReservationPercent", "生命保留"),
+                           ("manaReservationFlat", "固定魔力保留"), ("lifeReservationFlat", "固定生命保留")):
+            if key in values: parts.append(f"{label} {values[key]:g}" + ("%" if key.endswith("Percent") else ""))
+        if "manaMultiplier" in values: parts.append(f"辅助的消耗与保留倍率 {100 + values['manaMultiplier']:g}%")
+        return "；".join(parts) or "本机等级表未报告可展示的资源字段，不能推断为零消耗。"
     class_name = route.get("class_display_name", bx.CLASSES[route["class_id"]])
     ascendancy_name = route.get("ascendancy_display_name", route["ascendancy"])
     delivery_note = "待核实草案：获取、试炼或版本依据仍有缺口，暂不作为可直接照做的攻略。" if route.get("delivery_status") == "route_draft" else "分阶段路线：已完成列出的程序检查，仍需核对机制、国服差异和实际进度。"
@@ -251,6 +264,15 @@ def render(route, warnings, engine_version, tree_version):
             links = lambda key: " + ".join(f"{gem['name']} {gem['level']}级/{gem.get('quality',0)}品质" for gem in group[key])
             upgrade = f"<p>获得更多连线后可升级：{esc(links('upgrade_gems'))}。未获得时继续使用上面的基础连线。</p>" if group.get("upgrade_gems") else ""
             groups.append(f"<h3>{esc(group['name'])} · {esc(group['slot'])} · {esc(USAGES[group['use']])}</h3><p>基础 {len(group['gems'])} 连：{esc(links('gems'))}</p>{upgrade}")
+            evidence, seen = [], set()
+            for gem in group["gems"] + group.get("upgrade_gems", []):
+                identity = (gem["skill_id"], gem["level"])
+                if identity in seen: continue
+                seen.add(identity)
+                text = f"{gem['name']} · 宝石 {gem['level']} 级：" + resources_text(gem.get("base_resources", {}))
+                if gem.get("description"): text += " 原文：" + gem["description"]
+                evidence.append(text)
+            groups.append("<details><summary>本机宝石原文与基础资源</summary><p>按上列宝石等级读取。主动技能数值尚未计入辅助倍率、天赋、装备或其他修改，不能用它们直接证明整套连线的保留或续航；具体角色以 XML 实算为准。光环能否通过降级减少保留，须比较实际等级数据。</p>" + listing(evidence) + "</details>")
         ascendancies = [node["name"] + ("（连接路径必经）" if node.get("required_by_path") else "") + "：" + "；".join(node["stats"]) for node in stage["ascendancy_details"]]
         items = [item["name"] + " · " + ACQUISITIONS[item["acquisition"]] + ("；未获得时：" + item["fallback"] if item.get("fallback") else "") for item in stage.get("required_items", [])]
         attribute_text = lambda key: "、".join(f"{name} {stage['attribute_requirements'][key][attribute]}" for attribute, name in ATTRIBUTES.items())
