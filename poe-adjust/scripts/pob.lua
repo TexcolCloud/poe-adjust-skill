@@ -53,6 +53,7 @@ result.capabilities = {
   matching_socket_quality = type(data.misc.MatchingSocketQualityBonus) == "number" and type(build.skillsTab.UpdateSocketGroups) == "function",
   native_resource_costs = type(GlobalCache.cachedData) == "table" and type(cacheSkillUUID) == "function",
   native_gem_requirements = type(data.gems) == "table",
+  native_corpse_sources = SkillType.CreatesCorpse ~= nil,
   excluded_guard_validation = SkillType.Guard ~= nil,
 }
 result.classes = {}
@@ -97,6 +98,7 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     group = groupIndex, slot = skill.socketGroup and skill.socketGroup.slot,
     is_main = skill == mainEnv.player.mainSkill, disabled = computed.skillFlags.disable or false,
     minion = computed.skillFlags.minion or false, trigger = computed.infoTrigger,
+    creates_corpses = SkillType.CreatesCorpse ~= nil and skill.activeEffect.grantedEffect.skillTypes[SkillType.CreatesCorpse] or false,
     trigger_level_limit = limit, trigger_target_required_level = requiredLevel,
     info = computed.infoMessage, info_secondary = computed.infoMessage2,
     generals_cry = computed.skillData.triggeredByGeneralsCry or false,

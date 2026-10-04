@@ -130,7 +130,7 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 
 原生输出 `active_skills` 包含每个启用主动技能的 id/name/group、is_main、trigger、info、costs；`damage_sources` 是 PoB 原生 Full DPS 计入项目及数量，空数组表示没有这项汇总。召唤技能的本人 CombinedDPS 可能为零，单只召唤物看 MinionCombinedDPS，合计看 FullDPS 与实际计入数量；probe 会在这类主技能上使用 MinionCombinedDPS，并返回 dps_metric，不能把单体数字擅自乘最大数量。程序在主技能消耗之外加入其他已识别自动触发技能的持续消耗，不重复加主技能；手动位移、诅咒、尸体生成等按真实频率另留余量，不能把主技能通过理解为所有按键同时满速通过。
 
-将军之吼须填写 `config_evidence.generals_cry`，说明尸体生成、战吼触发/冷却、实际幻影数量与玩家恢复；常态方案要装入亵渎/亵渎之矛或 Corpse Walk 等已核对来源。依赖场景尸体或特殊外部来源的方案使用 conditional 并解释限制。该机制在本机技能原文和 [官方介绍](https://www.pathofexile.com/forum/view-thread/2870970) 中均要求尸体，幻影攻击不等于本人攻击。
+将军之吼须填写 `config_evidence.generals_cry`，说明尸体生成、战吼触发/冷却、实际幻影数量与玩家恢复；常态方案要装入且启用已核对的造尸技能。程序从当前本机 `SkillType.CreatesCorpse` 生成 `active_skills[].creates_corpses`，不使用技能名白名单；该类型只证明造尸能力，实际数量、费用和供尸频率仍须论证。接口无法识别时不认证此项。依赖场景尸体或特殊外部来源的方案使用 conditional 并解释限制。该机制在本机技能原文和 [官方介绍](https://www.pathofexile.com/forum/view-thread/2870970) 中均要求尸体，幻影攻击不等于本人攻击。
 
 主动技能 count 或 group_count 大于 1 时，填写 `config_evidence.skill_counts`：按技能组说明可同时维持的数量、施放/召唤速率、持续时间与取得条件。该文字只是可审查依据，程序不宣称数量已经被独立证明；Full DPS 分项会显示实际使用数量。
 

@@ -360,10 +360,13 @@ def readiness(result, intent, plan):
         evidence = plan.get("config_evidence", {}).get("generals_cry")
         if not isinstance(evidence, str) or not evidence.strip():
             errors.append("将军之吼方案需要 config_evidence.generals_cry：说明尸体取得、战吼触发/冷却、幻影数量及玩家自身回复来源；幻影攻击不等于本人攻击。")
-        corpse_sources = [skill for skill in active if skill["id"] in {"Desecrate", "Unearth", "CorpseWalk"}]
-        if not corpse_sources and mode == "steady":
-            errors.append("将军之吼缺少已装入的稳定尸体生成技能（亵渎/亵渎之矛/装备给予的 Corpse Walk）；怪物尸体不能保证无小怪首领启动。补齐来源，特殊外部来源须用 conditional 并在 generals_cry 依据中解释。")
-        warnings.append("将军之吼按幻影攻击计算；尸体生成、接近目标和战吼循环会影响实际覆盖，不能描述成本人无条件自动施放。")
+        corpse_sources = [skill for skill in active if skill.get("creates_corpses")]
+        if mode == "steady":
+            if not result.get("capabilities", {}).get("native_corpse_sources"):
+                errors.append("本机接口无法读取 CreatesCorpse 技能类型，尚不能认证将军之吼的尸体生成来源；请保留诊断供维护者适配。")
+            elif not corpse_sources:
+                errors.append("将军之吼缺少已装入且启用的尸体生成技能：本机技能类型未识别到 CreatesCorpse。怪物尸体不能保证无小怪首领启动；补齐来源，特殊外部来源须用 conditional 并在 generals_cry 依据中解释。")
+        warnings.append("将军之吼按幻影攻击计算；CreatesCorpse 仅识别造尸能力，不证明数量或稳定供尸。尸体生成、接近目标和战吼循环会影响实际覆盖，不能描述成本人无条件自动施放。")
     if automatic:
         warnings.append("持续消耗额外计入启用的自动触发技能：" + "、".join(skill.get("display_name", skill["name"]) for skill in automatic) + "。")
     if any(not skill.get("is_main") and not skill.get("trigger") and any(skill.get("costs", {}).get(key, 0) > 0 for key in ("ManaCost", "LifeCost", "ESCost")) for skill in active):

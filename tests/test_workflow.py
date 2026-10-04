@@ -319,11 +319,20 @@ class DocumentTests(unittest.TestCase):
         self.assertTrue(any("净缺口 50.0" in error for error in audit["errors"]))
         result["stats"]["ManaRegenRecovery"] = 100
         result["active_skills"][0]["generals_cry"] = True
+        result["capabilities"] = {"native_corpse_sources": True}
         audit = poe.readiness(result, intent, {})
         self.assertTrue(any("config_evidence.generals_cry" in error for error in audit["errors"]))
         self.assertTrue(any("尸体生成" in error for error in audit["errors"]))
-        result["active_skills"].append({"id": "Desecrate", "name": "Desecrate", "costs": {"ManaCost": 20}})
+        source = {"id": "Desecrate", "name": "Desecrate", "creates_corpses": False, "costs": {"ManaCost": 20}}
+        result["active_skills"].append(source)
         plan = {"config_evidence": {"generals_cry": "先手动亵渎备尸，再自动战吼；按实际尸体与冷却维持幻影。本人依靠回复，额外施放需预留魔力。"}}
+        self.assertTrue(any("尸体生成" in error for error in poe.readiness(result, intent, plan)["errors"]))
+        source.update(id="FixtureNewCorpseSource", name="Fixture Source", creates_corpses=True, disabled=True)
+        self.assertTrue(any("尸体生成" in error for error in poe.readiness(result, intent, plan)["errors"]))
+        source["disabled"] = False
+        result["capabilities"]["native_corpse_sources"] = False
+        self.assertTrue(any("接口无法读取" in error for error in poe.readiness(result, intent, plan)["errors"]))
+        result["capabilities"]["native_corpse_sources"] = True
         self.assertEqual(poe.readiness(result, intent, plan)["errors"], [])
         result["gems"] = [{"id": "FixtureMain", "enabled": True, "group_enabled": True, "count": 20}]
         self.assertTrue(any("skill_counts" in error for error in poe.readiness(result, intent, plan)["errors"]))
@@ -1160,6 +1169,9 @@ class RealEngineTests(unittest.TestCase):
         cry = next(skill for skill in result["active_skills"] if skill["id"] == "GeneralsCry")
         main = next(skill for skill in result["active_skills"] if skill["is_main"])
         self.assertTrue(main["generals_cry"])
+        self.assertTrue(result["capabilities"]["native_corpse_sources"])
+        self.assertTrue(next(skill for skill in result["active_skills"] if skill["id"] == "Desecrate")["creates_corpses"])
+        self.assertFalse(main["creates_corpses"])
         self.assertEqual(cry["trigger"], "Autoexertion")
         self.assertGreater(cry["costs"]["ManaPerSecondCost"], 0)
         mana = next(row for row in outcome["readiness"]["resources"] if row["resource"] == "魔力")
