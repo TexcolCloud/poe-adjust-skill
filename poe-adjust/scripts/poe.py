@@ -984,7 +984,7 @@ def research(args):
     write_json(output, {"gems": evidence, "engine_fingerprint": calculation["engine_fingerprint"], "data_version": calculation["data_version"]})
     return {"file": str(output), "source_checked": [key for key, value in evidence.items() if value["status"] == "source_checked"],
             "unverified": [key for key, value in evidence.items() if value["status"] != "source_checked"],
-            "next": "读取 gems[skill_id].choices，选实际可达的章节/任务/NPC/职业。后续通用商店来自单独规则交叉核对；未核实条目需另查，不能自填 verified。"}
+            "next": "读取 gems[skill_id].native 的本机使用门槛/技能原文，以及 choices 的网页章节/任务/NPC/职业；两种依据不能互相替代。已返回的数据无需重复 catalog。后续通用商店来自单独规则交叉核对；未核实条目需另查，不能自填 verified。"}
 
 
 def parser():

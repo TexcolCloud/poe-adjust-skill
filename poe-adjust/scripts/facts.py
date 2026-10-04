@@ -223,7 +223,8 @@ def gem_facts(gems, folder, context, game_version=None):
         name = entry["name"]
         page_name = name + " Support" if entry.get("tags", {}).get("support") and not name.endswith(" Support") else name
         url = "https://poedb.tw/us/" + quote(page_name.replace(" ", "_"), safe="_")
-        result = {"skill_id": entry["skill_id"], "name": name, "status": "unverified", "choices": [], "sources": []}
+        result = {"skill_id": entry["skill_id"], "name": name, "status": "unverified", "choices": [], "sources": [],
+                  "native": {key: entry[key] for key in ("display_name", "description", "min_level", "tags") if key in entry}}
         try:
             page = fetch(url, folder, context)
             rows = quest_rows(page["html"], page_name)

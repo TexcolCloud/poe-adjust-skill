@@ -553,8 +553,12 @@ class FactTests(unittest.TestCase):
         self.assertEqual(unresolved, ["Example"])
         self.assertIn("timeout", warnings[0])
         with patch.object(facts, "fetch", side_effect=OSError("offline")):
-            result = facts.gem_facts({"Example": {"skill_id": "Example", "name": "Example"}}, ".unused", "test")
+            result = facts.gem_facts({"Example": {"skill_id": "Example", "name": "Example", "min_level": 12,
+                                                 "description": "Native fixture description", "tags": {"spell": True}}}, ".unused", "test")
         self.assertEqual(result["Example"]["status"], "unverified")
+        self.assertEqual(result["Example"]["native"]["min_level"], 12)
+        self.assertEqual(result["Example"]["native"]["description"], "Native fixture description")
+        self.assertFalse(result["Example"]["choices"])
 
     def test_support_names_use_the_actual_source_page(self):
         record = {"html": self.raw.replace("Example -", "Example Support -"), "url": "https://poedb.tw/us/Example_Support", "checked_at": "2026-10-04", "sha256": "fixture"}
