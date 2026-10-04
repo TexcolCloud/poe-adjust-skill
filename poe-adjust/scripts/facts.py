@@ -128,7 +128,7 @@ def quest_rows(raw, name):
         if len(cells) != 4: continue
         act, quest, npc, characters = [text_of(cell).strip() for cell in cells]
         if not act.isdigit(): continue
-        classes = sorted(value for key, value in CLASS_IDS.items() if re.search(r"\b" + re.escape(key) + r"\b", characters))
+        classes = sorted(CLASS_IDS.values()) if characters == "All Classes" else sorted(value for key, value in CLASS_IDS.items() if re.search(r"\b" + re.escape(key) + r"\b", characters))
         kind = "vendor" if 'title="Quest Vendor"' in cells[2] else "quest" if 'title="Quest Reward"' in cells[2] or not npc else None
         if not kind or not classes or not quest: continue
         rows.append({"acquisition": kind, "available_from_act": int(act), "quest": quest,
@@ -166,6 +166,50 @@ def page_version(raw):
             title = re.search(r'title=["\'][^"\']*\bv(\d+\.\d+)\b', tag)
             if title: return title[1]
     return None
+
+
+def trial_facts(folder, context, game_version):
+    """Read campaign trial locations; area levels are not character entry levels."""
+    result = {"status": "unverified", "scope": "前三次迷宫的剧情试炼位置；不证明角色已完成试炼、通关或满足全部进入条件。"}
+    try:
+        page = fetch("https://poedb.tw/us/The_Lords_Labyrinth", folder, context)
+        result.update(source_record(page), source_game_version=page_version(page["html"]))
+        bx.require(result["source_game_version"] == game_version, "试炼页面的当前版本不匹配本机数据。")
+        names = ("The Labyrinth", "The Cruel Labyrinth", "The Merciless Labyrinth")
+        tables = re.findall(r"<table\b[^>]*>.*?</table>", page["html"], re.I | re.S)
+        tables = [table for table in tables if all(name in table for name in names) and "<th>Area</th>" in table and "<th>Level</th>" in table]
+        bx.require(len(tables) == 1, "未识别唯一的迷宫试炼表。")
+        found = {}
+        for row in re.findall(r"<tr[^>]*>(.*?)</tr>", tables[0], re.I | re.S):
+            cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.I | re.S)
+            if len(cells) != 4: continue
+            name, locations, area_level = [text_of(cell) for cell in cells[:3]]
+            if name not in names: continue
+            trials = locations.splitlines()
+            acts = [int(match[1]) for line in trials if (match := re.match(r"Act\s+(\d+)\s+\S", line))]
+            bx.require(acts and len(acts) == len(trials) and all(1 <= act <= 10 for act in acts) and area_level.isdigit(), "试炼表的章节或区域等级格式变化。")
+            found[name] = {"name": name, "points": (names.index(name) + 1) * 2,
+                           "last_trial_act": max(acts), "trial_locations": trials, "area_level": int(area_level)}
+        bx.require(set(found) == set(names), "试炼表缺少前三次迷宫中的一项。")
+        bx.require("each reward you with two Ascendancy points" in text_of(page["html"]), "未核对到每次迷宫的升华点奖励说明。")
+        result.update(status="source_checked", labyrinths=[found[name] for name in names])
+    except (OSError, ValueError) as exc:
+        result["reason"] = "迷宫试炼依据未核实：" + str(exc)
+    return result
+
+
+def reconcile_trial_progress(route, proof):
+    if not any(stage["ascendancy_points"] for stage in route["stages"]): return [], False
+    if proof["status"] != "source_checked": return [proof.get("reason", "迷宫试炼依据未核实。")], True
+    errors = []
+    for stage in route["stages"]:
+        required = [lab for lab in proof["labyrinths"] if lab["points"] <= stage["ascendancy_points"]]
+        stage["trial_requirements"] = required
+        if required and not route.get("shared_trials", False) and stage["act"] < required[-1]["last_trial_act"]:
+            lab = required[-1]
+            errors.append(f"{stage['level']} 级/第 {stage['act']} 章阶段安排了 {stage['ascendancy_points']} 点升华，但 {lab['name']} 的最后剧情试炼在第 {lab['last_trial_act']} 章；按真实进度延后，不得把首角色改成共享进度来放行。")
+    bx.require(not errors, "迷宫进度检查失败：\n" + "\n".join(errors))
+    return [], False
 
 
 def gem_facts(gems, folder, context, game_version=None):

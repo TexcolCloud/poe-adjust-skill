@@ -45,9 +45,17 @@ python $entry catalog --kind bases --query 'Two-Toned Boots' --limit 8
 python $entry catalog --kind affixes --query 'Two-Toned Boots (Armour/Energy Shield)|maximum Life' --limit 15
 python $entry catalog --batch '<queries.json>' --out '<工作区>/catalog-results.json'
 python $entry research --gems 'Fireball,SupportMeleePhysicalDamage' --out '<工作区>/宝石依据.json'
+python $entry research --version --league '<用户确认的赛季或永久区>' --out '<工作区>/版本依据.json'
+python $entry research --trials --out '<工作区>/试炼依据.json'
 ```
 
+`research --version` 根据本机数据版本读取已有官方来源，直接返回标题、相关正文摘录、抓取日期和内容摘要，无需启动计算引擎或读取整篇公告。缺少新赛季来源时返回 unverified；用联网搜索找到官方公告，再加 `--source '<URL>'` 重试。它不会把未知赛季按编号推算，也不会因为网络失败认证版本。后续 intent 的 version_source 使用本次实际取得的 URL。
+
+`research --trials` 读取当前版本前三次迷宫的剧情试炼位置，返回 trial_evidence.labyrinths 的 last_trial_act、trial_locations 和 area_level。章节来自实际网页，不按固定等级推断；区域等级不等于最低进入等级。该命令不能证明玩家已通关或第四次迷宫条件已满足。
+
 **查职业、升华节点 ID/原文、宝石或辅助兼容时不需要角色 XML。** 无角色开荒直接省略 `--input`，所有职业的数据都可查。不为目录查询手写最小 XML、下载构筑或解码巨大分享码；这些步骤不能改善查询。名称搜索也可能匹配贵族的同名节点，按 ascendancy_name 筛选实际升华，取 type=Notable 的大点。仅当需要相对于现有角色的天赋连接路径、已分配状态时，给 catalog 加真实 `--input '<角色.xml>'`。无输入时返回的节点 ID/stats/linked 可用于路线校验，path/allocated 不代表用户角色。
+
+用完整升华英文名查询且结果未截断时，节点还提供 `ascendancy_path`、`ascendancy_path_names`、`ascendancy_path_cost`，表示从该升华起点实际经过的大小点及总点数。它与相对于载入角色的 path/points_to_allocate 不同。route 合并各分支计数并展示必经大点；不能省略前置、虚构连接或在已用八点之外追加升华。
 
 一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的 `level_requirements`（gem_level/character_level/strength/dexterity/intelligence）、`min_level`、`special_variant`、`vaal`，开荒时据此核对等级与属性，而非猜测。
 
@@ -63,7 +71,7 @@ python $entry research --gems 'Fireball,SupportMeleePhysicalDamage' --out '<工�
 
 局部增改专精用 `tree.masteries_add: {"节点ID": 效果ID}`，其他已选专精自动保留。退掉某专精节点时用 nodes_remove，其效果也会清除。`masteries` 是整张专精表完整替换，不能仅填写本次新增的一项，也不能与 masteries_add 混用；遗漏仍已分配节点的原专精会明确拒绝。遇到多枚专精同时丢失，先检查是否误用了完整替换，不要盲目删节点或猜测为星团断路。
 
-升华节点返回 `ascendancy_name` 和 `is_ascendancy_start`；用升华英文名（如 Champion）可一次查齐该升华节点及原生路径，不能按节点 ID 大小猜测归属。升华起点不消耗点数，分配结果以 evaluate 的 `ascendancy_points` 为准。
+升华节点返回界面名称 `ascendancy_name`、原生内部名 `ascendancy_internal_name` 和 `is_ascendancy_start`；用升华英文名（如 Champion）可查该升华节点，不能按节点 ID 大小猜测归属。`no_tree_connection=true` 的孤立节点没有普通树连线，须另查装备等授予来源，不能直接列为迷宫升华可点的大点。升华起点不消耗点数，分配结果以 evaluate 的 `ascendancy_points` 为准。
 
 `gems` 用于查找可装配宝石；`skills` 用于读取技能说明，也包括装备赋予的技能（`from_item=true`），不能把这些技能当成可以买到的独立宝石。`config` 同时检索配置键、标签和提示文字，可查实际增益/负面层数的解释。先用这些只读命令及网络资料查机制，通常无需搜索整个安装目录或读取引擎源码。
 
@@ -105,6 +113,10 @@ python $entry research --gems 'Fireball,SupportMeleePhysicalDamage' --out '<工�
 `scenario` 是共同敌人/战斗配置，实际配置名用 config 查询。空对象使用引擎默认场景，并在报告明确；不要把默认场景称为终局首领。输入里旧战斗 Input 会被重置，盗贼与万神殿信息保留。共同场景在候选中不可单独改动。
 
 `calculation_mode` 默认 `steady`：守护增益、药剂必须关闭。`conditional` 用于用户接受的条件面板，开启的守护需 `config_evidence.guard`，每个药剂需 `config_evidence["Flask 1"]` 等说明触发、时长与覆盖。
+
+守护宝石设 `enable_global1=false`，但保留组 enabled=true 和实际 slot。PoB 会从常态计算移除此效果；适配器因此另做临时原生检查，返回 `excluded_guard_checks`，给补充的主动技能标记 `benefit_excluded=true`。原 XML、DPS、承伤和回复仍来自未开守护的计算；辅助兼容/触发等级/属性需求与费用独立核对，自动触发费用仍计入资源。关闭整组意味着本方案不使用它，不能同时宣称已验证自动触发；实际受击频率也不能由理论速率证明。
+
+触发的 `trigger_level_limit` 与 `trigger_target_required_level` 对照本机原生上限 stat 和宝石角色等级需求；有触发标签不等于等级匹配。不同级别的受伤时施放具有不同上限，不能把所有宝石一律升满。规则可对照[当前宝石说明](https://poedb.tw/us/Cast_when_Damage_Taken_Support)，具体上限随本机数据读取，不固定为某级或某赛季数字。
 
 `resource_mode` 默认 `sustained`：每秒消耗超出净秒回与吸取时拒绝交付。NetLifeRegen/NetManaRegen/NetEnergyShieldRegen 已扣除正义之火等自身持续伤害；回复不能忽略这项支出。程序检查生命、魔力、能盾和异能魔力（EB）转移支付。仅在 EB、无自身持续伤害、无伤害转由魔力承受时自动计入能盾充能，且检查启动延迟的资源缓冲；其他充能依赖须用 conditional，并在 config_evidence.energy_shield_recharge 说明启动、打断与覆盖。EB 检查保守要求能盾自身足以维持，不将耗尽后魔力混用当已验证。
 

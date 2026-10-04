@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import csv
+from collections import deque
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
@@ -184,12 +185,14 @@ def validate_game_version(game_version, league, data_version=None, version_sourc
 def validate_contract(result):
     """Reject missing evidence instead of silently treating absent fields as zero."""
     required = {"stats": dict, "resource_rules": dict, "gems": list, "equipped": list,
-                "active_skills": list, "damage_sources": list, "classes": list,
+                "active_skills": list, "damage_sources": list, "classes": list, "excluded_guard_checks": list,
                 "nodes": list, "config_keys": list, "warnings": list, "xml": str,
                 "tree_version": str, "latest_tree_version": str, "capabilities": dict}
     for key, kind in required.items():
         if not isinstance(result.get(key), kind):
             raise EngineError(f"本机接口缺少有效 {key}；当前适配不能完成此项计算，请维护者检查接口变化。")
+    if not result["capabilities"].get("excluded_guard_validation"):
+        raise EngineError("本机接口不能识别守护技能；无法核对排除短时收益后的连线与资源，请维护者检查接口变化。")
     for key in ("Life", "Str", "Dex", "Int", "ManaUnreserved"):
         if type(result["stats"].get(key)) not in (int, float):
             raise EngineError("本机计算缺少核心指标：" + key)
@@ -217,6 +220,22 @@ def health(root: Path) -> dict:
             pass  # UI-wrapper metadata does not determine calculation compatibility.
     return {**check(root), "frontend": frontend, "capabilities": result["capabilities"], "health_probe": result["health_probe"],
             "compatibility": "runtime_checked", "limitations": "自检验证接口与基本回读；具体配装仍须 evaluate/export，游戏事实仍须联网查证。"}
+
+
+def ascendancy_paths(name, nodes):
+    selected = {node["id"]: node for node in nodes or [] if node.get("ascendancy_name") == name}
+    starts = [node_id for node_id, node in selected.items() if node.get("is_ascendancy_start")]
+    if not starts: return selected, {}
+    if len(starts) != 1: raise EngineError("升华起点不唯一，需维护者检查本机数据。")
+    paths = {starts[0]: []}
+    queue = deque(starts)
+    while queue:
+        current = queue.popleft()
+        for linked in selected[current].get("linked", []):
+            if linked in selected and linked not in paths:
+                paths[linked] = paths[current] + [linked]
+                queue.append(linked)
+    return selected, paths
 
 
 def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False) -> dict:
@@ -275,6 +294,17 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         for key in ("main_skill_name", "class", "ascendancy"):
             if calculation.get(key) in names:
                 calculation[key + "_cn"] = names[calculation[key]]
+        node_queries = [row for row in calculation.get("catalog_batch", []) if row["kind"] == "nodes"]
+        if catalog == "nodes": node_queries.append({"query": query, "total": calculation["catalog_total"], "entries": calculation["catalog"]})
+        for row in node_queries:
+            if row["total"] != len(row["entries"]): continue  # Truncated graphs cannot certify allocation paths.
+            query_text = row["query"].casefold()
+            for name in {node["ascendancy_name"] for node in row["entries"] if node.get("ascendancy_name")}:
+                selected, paths = ascendancy_paths(name, row["entries"])
+                if not query_text or not any(query_text in value.casefold() for node in selected.values() for value in (name, node.get("ascendancy_internal_name", ""))): continue
+                for node_id, path in paths.items():
+                    selected[node_id].update(ascendancy_path=path, ascendancy_path_cost=len(path),
+                        ascendancy_path_names=[selected[key].get("display_name", selected[key]["name"]) for key in path])
     return result
 
 

@@ -1,7 +1,6 @@
 """Validate a staged route against native gems, sockets and ascendancy paths."""
 from __future__ import annotations
 
-from collections import deque
 import copy
 import html
 import math
@@ -39,22 +38,6 @@ def link_queries(route):
                 if group.get(key): queries.add(",".join(gem["skill_id"] for gem in group[key]))
     bx.require(queries and len(queries) <= 80, "路线需要 1–80 套技能连线。")
     return sorted(queries)
-
-
-def ascendancy_paths(name, nodes):
-    selected = {node["id"]: node for node in nodes or [] if node.get("ascendancy_name") == name}
-    starts = [node_id for node_id, node in selected.items() if node.get("is_ascendancy_start")]
-    if not starts: return selected, {}
-    bx.require(len(starts) == 1, "升华起点不唯一，需维护者检查本机数据。")
-    paths = {starts[0]: []}
-    queue = deque(starts)
-    while queue:
-        current = queue.popleft()
-        for linked in selected[current].get("linked", []):
-            if linked in selected and linked not in paths:
-                paths[linked] = paths[current] + [linked]
-                queue.append(linked)
-    return selected, paths
 
 
 def resolve_gem_levels(stages, gems):
@@ -128,7 +111,7 @@ def validate_group(group, stage, gems, library, compatibility, capacity, warning
 
 
 def validate(route, gems, data_version=None, classes=None, compatibility=None, nodes=None):
-    allowed = {"name", "confirmed", "goal", "league", "game_version", "class_id", "ascendancy", "trade_mode", "budget", "version_status", "version_source", "scope", "gems", "stages", "sources", "risks", "notes", "allow_minions", "allow_mule"}
+    allowed = {"name", "confirmed", "goal", "league", "game_version", "class_id", "ascendancy", "trade_mode", "budget", "version_status", "version_source", "scope", "gems", "stages", "sources", "risks", "notes", "allow_minions", "allow_mule", "shared_trials"}
     bx.require(not (set(route) - allowed), "路线包含未知字段：" + ", ".join(sorted(set(route) - allowed)))
     bx.require(route.get("confirmed") is True, "先完成开荒目标的多轮澄清，再保存 confirmed=true。")
     for key in ("name", "goal", "league", "ascendancy"):
@@ -138,6 +121,7 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
     for key in ("allow_minions", "allow_mule"):
         bx.require(type(route.get(key)) is bool, "路线需要已确认的 " + key + "：是否允许召唤，以及是否愿意另建小号取宝石。未允许时填 false，不为通过检查擅自改为 true。")
     result = copy.deepcopy(route)
+    bx.require(type(route.get("shared_trials", False)) is bool, "shared_trials 应为用户确认的同赛季共享试炼进度，未确认时为 false。")
     if classes is not None:
         selected = next((entry for entry in classes if entry["id"] == route["class_id"]), None)
         bx.require(selected and route["ascendancy"] in {entry["name"] for entry in selected["ascendancies"]}, "升华不属于所选职业或名称无法识别；请从 catalog classes 返回的英文名中选择。")
@@ -188,7 +172,7 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
     if route.get("scope", "maps") != "partial":
         bx.require(len(stages) >= 3 and levels[0] <= 5 and levels[-1] >= 68, "完整开荒路线至少三个阶段，覆盖起步至剧情结束/异界初期；局部路线请使用 scope=partial。")
     resolve_gem_levels(stages, gems)
-    asc_nodes, paths = ascendancy_paths(route["ascendancy"], nodes)
+    asc_nodes, paths = engine.ascendancy_paths(route["ascendancy"], nodes)
     previous_nodes, used_gems = set(), set()
     stage_allowed = {"name", "level", "act", "weapon_setup", "skill_groups", "gear", "passives", "ascendancy_points", "ascendancy_nodes", "ascendancy_respec_reason", "resources", "checks", "transition", "required_items"}
     for stage in stages:
@@ -225,10 +209,11 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
             bx.require(node_id in asc_nodes and asc_nodes[node_id].get("type") == "Notable" and node_id in paths, label + "升华大点不属于所选升华或无可分配路径：" + str(node_id))
             actual.update(paths[node_id])
         bx.require(len(actual) <= points, f"{label}升华含连接点共需 {len(actual)} 点，超过已安排的 {points} 点；不能在八点之外再补其他升华。")
-        bx.require(not (previous_nodes - requested) or isinstance(stage.get("ascendancy_respec_reason"), str) and stage["ascendancy_respec_reason"].strip(), label + "移除上一阶段升华需要说明洗点与切换原因 ascendancy_respec_reason。")
-        previous_nodes = requested
+        bx.require(not (previous_nodes - actual) or isinstance(stage.get("ascendancy_respec_reason"), str) and stage["ascendancy_respec_reason"].strip(), label + "移除上一阶段升华需要说明洗点与切换原因 ascendancy_respec_reason。")
+        previous_nodes = actual
         stage["ascendancy_used"] = len(actual)
-        stage["ascendancy_details"] = [{"name": asc_nodes[node].get("display_name", asc_nodes[node]["name"]), "stats": asc_nodes[node].get("stats", [])} for node in allocated]
+        stage["ascendancy_details"] = [{"id": node, "name": asc_nodes[node].get("display_name", asc_nodes[node]["name"]), "stats": asc_nodes[node].get("stats", []), "required_by_path": node not in requested}
+                                       for node in sorted(actual, key=lambda node: (len(paths[node]), node)) if asc_nodes[node].get("type") == "Notable"]
         if points > len(actual): warnings.append(label + f"有 {points-len(actual)} 点升华尚未安排，按迷宫与后续切换条件核对。")
         items = stage.get("required_items", [])
         bx.require(isinstance(items, list), label + "required_items 应为数组。")
@@ -248,16 +233,22 @@ def render(route, warnings, engine_version, tree_version):
     listing = lambda values: "<ul>" + "".join("<li>" + esc(v) + "</li>" for v in values) + "</ul>"
     class_name = route.get("class_display_name", bx.CLASSES[route["class_id"]])
     ascendancy_name = route.get("ascendancy_display_name", route["ascendancy"])
-    delivery_note = "待核实草案：获取或版本依据仍有缺口，暂不作为可直接照做的攻略。" if route.get("delivery_status") == "route_draft" else "分阶段路线：已完成列出的程序检查，仍需核对机制、国服差异和实际进度。"
+    delivery_note = "待核实草案：获取、试炼或版本依据仍有缺口，暂不作为可直接照做的攻略。" if route.get("delivery_status") == "route_draft" else "分阶段路线：已完成列出的程序检查，仍需核对机制、国服差异和实际进度。"
     sections = []
     for stage in route["stages"]:
         chapter = f"第 {stage['act']} 章" if stage["act"] <= 10 else "异界"
         groups = [f"<p>剧情进度：{chapter}。等级里程碑不代表已经完成本章任务，先满足本段列出的领取和切换条件。</p>"]
+        if stage.get("trial_requirements"):
+            requirements = [f"{lab['name']}：" + "；".join(lab["trial_locations"]) for lab in stage["trial_requirements"]]
+            progress = "用户已确认同赛季共享试炼进度；本角色仍须通关对应迷宫。" if route.get("shared_trials", False) else "先完成这些剧情试炼，再逐次通关迷宫取得本段升华点。"
+            groups.append("<h3>迷宫前置</h3>" + listing(requirements) + "<p>" + esc(progress) + "迷宫区域等级不等于最低进入等级；达到角色等级也不等于能安全通关。</p>")
+            proof = route.get("fact_evidence", {}).get("trials", {})
+            if proof.get("url"): groups.append(f'<p><a href="{esc(proof["url"])}">试炼位置依据</a> · {esc(proof.get("checked_at", ""))}</p>')
         for group in stage["skill_groups"]:
             links = lambda key: " + ".join(f"{gem['name']} {gem['level']}级/{gem.get('quality',0)}品质" for gem in group[key])
             upgrade = f"<p>获得更多连线后可升级：{esc(links('upgrade_gems'))}。未获得时继续使用上面的基础连线。</p>" if group.get("upgrade_gems") else ""
             groups.append(f"<h3>{esc(group['name'])} · {esc(group['slot'])} · {esc(USAGES[group['use']])}</h3><p>基础 {len(group['gems'])} 连：{esc(links('gems'))}</p>{upgrade}")
-        ascendancies = [node["name"] + "：" + "；".join(node["stats"]) for node in stage["ascendancy_details"]]
+        ascendancies = [node["name"] + ("（连接路径必经）" if node.get("required_by_path") else "") + "：" + "；".join(node["stats"]) for node in stage["ascendancy_details"]]
         items = [item["name"] + " · " + ACQUISITIONS[item["acquisition"]] + ("；未获得时：" + item["fallback"] if item.get("fallback") else "") for item in stage.get("required_items", [])]
         attribute_text = lambda key: "、".join(f"{name} {stage['attribute_requirements'][key][attribute]}" for attribute, name in ATTRIBUTES.items())
         attribute_note = "基础宝石所需属性：" + attribute_text("gems") + "。"

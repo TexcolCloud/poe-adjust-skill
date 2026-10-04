@@ -508,6 +508,13 @@ class FactTests(unittest.TestCase):
         self.assertEqual(self.rows[1]["npc"], "Nessa")
         self.assertEqual(facts.quest_rows(self.raw, "Different gem"), [])
 
+    def test_all_classes_quest_rows_are_explicit_and_not_inferred_from_unknown_labels(self):
+        raw = self.raw.replace("Marauder · Templar", "All Classes").replace("Marauder</td>", "All Classes</td>")
+        rows = facts.quest_rows(raw, "Example")
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["class_ids"] == list(range(7)) for row in rows))
+        self.assertEqual(facts.quest_rows(raw.replace("All Classes", "Unknown class group"), "Example"), [])
+
     def test_universal_vendor_requires_both_live_rule_and_eligible_gem(self):
         rows = facts.universal_rows(self.rows, self.general)
         self.assertEqual([row["available_from_act"] for row in rows], [3, 6])
@@ -580,6 +587,66 @@ class FactTests(unittest.TestCase):
                 record["html"] = "altered"
                 poe.write_json(path, record)
                 with self.assertRaises(TimeoutError): facts.fetch(url, temp, "old")
+
+    def test_version_research_returns_short_body_evidence_without_native_calculation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "version.json"
+            url = engine.VERSION_EVIDENCE["3.29"]["url"]
+            record = {"html": '<div id="newsDetail"><h2>S30 patch</h2><p>在3.29.0版本中，测试挑战赛季开放。</p><p>' + "other updates " * 20000 + '</p></div>',
+                      "url": url, "checked_at": "2026-10-04", "sha256": "fixture"}
+            info = {"data_version": "3.29", "engine_fingerprint": "fixture", "version_evidence": {"url": url}}
+            with patch.object(engine, "resolve_root", return_value=Path(temp)), patch.object(engine, "check", return_value=info), \
+                    patch.object(engine, "calculate", side_effect=AssertionError("version research needs no calculation")), patch.object(facts, "fetch", return_value=record):
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    code = poe.main(["research", "--version", "--league", "国服S30", "--out", str(output)])
+                self.assertEqual(code, 0)
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(result["version_evidence"]["status"], "source_observed")
+                self.assertIn("3.29.0", result["version_evidence"]["excerpt"])
+                self.assertLess(len(stdout.getvalue()), 2400)
+                self.assertNotIn("other updates", output.read_text(encoding="utf-8"))
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(poe.main(["research", "--version", "--league", "S29", "--out", str(output)]), 2)
+
+    def test_new_season_research_accepts_new_source_and_preserves_missing_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "version.json"
+            info = {"data_version": "3.30", "engine_fingerprint": "future", "version_evidence": None}
+            command = ["research", "--version", "--league", "S31", "--out", str(output)]
+            with patch.object(engine, "resolve_root", return_value=Path(temp)), patch.object(engine, "check", return_value=info):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(poe.main(command), 0)
+                self.assertEqual(poe.read_json(output)["version_evidence"]["status"], "unverified")
+                record = {"html": '<div id="newsDetail"><h2>S31 announcement</h2><p>在3.30.0版本中，新的挑战赛季开放。</p></div>',
+                          "url": "https://poe.qq.com/new", "checked_at": "2026-10-04", "sha256": "fixture"}
+                with patch.object(facts, "fetch", return_value=record), redirect_stdout(io.StringIO()):
+                    self.assertEqual(poe.main(command + ["--source", record["url"]]), 0)
+                self.assertEqual(poe.read_json(output)["version_evidence"]["status"], "source_observed")
+
+    def test_trial_progress_uses_current_source_chapters_not_area_levels(self):
+        raw = '<a class="league_bar_icon" title="Current v3.29"></a><table><tr><th>Name</th><th>Area</th><th>Level</th><th>Enchantment</th></tr>'
+        for name, act, area in [("The Labyrinth", 3, 33), ("The Cruel Labyrinth", 7, 55), ("The Merciless Labyrinth", 10, 68)]:
+            raw += f'<tr><td>{name}</td><td>Act {act} Trial Area</td><td>{area}</td><td>craft</td></tr>'
+        raw += '</table><p>each reward you with two Ascendancy points</p>'
+        record = {"html": raw, "url": "https://poedb.tw/us/The_Lords_Labyrinth", "checked_at": "2026-10-04", "sha256": "fixture"}
+        with patch.object(facts, "fetch", return_value=record):
+            proof = facts.trial_facts(".unused", "fixture", "3.29")
+            self.assertEqual(proof["status"], "source_checked", proof)
+            route = {"stages": [{"level": 42, "act": 6, "ascendancy_points": 4}]}
+            with self.assertRaisesRegex(ValueError, "第 7 章"):
+                facts.reconcile_trial_progress(route, proof)
+            route["stages"][0]["act"] = 7
+            self.assertEqual(facts.reconcile_trial_progress(route, proof), ([], False))
+            self.assertEqual(route["stages"][0]["trial_requirements"][-1]["area_level"], 55)
+            record["html"] = raw.replace("Act 7 Trial Area", "Act 8 Trial Area")
+            changed = facts.trial_facts(".unused", "fixture", "3.29")
+            with self.assertRaisesRegex(ValueError, "第 8 章"):
+                facts.reconcile_trial_progress(route, changed)
+            route["shared_trials"] = True
+            self.assertEqual(facts.reconcile_trial_progress(route, changed), ([], False))
+            self.assertEqual(facts.trial_facts(".unused", "fixture", "3.30")["status"], "unverified")
+            self.assertTrue(facts.reconcile_trial_progress(route, {"status": "unverified"})[1])
 
 
 class RealEngineTests(unittest.TestCase):
@@ -824,6 +891,74 @@ class RealEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "需要角色 12 级"):
             routes.validate(route, gems)
 
+    def test_27_display_ascendancies_have_connected_native_nodes(self):
+        classes = engine.calculate(self.pob)["classes"]
+        names = [asc["name"] for cls in classes for asc in cls["ascendancies"]]
+        result = engine.calculate(self.pob, queries=[{"kind": "nodes", "query": name, "limit": 100} for name in names]
+                                  + [{"kind": "nodes", "query": "Deadeye", "limit": 1}])
+        for name, query in zip(names, result["catalog_batch"]):
+            with self.subTest(ascendancy=name):
+                selected, paths = engine.ascendancy_paths(name, query["entries"])
+                notables = [node for node in selected.values() if node["type"] == "Notable"]
+                self.assertTrue(paths, name)
+                self.assertTrue(notables, name)
+                connected = [node for node in notables if node["linked"]]
+                self.assertTrue(connected, name)
+                self.assertTrue(all(node["id"] in paths for node in connected), name)
+                self.assertTrue(all(node["no_tree_connection"] for node in notables if not node["linked"]), name)
+                self.assertTrue(all(node["ascendancy_path_cost"] == len(paths[node["id"]]) for node in connected), name)
+        truncated = result["catalog_batch"][-1]
+        self.assertGreater(truncated["total"], len(truncated["entries"]))
+        self.assertTrue(all("ascendancy_path" not in node for node in truncated["entries"]))
+
+    def test_28_same_version_engine_change_refreshes_baseline_and_blocks_old_export(self):
+        self.evaluate_plan(self.refine, "fingerprint-before")
+        path = self.run_dir / "baseline.json"
+        baseline = poe.read_json(path)
+        baseline["engine_fingerprint"] = "different-content-same-version"
+        baseline["stats"]["CombinedDPS"] = -12345
+        poe.write_json(path, baseline)
+        result = self.evaluate_plan(self.refine, "fingerprint-after")
+        self.assertEqual(result["status"], "validated", result["errors"])
+        refreshed = poe.read_json(path)
+        current = engine.check(self.pob)
+        self.assertEqual(refreshed["engine_fingerprint"], current["engine_fingerprint"])
+        self.assertGreater(refreshed["stats"]["CombinedDPS"], 0)
+        current["engine_fingerprint"] = "same-version-but-updated-files"
+        with patch.object(engine, "check", return_value=current):
+            with self.assertRaisesRegex(ValueError, "版本号相同"):
+                poe.read_candidate(args(run=str(self.run_dir), name="fingerprint-after"))
+
+    def test_29_excluded_guard_keeps_trigger_validation_and_resource_costs(self):
+        plan = copy.deepcopy(self.rebuild)
+        plan["operations"]["replace_skills"].append({"slot": "Helmet", "gems": [
+            {"skill_id": "SupportCastWhenDamageTaken", "level": 1},
+            {"skill_id": "ImmortalCall", "level": 1, "enable_global1": False}]})
+        outcome = self.evaluate_plan(plan, "guard-off")
+        self.assertFalse(any("未辅助任何启用技能" in error for error in outcome["errors"]), outcome["errors"])
+        result = poe.read_json(self.run_dir / "candidates/guard-off/evaluation.json")["result"]
+        self.assertFalse(result["stats"]["GuardSkillActive"])
+        guard = next(skill for skill in result["active_skills"] if skill["id"] == "ImmortalCall")
+        self.assertTrue(guard["benefit_excluded"])
+        self.assertTrue(guard["trigger"])
+        self.assertLessEqual(guard["trigger_target_required_level"], guard["trigger_level_limit"])
+        mana = next(row for row in outcome["readiness"]["resources"] if row["resource"] == "魔力")
+        self.assertGreater(mana["automatic_cost_per_second"], 0)
+        saved_xml = (self.run_dir / "candidates/guard-off/candidate.xml").read_text(encoding="utf-8")
+        saved = bx.parse(saved_xml)
+        guard_gem = next(g for group in bx.groups(saved) for g in group.findall("Gem") if g.get("skillId") == "ImmortalCall")
+        self.assertEqual(guard_gem.get("enableGlobal1"), "false")
+        restored = engine.calculate(self.pob, saved_xml)
+        self.assertFalse(restored["stats"]["GuardSkillActive"])
+        self.assertEqual(restored["stats"]["CombinedDPS"], result["stats"]["CombinedDPS"])
+        self.assertEqual(restored["excluded_guard_checks"], result["excluded_guard_checks"])
+        restored["capabilities"]["excluded_guard_validation"] = False
+        with self.assertRaisesRegex(ValueError, "不能识别守护技能"):
+            engine.validate_contract(restored)
+        plan["operations"]["replace_skills"][-1]["gems"][1]["level"] = 20
+        incompatible = self.evaluate_plan(plan, "guard-trigger-level-invalid")
+        self.assertTrue(any("触发辅助等级上限" in error for error in incompatible["errors"]), incompatible["errors"])
+
     def test_13_native_support_compatibility_and_route_class_data(self):
         query = "ShieldCrush,SupportMeleePhysicalDamage,SupportGreaterMultipleProjectiles"
         result = engine.calculate(self.pob, queries=[{"kind": "links", "query": query, "limit": 1},
@@ -935,7 +1070,8 @@ class RealEngineTests(unittest.TestCase):
 
     def test_19_native_route_counts_small_ascendancy_points_and_requires_respec(self):
         result = engine.calculate(self.pob, queries=[{"kind": "nodes", "query": "Inquisitor", "limit": 100},
-                                                   {"kind": "gems", "query": "id:ShieldCrush", "limit": 1}])
+                                                   {"kind": "gems", "query": "id:ShieldCrush", "limit": 1},
+                                                   {"kind": "nodes", "query": "Deadeye", "limit": 100}])
         nodes = result["catalog_batch"][0]["entries"]
         gems = {entry["skill_id"]: entry for entry in result["catalog_batch"][1]["entries"]}
         route = route_fixture()
@@ -954,6 +1090,24 @@ class RealEngineTests(unittest.TestCase):
             routes.validate(route, gems, nodes=nodes)
         stage["ascendancy_respec_reason"] = "先准备后悔石，退还忏悔之兆与连接小点，再分配廉简之途。"
         routes.validate(route, gems, nodes=nodes)
+
+        # An implicit prerequisite remains allocated when its child is selected.
+        nodes = result["catalog_batch"][2]["entries"]
+        route = route_fixture()
+        route["class_id"], route["ascendancy"] = 2, "Deadeye"
+        route["stages"][1].update(level=33, act=4, ascendancy_points=2, ascendancy_nodes=[2872])
+        route["stages"][-1].update(ascendancy_points=6, ascendancy_nodes=[24848, 26067])
+        checked, _ = routes.validate(route, gems, "3.29", result["classes"], nodes=nodes)
+        final = checked["stages"][-1]
+        self.assertEqual(final["ascendancy_used"], 6)
+        details = {node["id"]: node for node in final["ascendancy_details"]}
+        self.assertEqual(set(details), {2872, 24848, 26067})
+        self.assertTrue(details[2872]["required_by_path"])
+        self.assertFalse(details[26067]["required_by_path"])
+        self.assertIn("连接路径必经", routes.render(checked, [], result["engine_version"], result["tree_version"]))
+        route["stages"][-1]["ascendancy_nodes"] = [24848]
+        with self.assertRaisesRegex(ValueError, "洗点与切换原因"):
+            routes.validate(route, gems, nodes=nodes)
 
     def test_20_native_general_cry_context_and_automatic_costs(self):
         plan = copy.deepcopy(self.rebuild)

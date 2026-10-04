@@ -37,7 +37,7 @@ local function scalarTable(tbl)
   end
   return values
 end
-local result = {stats = scalarTable(output), minion = scalarTable(output.Minion), warnings = {}, gems = {}, equipped = {}, nodes = {}, errors = {}}
+local result = {stats = scalarTable(output), minion = scalarTable(output.Minion), warnings = {}, gems = {}, equipped = {}, nodes = {}, errors = {}, excluded_guard_checks = {}}
 if output.Minion then
   result.stats.MinionCombinedDPS = output.Minion.CombinedDPS
   result.stats.MinionHitChance = output.Minion.HitChance
@@ -53,6 +53,7 @@ result.capabilities = {
   matching_socket_quality = type(data.misc.MatchingSocketQualityBonus) == "number" and type(build.skillsTab.UpdateSocketGroups) == "function",
   native_resource_costs = type(GlobalCache.cachedData) == "table" and type(cacheSkillUUID) == "function",
   native_gem_requirements = type(data.gems) == "table",
+  excluded_guard_validation = SkillType.Guard ~= nil,
 }
 result.classes = {}
 for id, class in pairs(build.spec.tree.classes) do
@@ -73,6 +74,15 @@ result.damage_sources, result.active_skills = {}, {}
 for _, row in ipairs(output.SkillDPS or {}) do table.insert(result.damage_sources, scalarTable(row)) end
 local mainEnv = build.calcsTab.mainEnv
 local costKeys = {"ManaCost", "LifeCost", "ESCost", "ManaPerSecondCost", "LifePerSecondCost", "ESPerSecondCost", "Cooldown", "Speed", "SkillTriggerRate"}
+local function supportLevelLimit(effect)
+  if not effect or not effect.grantedEffect then return nil end
+  for index, stat in ipairs(effect.grantedEffect.stats or {}) do
+    if stat == "local_support_gem_max_skill_level_requirement_to_support" then
+      local values = effect.grantedEffect.levels[effect.level]
+      return assert(values and values[index], "Native trigger support level limit is unavailable")
+    end
+  end
+end
 for _, skill in ipairs(mainEnv.player.activeSkillList) do
   local cached = GlobalCache.cachedData[mainEnv.mode][cacheSkillUUID(skill, mainEnv)]
   local computed = cached and cached.Env.player.mainSkill or skill
@@ -80,10 +90,14 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   for _, key in ipairs(costKeys) do costs[key] = cached and cached.Env.player.output[key] or nil end
   local groupIndex
   for index, group in ipairs(build.skillsTab.socketGroupList) do if skill.socketGroup == group then groupIndex = index; break end end
+  local limit = supportLevelLimit(computed.triggeredBy)
+  local instance = skill.activeEffect.srcInstance
+  local requiredLevel = limit and instance and instance.gemData and assert(instance.reqLevel, "Native trigger target requirement is unavailable")
   table.insert(result.active_skills, {id = skill.activeEffect.grantedEffect.id, name = skill.activeEffect.grantedEffect.name,
     group = groupIndex, slot = skill.socketGroup and skill.socketGroup.slot,
     is_main = skill == mainEnv.player.mainSkill, disabled = computed.skillFlags.disable or false,
     minion = computed.skillFlags.minion or false, trigger = computed.infoTrigger,
+    trigger_level_limit = limit, trigger_target_required_level = requiredLevel,
     info = computed.infoMessage, info_secondary = computed.infoMessage2,
     generals_cry = computed.skillData.triggeredByGeneralsCry or false,
     costs = scalarTable(costs)})
@@ -100,6 +114,13 @@ table.sort(result.nodes)
 for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
   for gemIndex, gem in ipairs(group.gemList) do
     local grantedEffect = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
+    if (group.enabled or groupIndex == result.main_group) and group.slotEnabled and gem.enabled then
+      for effectIndex, effect in ipairs(gem.gemData and gem.gemData.grantedEffectList or {grantedEffect}) do
+        if effect.skillTypes and effect.skillTypes[SkillType.Guard] and effect.hasGlobalEffect and not gem["enableGlobal"..effectIndex] then
+          table.insert(result.excluded_guard_checks, {group = groupIndex, index = gemIndex, effect = effectIndex, skill_id = effect.id})
+        end
+      end
+    end
     local supported = {}
     for activeGem, _ in pairs(gem.supportEffect and gem.supportEffect.isSupporting or {}) do
       table.insert(supported, activeGem.skillId or activeGem.nameSpec)
@@ -260,13 +281,17 @@ local function queryCatalog(kind, query, limit)
     end
   elseif kind == "nodes" then
     for id, node in pairs(build.spec.nodes) do
-      if matches(node.name) or matches(node.ascendancyName) or matches(table.concat(node.sd or {}, " ")) or tostring(id) == q then
+      local ascendancy = build.spec.tree.ascendNameMap[node.ascendancyName]
+      local ascendancyName = ascendancy and ascendancy.ascendClass.name or node.ascendancyName or ""
+      if matches(node.name) or matches(ascendancyName) or matches(node.ascendancyName) or matches(table.concat(node.sd or {}, " ")) or tostring(id) == q then
         local links, path = {}, {}
         for _, adjacent in pairs(node.linked or {}) do table.insert(links, adjacent.id) end
         for _, pathNode in ipairs(node.path or {}) do table.insert(path, pathNode.id) end
         table.sort(links)
         table.insert(entries, {id = id, name = node.name, type = node.type, stats = node.sd, linked = links, mastery_effects = node.masteryEffects,
-          ascendancy_name = node.ascendancyName or "", is_ascendancy_start = node.isAscendancyStart or false,
+          ascendancy_name = ascendancyName, ascendancy_internal_name = node.ascendancyName or "",
+          no_tree_connection = ascendancyName ~= "" and not node.isAscendancyStart and #links == 0,
+          is_ascendancy_start = node.isAscendancyStart or false,
           allocated = node.alloc or false, reachable = node.path ~= nil, points_to_allocate = node.pathDist, path = path})
       end
     end
@@ -304,6 +329,43 @@ if request.queries then
   end
 end
 result.xml = assert(build:SaveDB("POE Adjust"))
+-- Global-effect toggles remove guards from PoB's active-skill list entirely.
+-- Inspect their real links and costs in a separate in-memory calculation while
+-- preserving the original XML, permanent output, and recovery values above.
+if not request.guard_check and #result.excluded_guard_checks > 0 then
+  local excluded = {}
+  for _, ref in ipairs(result.excluded_guard_checks) do
+    build.skillsTab.socketGroupList[ref.group].gemList[ref.index]["enableGlobal"..ref.effect] = true
+    excluded[ref.group..":"..ref.skill_id] = true
+  end
+  local audit = calculateRequest({xml = assert(build:SaveDB("POE Guard Check")), guard_check = true})
+  local auditGems = {}
+  for _, gem in ipairs(audit.gems) do auditGems[gem.group..":"..gem.index] = gem end
+  for _, ref in ipairs(result.excluded_guard_checks) do
+    ref.status = "native_checked"
+    local checkedGem = assert(auditGems[ref.group..":"..ref.index])
+    for _, gem in ipairs(result.gems) do
+      if gem.group == ref.group and gem.index == ref.index then
+        for _, key in ipairs({"req_level", "req_str", "req_dex", "req_int"}) do gem[key] = checkedGem[key] end
+      end
+    end
+  end
+  for _, gem in ipairs(result.gems) do
+    if gem.support and not gem.support_applied then
+      local checkedGem = assert(auditGems[gem.group..":"..gem.index])
+      gem.supports_excluded_guards = {}
+      for _, skillId in ipairs(checkedGem.supports_skills) do
+        if excluded[gem.group..":"..skillId] then table.insert(gem.supports_excluded_guards, skillId) end
+      end
+    end
+  end
+  for _, skill in ipairs(audit.active_skills) do
+    if excluded[skill.group..":"..skill.id] then
+      skill.benefit_excluded, skill.is_main = true, false
+      table.insert(result.active_skills, skill)
+    end
+  end
+end
 return result
 end
 local response

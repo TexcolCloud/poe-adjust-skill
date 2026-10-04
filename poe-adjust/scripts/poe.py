@@ -19,7 +19,7 @@ import engine
 import facts
 import routes
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -254,10 +254,14 @@ def mechanical_issues(document, result, intent):
     requested_nodes = {int(n) for n in bx.active_spec(document).get("nodes", "").split(",") if n}
     missing = requested_nodes - set(result["nodes"])
     if missing: errors.append("引擎未保留部分天赋节点：" + ",".join(map(str, sorted(missing))))
+    for skill in result.get("active_skills", []):
+        if skill.get("trigger_target_required_level") and skill.get("trigger_level_limit") is not None:
+            if skill["trigger_target_required_level"] > skill["trigger_level_limit"]:
+                errors.append(f"第 {skill['group']} 组 {skill.get('display_name', skill['name'])} 的角色等级需求 {skill['trigger_target_required_level']:g} 超过触发辅助等级上限 {skill['trigger_level_limit']:g}；降低被触发宝石等级或提高辅助等级，并重新核对触发条件。")
     for gem in active_gems(result):
         if not gem.get("recognised"):
             errors.append(f"未知宝石：第 {gem['group']} 组第 {gem['index']} 个。")
-        if gem.get("support") and not gem.get("support_applied"):
+        if gem.get("support") and not (gem.get("support_applied") or gem.get("supports_excluded_guards")):
             errors.append(f"第 {gem['group']} 组的 {gem.get('display_name',gem.get('name'))} 未辅助任何启用技能；请核对适用类型、触发等级、重复辅助或将备用宝石移出当前组。")
         if not gem.get("source") and gem.get("max_base_level"):
             if gem.get("level", 1) > gem["max_base_level"] or gem.get("quality", 0) > 23:
@@ -327,6 +331,8 @@ def readiness(result, intent, plan):
     eb = result.get("resource_rules", {}).get("energy_shield_protects_mana", False)
     active = [skill for skill in result.get("active_skills", []) if not skill.get("disabled")]
     automatic = [skill for skill in active if not skill.get("is_main") and skill.get("trigger") and skill.get("costs", {}).get("SkillTriggerRate", 0) > 0]
+    if result.get("excluded_guard_checks"):
+        warnings.append("守护收益未计入常态面板；其连线、等级与单次费用已另作原生检查，自动触发费用按引擎速率计入。实际受击频率与覆盖仍需核对，手动守护须留出单次资源。")
     mirage_main = any(skill.get("is_main") and skill.get("generals_cry") for skill in active)
     multiplied = [gem for gem in active_gems(result) if not gem.get("support") and max(gem.get("count", 1), gem.get("group_count", 1)) > 1]
     if multiplied:
@@ -742,7 +748,7 @@ def report_html(state, outcome):
         if skill.get("disabled"): continue
         costs = skill.get("costs", {})
         active_skill_rows.append("<tr>" + "".join("<td>" + esc(value) + "</td>" for value in (
-            skill.get("display_name", skill["name"]), "主技能" if skill.get("is_main") else "其他启用技能",
+            skill.get("display_name", skill["name"]), "守护收益未计入；保留使用检查" if skill.get("benefit_excluded") else "主技能" if skill.get("is_main") else "其他启用技能",
             skill.get("trigger") or skill.get("info") or "按操作说明使用",
             " / ".join(f"{costs[key]:g}" if key in costs else "—" for key in ("ManaCost", "LifeCost", "ESCost")))) + "</tr>")
     skill_table = '<h3>主动技能与单次资源</h3><p>单次消耗依次为魔力 / 生命 / 直接能盾；EB 会改变实际支付池。表格不把手动技能全部假定为同时满速使用。</p><table><tr><th>技能</th><th>作用</th><th>引擎触发/使用信息</th><th>单次消耗</th></tr>' + ''.join(active_skill_rows) + '</table>'
@@ -900,6 +906,40 @@ def catalog(args):
     return {"engine_version": result["engine_version"], "tree_version": result["tree_version"], "data_version": result["data_version"], "total": result.get("catalog_total"), "entries": result.get("catalog", [])}
 
 
+def research(args):
+    output = Path(args.out).resolve()
+    bx.require(output.suffix.lower() == ".json", "research --out 请使用工作区 JSON 文件。")
+    root = engine.resolve_root(args.pob)
+    if args.trials:
+        bx.require(not args.league and not args.source, "research --trials 不使用 --league / --source；先完成版本核对。")
+        info = engine.check(root)
+        evidence = facts.trial_facts(output.parent / ".poe-evidence", info["engine_fingerprint"], engine.require_data_version(info))
+        record = {"trial_evidence": evidence, "engine_fingerprint": info["engine_fingerprint"]}
+        write_json(output, record)
+        return {"file": str(output), **record, "next": "按实际剧情试炼进度安排升华；area_level 是区域等级，不是最低进入等级。仍须核对第四次迷宫、祭品和安全通关条件。"}
+    if args.version:
+        bx.require(args.league and args.league.strip(), "research --version 需要 --league，使用本次用户确认的赛季或永久区。")
+        info = engine.check(root)
+        data_version = engine.require_data_version(info)
+        source = args.source or (info.get("version_evidence") or {}).get("url", "")
+        engine.validate_game_version(data_version, args.league, data_version, source)
+        evidence = facts.version_fact(source, data_version, args.league, output.parent / ".poe-evidence", info["engine_fingerprint"])
+        record = {"league": args.league, "game_version": data_version, "engine_fingerprint": info["engine_fingerprint"], "version_evidence": evidence}
+        write_json(output, record)
+        return {"file": str(output), **record, "next": "阅读正文摘录核对目标赛季；unverified 时联网寻找官方公告，再加 --source URL 重试。不要读取工具内部输出目录或把缺失依据改成 verified。"}
+    bx.require(not args.league and not args.source, "--league / --source 仅用于 research --version。")
+    ids = args.gems.split(",")
+    bx.require(1 <= len(ids) <= 60 and len(set(ids)) == len(ids) and all(re.fullmatch(r"[A-Za-z0-9_]+", value) for value in ids), "--gems 需要 1–60 个不同的本机 skill_id。")
+    calculation = engine.calculate(root, queries=[{"kind": "gems", "query": "id:" + value, "limit": 2} for value in ids])
+    gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] for entry in query["entries"] if entry["skill_id"] in ids}
+    bx.require(set(gems) == set(ids), "部分宝石 ID 未识别，请先 catalog gems 查询。")
+    evidence = facts.gem_facts(gems, output.parent / ".poe-evidence", calculation["engine_fingerprint"], engine.require_data_version(calculation))
+    write_json(output, {"gems": evidence, "engine_fingerprint": calculation["engine_fingerprint"], "data_version": calculation["data_version"]})
+    return {"file": str(output), "source_checked": [key for key, value in evidence.items() if value["status"] == "source_checked"],
+            "unverified": [key for key, value in evidence.items() if value["status"] != "source_checked"],
+            "next": "读取 gems[skill_id].choices，选实际可达的章节/任务/NPC/职业。后续通用商店来自单独规则交叉核对；未核实条目需另查，不能自填 verified。"}
+
+
 def parser():
     p = argparse.ArgumentParser(description="POE 配装助手：本机 PoB 实算、候选校验和 XML 导出。")
     sub = p.add_subparsers(dest="command", required=True)
@@ -930,7 +970,12 @@ def parser():
             cmd.add_argument("--out", help="将完整查询保存到工作区 JSON，终端只返回索引")
             cmd.add_argument("--limit", type=int, default=20)
         if name == "research":
-            cmd.add_argument("--gems", required=True, help="逗号分隔的本机宝石 skill_id")
+            subject = cmd.add_mutually_exclusive_group(required=True)
+            subject.add_argument("--gems", help="逗号分隔的本机宝石 skill_id")
+            subject.add_argument("--version", action="store_true", help="读取官方公告正文并返回简短版本依据")
+            subject.add_argument("--trials", action="store_true", help="读取当前版本前三次迷宫的剧情试炼位置")
+            cmd.add_argument("--league", help="用户确认的目标赛季或永久区，用于 --version")
+            cmd.add_argument("--source", help="公开官方公告 URL；本机版本没有已有来源时填写")
             cmd.add_argument("--out", required=True, help="工作区事实记录 JSON")
         if name == "route":
             cmd.add_argument("--invoked", action="store_true")
@@ -968,19 +1013,7 @@ def main(argv=None):
         elif args.command == "evaluate": result = evaluate(args)
         elif args.command == "probe": result = probe(args)
         elif args.command == "export": result = export(args)
-        elif args.command == "research":
-            ids = args.gems.split(",")
-            bx.require(1 <= len(ids) <= 60 and len(set(ids)) == len(ids) and all(re.fullmatch(r"[A-Za-z0-9_]+", value) for value in ids), "--gems 需要 1–60 个不同的本机 skill_id。")
-            output = Path(args.out).resolve()
-            bx.require(output.suffix.lower() == ".json", "research --out 请使用工作区 JSON 文件。")
-            calculation = engine.calculate(engine.resolve_root(args.pob), queries=[{"kind": "gems", "query": "id:" + value, "limit": 2} for value in ids])
-            gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] for entry in query["entries"] if entry["skill_id"] in ids}
-            bx.require(set(gems) == set(ids), "部分宝石 ID 未识别，请先 catalog gems 查询。")
-            evidence = facts.gem_facts(gems, output.parent / ".poe-evidence", calculation["engine_fingerprint"], engine.require_data_version(calculation))
-            write_json(output, {"gems": evidence, "engine_fingerprint": calculation["engine_fingerprint"], "data_version": calculation["data_version"]})
-            result = {"file": str(output), "source_checked": [key for key, value in evidence.items() if value["status"] == "source_checked"],
-                      "unverified": [key for key, value in evidence.items() if value["status"] != "source_checked"],
-                      "next": "读取 gems[skill_id].choices，选实际可达的章节/任务/NPC/职业。后续通用商店来自单独规则交叉核对；未核实条目需另查，不能自填 verified。"}
+        elif args.command == "research": result = research(args)
         elif args.command == "catalog":
             bx.require(1 <= args.limit <= 100, "limit 应在 1–100。")
             if args.out:
@@ -1014,19 +1047,22 @@ def main(argv=None):
             evidence = facts.gem_facts(gems, evidence_folder, calculation["engine_fingerprint"], engine.require_data_version(calculation))
             fact_warnings, unresolved = facts.reconcile_acquisitions(checked, evidence)
             warnings += fact_warnings
+            trial_proof = facts.trial_facts(evidence_folder, calculation["engine_fingerprint"], checked["game_version"]) if any(stage["ascendancy_points"] for stage in checked["stages"]) else {"status": "not_required"}
+            trial_warnings, trials_unverified = facts.reconcile_trial_progress(checked, trial_proof)
+            warnings += trial_warnings
             version_source = next((source for source in checked["sources"] if source["id"] == checked.get("version_source")), {})
             version_proof = facts.version_fact(version_source.get("url", ""), checked["game_version"], checked["league"], evidence_folder, calculation["engine_fingerprint"])
-            checked["fact_evidence"] = {"gems": evidence, "version": version_proof}
+            checked["fact_evidence"] = {"gems": evidence, "version": version_proof, "trials": trial_proof}
             if version_proof["status"] != "source_observed": warnings.append("赛季正文依据未完成程序核对：" + version_proof.get("reason", "未核实"))
-            facts_ready = not unresolved and version_proof["status"] == "source_observed"
+            facts_ready = not unresolved and not trials_unverified and version_proof["status"] == "source_observed"
             checked["delivery_status"] = "route_checked" if facts_ready else "route_draft"
             evidence_file = output.with_suffix(".evidence.json")
             write_json(evidence_file, {"engine_fingerprint": calculation["engine_fingerprint"], "checked_route": checked, "warnings": warnings})
             write_text(output, routes.render(checked, warnings, calculation["engine_version"], calculation["tree_version"]))
-            result = {"status": checked["delivery_status"], "file": str(output), "evidence_file": str(evidence_file), "unverified_gems": unresolved,
+            result = {"status": checked["delivery_status"], "file": str(output), "evidence_file": str(evidence_file), "unverified_gems": unresolved, "trial_evidence_status": trial_proof["status"],
                       "stages": len(checked["stages"]), "gem_types_checked": len(gems), "engine_version": calculation["engine_version"], "warnings": warnings, "not_calculated": "路线等级与依赖校验；未实算完整阶段装备 DPS/生存。需要具体阶段 XML 时，继续建立完整配装候选并 evaluate/export。"}
             result["user_summary"] = (f"已生成《{checked['name']}》，共 {len(checked['stages'])} 个阶段，详见 {output.name}。\n\n"
-                                      + ("宝石获取已逐项对应实际抓取的任务表/通用商店依据，已找到所填版本的官方正文。" if facts_ready else "这是待核实草案：部分宝石获取或官方版本正文未核实，暂不作为可直接照做的攻略。") + "\n\n"
+                                      + ("宝石获取已逐项对应实际抓取的任务表/通用商店依据，已找到所填版本的官方正文。" if facts_ready else "这是待核实草案：宝石获取、迷宫试炼或官方版本正文存在依据缺口，暂不作为可直接照做的攻略。") + "\n\n"
                                       "本机已检查宝石等级、主辅兼容、物理孔位、升华连接，以及章节、职业和偏好约束。来源符合不等于国服差异与全部机制正确，仍需核对目标赛季。\n\n"
                                       "尚未使用完整阶段装备实算伤害、生存和续航。按每段的领取进度与切换条件推进；实际角色形成后，可提供新的 XML 继续计算。")
             result["reply_policy"] = "交付 HTML 后原样使用 user_summary；不要在最终聊天重复编写一套未经实算的伤害、抗性或续航承诺。"
