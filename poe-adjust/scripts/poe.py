@@ -18,9 +18,9 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 METRICS = {
-    "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
+    "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
     "LifeRegenRecovery": "生命秒回", "ManaRegenRecovery": "魔力秒回",
     "EnergyShieldRegenRecovery": "能量护盾秒回", "EnergyShieldRecharge": "能量护盾充能速率（需启动充能）",
@@ -788,9 +788,11 @@ def export(args):
     state["updated_at"] = now()
     write_json(run / "run.json", state)
     stats = verification["stats"]
-    damage_keys = ("MinionCombinedDPS", "FullDPS") if any(skill.get("is_main") and skill.get("minion") for skill in verification.get("active_skills", [])) else ("CombinedDPS",)
+    minion_main = any(skill.get("is_main") and skill.get("minion") for skill in verification.get("active_skills", []))
+    damage_keys = ("MinionCombinedDPS", "FullDPS") if minion_main else ("CombinedDPS",)
+    hit_key = "MinionHitChance" if minion_main else "HitChance"
     user_summary = [f"配装 XML 已通过本机 PoECharm 计算及保存回读。目标：{state['intent']['league']} / {state['intent']['game_version']}。",
-                    "当前计算场景下：" + "；".join(f"{METRICS[key]} {stats[key]:,.1f}" for key in damage_keys + ("Life", "EnergyShield", "HitChance", "ChaosResist") if key in stats) + "。"]
+                    "当前计算场景下：" + "；".join(f"{METRICS[key]} {stats[key]:,.1f}" for key in damage_keys + ("Life", "EnergyShield", hit_key, "ChaosResist") if key in stats) + "。"]
     if outcome.get("comparison_notes"):
         user_summary.append("前后计算存在条件或有效性差异，不提供同条件提升百分比；原面板仅供诊断，比较限制见说明。")
     user_summary.append("DPS 已包含引擎的命中计算。以上是当前主技能口径，其他技能的贡献见说明中实际计入的 Full DPS 分项；实战操作与机制覆盖仍需核实。")

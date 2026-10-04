@@ -12,6 +12,7 @@ import engine
 ACQUISITIONS = {"quest": "任务奖励", "vendor": "任务解锁商店", "drop": "随机掉落", "trade": "玩家交易", "lab": "迷宫获取", "owned": "确认已有"}
 WEAPONS = {"one_hand_shield": (3, 3), "dual_wield": (3, 3), "two_hand": (6, 0), "bow": (6, 0), "unarmed_shield": (0, 3)}
 USAGES = {"main": "主要输出", "movement": "位移", "utility": "按需辅助操作", "aura": "常驻开启"}
+ATTRIBUTES = {"strength": "力量", "dexterity": "敏捷", "intelligence": "智慧"}
 
 
 def strings(value, label, *, required=True):
@@ -81,9 +82,11 @@ def validate_group(group, stage, gems, library, compatibility, capacity, warning
             bx.require(active if index == 0 else not active, label + "每组第一颗为主动技能，其余必须为辅助；第二主动技能另建组并安排位置。")
             if index == 0 and group["use"] == "aura":
                 bx.require(entry.get("tags", {}).get("aura") or entry.get("tags", {}).get("herald"), label + "常驻开启须为本机 aura/herald 宝石；其他技能按实际手动用途安排。")
-            requirements = {row["gem_level"]: row["character_level"] for row in entry["level_requirements"]}
+            requirements = {row["gem_level"]: row for row in entry["level_requirements"]}
             bx.require(type(skill.get("level")) is int and skill["level"] in requirements, label + "宝石等级不在普通可练等级中：" + entry["name"])
-            bx.require(requirements[skill["level"]] <= stage["level"], f"{label}不能使用 {entry['name']} {skill['level']} 级；需要角色 {requirements[skill['level']]} 级。")
+            requirement = requirements[skill["level"]]
+            bx.require(requirement["character_level"] <= stage["level"], f"{label}不能使用 {entry['name']} {skill['level']} 级；需要角色 {requirement['character_level']} 级。")
+            skill["attribute_requirements"] = {key: requirement.get(key, 0) for key in ATTRIBUTES}
             bx.require(type(skill.get("quality", 0)) is int and 0 <= skill.get("quality", 0) <= 23, label + "宝石品质无效。")
             acquisition = library[skill_id]
             uncertain = acquisition["acquisition"] in {"drop", "lab", "trade"} or entry.get("special_variant") or entry.get("vaal")
@@ -172,6 +175,11 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
             upgraded_usage[slot] = upgraded_usage.get(slot, 0) + len(group.get("upgrade_gems", group["gems"]))
         for slot in capacities:
             bx.require(max(usage.get(slot, 0), upgraded_usage.get(slot, 0)) <= capacities[slot], label + "在 " + slot + " 分配的总孔数超过容量；基础与升级都必须能同时装备。")
+        stage["attribute_requirements"] = {
+            key: {attribute: max(gem["attribute_requirements"][attribute]
+                                 for group in groups for gem in group.get(key, group["gems"]))
+                  for attribute in ATTRIBUTES}
+            for key in ("gems", "upgrade_gems")}
         points, allocated = stage.get("ascendancy_points"), stage.get("ascendancy_nodes")
         bx.require(type(points) is int and points in (0, 2, 4, 6, 8), label + "ascendancy_points 应为已完成迷宫的 0/2/4/6/8 点。")
         bx.require(isinstance(allocated, list) and all(type(node) is int for node in allocated) and len(set(allocated)) == len(allocated), label + "ascendancy_nodes 应为累计大点 ID 数组。")
@@ -212,6 +220,12 @@ def render(route, warnings, engine_version, tree_version):
             groups.append(f"<h3>{esc(group['name'])} · {esc(group['slot'])} · {esc(USAGES[group['use']])}</h3><p>基础 {len(group['gems'])} 连：{esc(links('gems'))}</p>{upgrade}")
         ascendancies = [node["name"] + "：" + "；".join(node["stats"]) for node in stage["ascendancy_details"]]
         items = [item["name"] + " · " + ACQUISITIONS[item["acquisition"]] + ("；未获得时：" + item["fallback"] if item.get("fallback") else "") for item in stage.get("required_items", [])]
+        attribute_text = lambda key: "、".join(f"{name} {stage['attribute_requirements'][key][attribute]}" for attribute, name in ATTRIBUTES.items())
+        attribute_note = "基础宝石所需属性：" + attribute_text("gems") + "。"
+        if stage["attribute_requirements"]["upgrade_gems"] != stage["attribute_requirements"]["gems"]:
+            attribute_note += "可选连线升级后：" + attribute_text("upgrade_gems") + "。"
+        attribute_note += "这是宝石门槛，未计具体装备本身需求或降低需求效果；不代表角色已经满足。换装前核对属性，不足时暂缓升级宝石或补属性。"
+        groups.append("<p class=\"note\">" + esc(attribute_note) + "</p>")
         sections.append(f"<section><h2>{stage['level']} 级 · {esc(stage['name'])}</h2>{''.join(groups)}<p>等级是宝石练级目标，刚领取不等于已练到该等级。同一装备的不同组按上述连线分开安排。</p><h3>装备优先级</h3>{listing(stage['gear'])}{listing(items)}<h3>天赋与升华</h3>{listing(stage['passives'])}<p>本段已安排 {stage['ascendancy_used']} / {stage['ascendancy_points']} 点升华（包含连接小点）。</p>{listing(ascendancies)}<p>{esc(stage.get('ascendancy_respec_reason',''))}</p><h3>资源与操作</h3><p>{esc(stage['resources'])}</p><h3>继续推进前检查</h3>{listing(stage['checks'])}<h3>转入下一阶段的条件</h3>{listing(stage['transition'])}</section>")
     sources = {source["id"]: source for source in route["sources"]}
     rows = []

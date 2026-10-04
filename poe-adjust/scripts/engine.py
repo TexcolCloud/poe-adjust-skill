@@ -150,7 +150,13 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     except subprocess.TimeoutExpired as exc:
         raise EngineError("PoB 计算超过 120 秒，已结束本次计算。原文件没有改动。") from exc
     if process.returncode:
-        raise EngineError("PoB 计算未完成：" + process.stderr.decode("utf-8", errors="replace")[-5000:])
+        detail = process.stderr.decode("utf-8", errors="replace")[-5000:]
+        # The headless worker may include desktop hotkey instructions in errors.
+        # They are irrelevant to this failed calculation, not UI recovery steps.
+        detail = detail.split("Press Enter/Escape to dismiss", 1)[0].rstrip()
+        if xml and (catalog or queries):
+            detail += "\n目录查询若只查宝石/职业/升华节点 ID 与原文，可去掉 --input 直接重试；所有职业数据都在本机，无需手写最小 XML 或下载模板。若需要角色实际连接路径，请提供能在 PoECharm 打开的真实 XML。"
+        raise EngineError("PoB 计算未完成：" + detail)
     try:
         result = json.loads(process.stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

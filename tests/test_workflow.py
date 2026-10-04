@@ -333,6 +333,24 @@ class RouteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "基础路线每组使用 1–4 连"):
             routes.validate(self.route, self.gems)
 
+    def test_route_attributes_cover_utility_and_optional_links_without_summing(self):
+        self.gems["ShieldCrush"]["level_requirements"][0].update(strength=33, dexterity=0, intelligence=0)
+        for skill_id, active, attribute, amount in (("UtilityFixture", True, "intelligence", 80), ("SupportFixture", False, "dexterity", 111)):
+            self.gems[skill_id] = {"skill_id": skill_id, "name": skill_id, "min_level": 1,
+                                   "tags": {"grants_active_skill": active},
+                                   "level_requirements": [{"gem_level": 1, "character_level": 1, attribute: amount}]}
+            self.route["gems"][skill_id] = copy.deepcopy(self.route["gems"]["ShieldCrush"])
+        stage = self.route["stages"][-1]
+        stage["skill_groups"].append({"name": "辅助操作", "slot": "Boots", "use": "utility", "gems": [{"skill_id": "UtilityFixture", "level": 1}]})
+        stage["skill_groups"][0]["upgrade_gems"] = [{"skill_id": "ShieldCrush", "level": 1}, {"skill_id": "SupportFixture", "level": 1}]
+        checked, warnings = routes.validate(self.route, self.gems)
+        self.assertEqual(checked["stages"][0]["attribute_requirements"]["gems"], {"strength": 33, "dexterity": 0, "intelligence": 0})
+        self.assertEqual(checked["stages"][-1]["attribute_requirements"]["gems"], {"strength": 33, "dexterity": 0, "intelligence": 80})
+        self.assertEqual(checked["stages"][-1]["attribute_requirements"]["upgrade_gems"], {"strength": 33, "dexterity": 111, "intelligence": 80})
+        report = routes.render(checked, warnings, "2.67.2", "3_29")
+        self.assertIn("可选连线升级后：力量 33、敏捷 111、智慧 80", report)
+        self.assertIn("不代表角色已经满足", report)
+
     def test_route_physical_sockets_and_every_utility_link_are_checked(self):
         for index in range(5):
             skill_id = f"SupportFixture{index}"
@@ -582,12 +600,19 @@ class RealEngineTests(unittest.TestCase):
 
     def test_12_native_batch_catalog_validates_starter_gem_levels(self):
         result = engine.calculate(self.pob, queries=[{"kind": "gems", "query": "id:ShieldCrush", "limit": 2},
-                                                   {"kind": "gems", "query": "id:Sunder", "limit": 2}])
-        self.assertEqual(len(result["catalog_batch"]), 2)
+                                                   {"kind": "gems", "query": "id:Sunder", "limit": 2},
+                                                   {"kind": "gems", "query": "id:Determination", "limit": 2},
+                                                   {"kind": "gems", "query": "id:Grace", "limit": 2},
+                                                   {"kind": "gems", "query": "id:Discipline", "limit": 2}])
+        self.assertEqual(len(result["catalog_batch"]), 5)
         gems = {entry["skill_id"]: entry for query in result["catalog_batch"] for entry in query["entries"]}
-        self.assertEqual(set(gems), {"ShieldCrush", "Sunder"})
+        self.assertEqual(set(gems), {"ShieldCrush", "Sunder", "Determination", "Grace", "Discipline"})
         self.assertEqual(gems["ShieldCrush"]["min_level"], 1)
         self.assertEqual(gems["Sunder"]["min_level"], 12)
+        for skill_id, attribute in (("Determination", "strength"), ("Grace", "dexterity"), ("Discipline", "intelligence")):
+            level_20 = next(row for row in gems[skill_id]["level_requirements"] if row["gem_level"] == 20)
+            self.assertEqual(level_20["character_level"], 70)
+            self.assertEqual(level_20[attribute], 155)
         route = route_fixture()
         checked, _ = routes.validate(route, gems)
         self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["name"], gems["ShieldCrush"]["display_name"])
@@ -778,6 +803,8 @@ class RealEngineTests(unittest.TestCase):
         exported = poe.export(args(run=str(self.run_dir), name="minion-context"))
         self.assertIn("召唤物单体综合 DPS", exported["user_summary"])
         self.assertNotIn("主技能综合 DPS 0.0", exported["user_summary"])
+        self.assertIn("召唤物命中率", exported["user_summary"])
+        self.assertNotIn("角色技能命中率", exported["user_summary"])
 
     def test_23_large_catalog_output_is_saved_and_inputs_are_protected(self):
         query = Path(self.temp.name) / "queries.json"
@@ -801,6 +828,21 @@ class RealEngineTests(unittest.TestCase):
             self.assertEqual(poe.main(command + ["--out", str(query)]), 2)
         self.assertIn("不能覆盖", error.getvalue())
         self.assertEqual(bx.digest(query.read_bytes()), digest)
+
+    def test_24_catalog_failure_explains_character_free_queries(self):
+        invalid = '<PathOfBuilding><Build className="Marauder" ascendClassName="Chieftain" level="1" targetVersion="3_0"/><Tree><Spec treeVersion="3_29" ascendancyName="Chieftain"><URL>https://www.pathofexile.com/passive-skill-tree/AAAABgAA</URL></Spec></Tree><Skills/><Items/></PathOfBuilding>'
+        with self.assertRaises(engine.EngineError) as failure:
+            engine.calculate(self.pob, invalid, catalog="nodes", query="Chieftain")
+        self.assertIn("去掉 --input", str(failure.exception))
+        self.assertNotIn("Press Enter/Escape", str(failure.exception))
+        recovered = engine.calculate(self.pob, catalog="nodes", query="Chieftain", limit=40)
+        nodes = recovered["catalog"]
+        self.assertTrue(any(node["is_ascendancy_start"] for node in nodes))
+        self.assertTrue(any(node["name"] == "Hinekora, Death's Fury" and node["type"] == "Notable" for node in nodes))
+        # The text search also legitimately matches Ascendant's Chieftain node.
+        # Route allocation selects the actual ascendancy by ascendancy_name.
+        self.assertTrue(any(node["name"] == "Chieftain" and node["ascendancy_name"] == "Ascendant" for node in nodes))
+        self.assertTrue(any(node["is_ascendancy_start"] and node["ascendancy_name"] == "Chieftain" for node in nodes))
 
 
 if __name__ == "__main__": unittest.main()

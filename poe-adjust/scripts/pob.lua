@@ -38,7 +38,10 @@ local function scalarTable(tbl)
   return values
 end
 local result = {stats = scalarTable(output), minion = scalarTable(output.Minion), warnings = {}, gems = {}, equipped = {}, nodes = {}, errors = {}}
-if output.Minion then result.stats.MinionCombinedDPS = output.Minion.CombinedDPS end
+if output.Minion then
+  result.stats.MinionCombinedDPS = output.Minion.CombinedDPS
+  result.stats.MinionHitChance = output.Minion.HitChance
+end
 result.resource_rules = {energy_shield_protects_mana = build.calcsTab.mainEnv.modDB:Flag(nil, "EnergyShieldProtectsMana") or false}
 result.level = build.characterLevel
 result.class = build.spec.curClassName
@@ -185,7 +188,12 @@ local function queryCatalog(kind, query, limit)
         local skill = data.skills[gem.grantedEffectId]
         local requirements = {}
         for level, values in pairs(skill and skill.levels or {}) do
-          if level <= (gem.naturalMaxLevel or 20) then table.insert(requirements, {gem_level = level, character_level = values.levelRequirement}) end
+          if level <= (gem.naturalMaxLevel or 20) then
+            table.insert(requirements, {gem_level = level, character_level = values.levelRequirement,
+              strength = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqStr or 0),
+              dexterity = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqDex or 0),
+              intelligence = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqInt or 0)})
+          end
         end
         table.sort(requirements, function(a,b) return a.gem_level < b.gem_level end)
         table.insert(entries, {id = id, name = gem.name, skill_id = gem.grantedEffectId, tags = gem.tags,
