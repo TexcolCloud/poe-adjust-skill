@@ -61,6 +61,8 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 
 `config` 的列表型选项返回 `options`（val/label）及能确认的 `default_value`。JSON 使用实际 val，而非显示标签；evaluate/export 会按本机选项拒绝无效值或无法核对的列表，不凭敌人等级推断首领类型，也不把默认选项当作用户确认的场景。
 
+`gems` 同时返回当前本机技能原文 `description`，可在同一次查询中核对召唤、触发或使用前提；缺失时再查 `skills` 与当前来源，不从宝石名称推断效果。装备授予技能仍使用 `skills`。
+
 一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的 `level_requirements`（gem_level/character_level/strength/dexterity/intelligence）、`min_level`、`special_variant`、`vaal`，开荒时据此核对等级与属性，而非猜测。
 
 `classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 compatible/incompatible。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。

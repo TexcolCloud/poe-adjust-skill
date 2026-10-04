@@ -239,6 +239,7 @@ local function queryCatalog(kind, query, limit)
         end
         table.sort(requirements, function(a,b) return a.gem_level < b.gem_level end)
         table.insert(entries, {id = id, name = gem.name, skill_id = gem.grantedEffectId, tags = gem.tags,
+          description = skill and skill.description,
           min_level = requirements[1] and requirements[1].character_level, level_requirements = requirements,
           natural_max_level = gem.naturalMaxLevel, vaal = gem.vaalGem or false,
           special_variant = string.find(gem.grantedEffectId, "Alt[XYZ]") ~= nil or string.find(id, "Awakened", 1, true) ~= nil})
