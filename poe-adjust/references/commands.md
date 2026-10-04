@@ -225,4 +225,6 @@ evaluate 会计算原方案与候选、检查约束、输出候选 XML，然后�
 
 export 只接收当前意图下的有效候选；会检查文件摘要并最终复算。输出可直接交付，聊天结论原样使用 user_summary。将军之吼幻影主技能的吸取/击回未计作玩家自身回复；原生面板值保留在 native_leech_on_hit 供诊断，本人额外攻击的收益需另行验证。不把内部 run.json、计划或临时文件作为最终成果。
 
+导出前复核 plan 的说明文字：summary/assumptions/migration_steps 只写改动、条件和实际操作，DPS/资源/抗性等结果由程序表格给出，不重复保留旧设计数值。核对位移和辅助主动技能的真实支付池、最终节点与物品准备。文字修正也经过 evaluate/export，避免计划和交付文件不一致；估价不代表已确认预算达标。
+
 `evaluate.readiness` 返回实际常态/条件开关、剩余点数和资源明细。原方案诊断失效或条件不同时，`comparison.*.percent` 为 null，不能自己重新计算百分比并称为同条件实战提升。`status` 返回已发现的 pob_path/engine_version，后续查询无需反复 doctor。新技能版本会要求旧候选重新 evaluate。
