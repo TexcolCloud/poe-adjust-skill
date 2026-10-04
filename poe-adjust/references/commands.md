@@ -95,7 +95,9 @@ python $entry catalog --batch '<queries.json>' --input '<角色.xml>'
 
 `calculation_mode` 默认 `steady`：守护增益、药剂必须关闭。`conditional` 用于用户接受的条件面板，开启的守护需 `config_evidence.guard`，每个药剂需 `config_evidence["Flask 1"]` 等说明触发、时长与覆盖。
 
-`resource_mode` 默认 `sustained`：每秒消耗超出秒回与吸取时拒绝交付。只有用户接受停手恢复才用 `burst`，计划给出 `burst_seconds`；程序校验时间不超过资源池并报告停手仅靠秒回所需的恢复时间。吸取值仍依赖命中，不能当转场回复。
+`resource_mode` 默认 `sustained`：每秒消耗超出净秒回与吸取时拒绝交付。NetLifeRegen/NetManaRegen/NetEnergyShieldRegen 已扣除正义之火等自身持续伤害；回复不能忽略这项支出。程序检查生命、魔力、能盾和异能魔力（EB）转移支付。仅在 EB、无自身持续伤害、无伤害转由魔力承受时自动计入能盾充能，且检查启动延迟的资源缓冲；其他充能依赖须用 conditional，并在 config_evidence.energy_shield_recharge 说明启动、打断与覆盖。EB 检查保守要求能盾自身足以维持，不将耗尽后魔力混用当已验证。
+
+只有用户接受停手恢复才用 `burst`，计划给出 `burst_seconds`；程序校验时间不超过资源池并报告停手仅靠净秒回所需的恢复时间。吸取值仍依赖命中，不能当转场回复。资料及 verified_cn 价格的 checked_at 记录本机实际日期或带时区 ISO 时间，未来时间会被拒绝。
 
 ## 候选 plan.json
 

@@ -38,6 +38,7 @@ local function scalarTable(tbl)
   return values
 end
 local result = {stats = scalarTable(output), minion = scalarTable(output.Minion), warnings = {}, gems = {}, equipped = {}, nodes = {}, errors = {}}
+result.resource_rules = {energy_shield_protects_mana = build.calcsTab.mainEnv.modDB:Flag(nil, "EnergyShieldProtectsMana") or false}
 result.level = build.characterLevel
 result.class = build.spec.curClassName
 result.ascendancy = build.spec.curAscendClassName

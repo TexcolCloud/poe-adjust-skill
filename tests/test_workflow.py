@@ -6,6 +6,7 @@ The user's XML and installed application files are never edited.
 import argparse
 import base64
 import copy
+from datetime import date, datetime, timedelta, timezone
 from contextlib import redirect_stderr
 import io
 import os
@@ -215,6 +216,29 @@ class DocumentTests(unittest.TestCase):
         plan = {"shopping": [{"description": "原角色已有全部宝石", "status": "owned"}]}
         self.assertEqual(poe.budget_summary(plan, intent_for(self.root), needs)["status"], "unknown")
 
+    def test_energy_shield_costs_recharge_conditions_and_self_degen(self):
+        result = {"level": 86, "points": 108, "ascendancy_points": 8, "equipped": [],
+                  "resource_rules": {"energy_shield_protects_mana": True},
+                  "stats": {"ManaUnreserved": 0, "ManaCost": 20, "ESPerSecondCost": 100, "EnergyShield": 300,
+                            "EnergyShieldRecharge": 120, "EnergyShieldRechargeDelay": 2, "EnergyShieldRechargeAppliesToEnergyShield": True}}
+        intent = intent_for(self.root)
+        audit = poe.readiness(result, intent, {})
+        self.assertEqual(audit["errors"], [])
+        self.assertEqual(audit["resources"][-1]["recharge"], 120)
+        self.assertEqual(audit["resources"][-1]["net_cost"], -20)
+        result["stats"]["sharedMindOverMatter"] = 40
+        self.assertTrue(any("能量护盾" in error for error in poe.readiness(result, intent, {})["errors"]))
+        intent["calculation_mode"] = "conditional"
+        plan = {"config_evidence": {"energy_shield_recharge": "仅验证充能开启期间；伤害打断后停止满速使用，等待恢复。"}}
+        self.assertEqual(poe.readiness(result, intent, plan)["errors"], [])
+        result["stats"]["EnergyShield"] = 30
+        self.assertTrue(any("启动延迟" in error for error in poe.readiness(result, intent, plan)["errors"]))
+        result["resource_rules"]["energy_shield_protects_mana"] = False
+        result["stats"] = {"Life": 1000, "LifeRegenRecovery": 100, "NetLifeRegen": -200, "TotalBuildDegen": 300}
+        self.assertTrue(any("净秒回 -200.0" in error for error in poe.readiness(result, intent, {})["errors"]))
+        result["stats"] = {"EnergyShield": 300, "ESCost": 80, "ESPerSecondCost": 100, "EnergyShieldRegenRecovery": 50}
+        self.assertTrue(any("能量护盾" in error for error in poe.readiness(result, intent, {})["errors"]))
+
     def test_incomparable_conditions_do_not_emit_gain_percentage(self):
         before, after = {"stats": {"CombinedDPS": 10}}, {"stats": {"CombinedDPS": 30}}
         self.assertIsNone(poe.compare(before, after, False)["CombinedDPS"]["percent"])
@@ -226,9 +250,10 @@ def route_fixture():
             "game_version": "3.29",
             "ascendancy": "Champion", "trade_mode": "ssf", "budget": {"amount": 0, "currency": "divine"}, "version_status": "unverified",
             "sources": [{"id": "gem", "title": "测试来源", "url": "https://example.org/gem", "checked_at": "2026-10-04", "version": "测试数据"}],
-            "stages": [{"name": "测试阶段", "level": level, "main_skill_id": "ShieldCrush", "links": 1,
-                        "skills": [{"skill_id": "ShieldCrush", "level": 1, "role": "main", "acquisition": "vendor", "source_id": "gem", "source_note": "仅验证文档结构，不作为实际领取资料。"}],
-                        "gear": ["盾牌"], "passives": ["生命"], "ascendancy": "按迷宫进度分配", "resources": "核对消耗与魔力药剂",
+            "gems": {"ShieldCrush": {"acquisition": "vendor", "source_id": "gem", "source_note": "仅验证文档结构，不作为实际领取资料。"}},
+            "stages": [{"name": "测试阶段", "level": level, "weapon_setup": "one_hand_shield",
+                        "skill_groups": [{"name": "主技能", "slot": "Gloves", "use": "main", "gems": [{"skill_id": "ShieldCrush", "level": 1}]}],
+                        "gear": ["盾牌"], "passives": ["生命"], "ascendancy_points": 0, "ascendancy_nodes": [], "resources": "核对消耗与魔力药剂",
                         "checks": ["属性需求满足"], "transition": ["下一阶段核心技能准备好"]} for level in (1, 12, 68)]}
 
 
@@ -239,7 +264,7 @@ class RouteTests(unittest.TestCase):
                                     "level_requirements": [{"gem_level": 1, "character_level": 1}, {"gem_level": 20, "character_level": 70}]}}
 
     def test_route_rejects_gem_level_unavailable_at_milestone(self):
-        self.route["stages"][-1]["skills"][0]["level"] = 20
+        self.route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = 20
         with self.assertRaisesRegex(ValueError, "需要角色 70 级"):
             routes.validate(self.route, self.gems)
 
@@ -254,10 +279,10 @@ class RouteTests(unittest.TestCase):
             routes.validate(self.route, self.gems, "3.29", classes, links)
 
     def test_ssf_does_not_depend_on_trade_or_random_core_without_fallback(self):
-        self.route["stages"][0]["skills"][0]["acquisition"] = "trade"
+        self.route["gems"]["ShieldCrush"]["acquisition"] = "trade"
         with self.assertRaisesRegex(ValueError, "不能依赖交易宝石"):
             routes.validate(self.route, self.gems)
-        self.route["stages"][0]["skills"][0]["acquisition"] = "drop"
+        self.route["gems"]["ShieldCrush"]["acquisition"] = "drop"
         with self.assertRaisesRegex(ValueError, "fallback_skill_id"):
             routes.validate(self.route, self.gems)
 
@@ -266,14 +291,58 @@ class RouteTests(unittest.TestCase):
         self.assertTrue(any("国服赛季" in warning for warning in warnings))
         report = routes.render(checked, warnings, "2.67.2", "3_29")
         self.assertIn("尚未使用完整阶段装备", report)
-        self.assertIn("目标等级", report)
+        self.assertIn("宝石练级目标", report)
         self.route["version_status"] = "verified"
         with self.assertRaisesRegex(ValueError, "version_source"):
             routes.validate(self.route, self.gems)
 
     def test_five_link_has_an_obtainable_four_link_fallback(self):
-        self.route["stages"][-1]["links"] = 5
-        with self.assertRaisesRegex(ValueError, "四连替代"):
+        group = self.route["stages"][-1]["skill_groups"][0]
+        group["gems"] *= 5
+        with self.assertRaisesRegex(ValueError, "基础路线每组使用 1–4 连"):
+            routes.validate(self.route, self.gems)
+
+    def test_route_physical_sockets_and_every_utility_link_are_checked(self):
+        for index in range(5):
+            skill_id = f"SupportFixture{index}"
+            self.gems[skill_id] = {"skill_id": skill_id, "name": skill_id, "tags": {}, "level_requirements": [{"gem_level": 1, "character_level": 1}]}
+            self.route["gems"][skill_id] = copy.deepcopy(self.route["gems"]["ShieldCrush"])
+        group = self.route["stages"][-1]["skill_groups"][0]
+        group["slot"] = "Body Armour"
+        group["gems"] += [{"skill_id": f"SupportFixture{i}", "level": 1} for i in range(3)]
+        group["upgrade_gems"] = copy.deepcopy(group["gems"]) + [{"skill_id": f"SupportFixture{i}", "level": 1} for i in (3, 4)]
+        checked, _ = routes.validate(self.route, self.gems)
+        self.assertEqual(len(checked["stages"][-1]["skill_groups"][0]["upgrade_gems"]), 6)
+        other = copy.deepcopy(group)
+        other["use"], other["slot"] = "utility", "Weapon 1"
+        self.route["stages"][-1]["skill_groups"].append(other)
+        with self.assertRaisesRegex(ValueError, "实际孔数"):
+            routes.validate(self.route, self.gems)
+        other["slot"] = "Body Armour"
+        with self.assertRaisesRegex(ValueError, "总孔数超过容量"):
+            routes.validate(self.route, self.gems)
+        self.route["stages"][-1]["skill_groups"].pop()
+        utility = {"name": "辅助操作", "use": "utility", "slot": "Boots", "gems": [{"skill_id": "ShieldCrush", "level": 1}, {"skill_id": "SupportFixture4", "level": 1}]}
+        self.route["stages"][-1]["skill_groups"].append(utility)
+        compatibility = {query: {"incompatible": []} for query in routes.link_queries(self.route)}
+        compatibility["ShieldCrush,SupportFixture4"]["incompatible"] = ["SupportFixture4"]
+        with self.assertRaisesRegex(ValueError, "以下辅助不支持"):
+            routes.validate(self.route, self.gems, compatibility=compatibility)
+
+    def test_research_dates_and_notes_are_not_fabricated_or_malformed(self):
+        engine.validate_checked_at(date.today().isoformat())
+        engine.validate_checked_at(datetime.now(timezone.utc).isoformat())
+        for value in ((date.today() + timedelta(days=1)).isoformat(), (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()):
+            with self.assertRaisesRegex(ValueError, "未来"):
+                engine.validate_checked_at(value)
+        with self.assertRaisesRegex(ValueError, "时区"):
+            engine.validate_checked_at("2026-10-04T12:00:00")
+        self.route["sources"][0]["checked_at"] = "2099-01-01"
+        with self.assertRaisesRegex(ValueError, "未来"):
+            routes.validate(self.route, self.gems)
+        self.route["sources"][0]["checked_at"] = date.today().isoformat()
+        self.route["notes"] = "应为数组"
+        with self.assertRaisesRegex(ValueError, "数组"):
             routes.validate(self.route, self.gems)
 
 
@@ -472,9 +541,9 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(gems["Sunder"]["min_level"], 12)
         route = route_fixture()
         checked, _ = routes.validate(route, gems)
-        self.assertEqual(checked["stages"][0]["skills"][0]["minimum_character_level"], 1)
-        route["stages"][0]["main_skill_id"] = "Sunder"
-        route["stages"][0]["skills"][0]["skill_id"] = "Sunder"
+        self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["name"], gems["ShieldCrush"]["display_name"])
+        route["gems"]["Sunder"] = copy.deepcopy(route["gems"]["ShieldCrush"])
+        route["stages"][0]["skill_groups"][0]["gems"][0]["skill_id"] = "Sunder"
         with self.assertRaisesRegex(ValueError, "需要角色 12 级"):
             routes.validate(route, gems)
 
@@ -566,6 +635,48 @@ class RealEngineTests(unittest.TestCase):
         standalone = engine.calculate(self.pob, bx.serialise(changed))
         self.assertAlmostEqual(rows[0]["stats"]["CombinedDPS"], standalone["stats"]["CombinedDPS"], places=6)
         self.assertEqual(snapshot, {path.name: bx.digest(path.read_bytes()) for path in folder.iterdir()})
+
+    def test_18_native_energy_shield_payment_and_righteous_fire_degen(self):
+        unique = engine.calculate(self.pob, catalog="uniques", query="The Devouring Diadem", limit=1)["catalog"][0]["raw"]
+        plan = copy.deepcopy(self.refine)
+        plan["operations"]["items"] = [{"id": 100, "text": unique}]
+        plan["operations"]["equip"].append({"slot": "Helmet", "item_id": 100})
+        outcome = self.evaluate_plan(plan, "energy-shield-payment")
+        result = poe.read_json(self.run_dir / "candidates/energy-shield-payment/evaluation.json")["result"]
+        self.assertTrue(result["resource_rules"]["energy_shield_protects_mana"])
+        self.assertGreater(result["stats"]["ESPerSecondCost"], 0)
+        self.assertEqual(outcome["status"], "validated", outcome["errors"])
+        self.assertTrue(any(row["resource"] == "能量护盾" for row in outcome["readiness"]["resources"]))
+        plan = copy.deepcopy(self.rebuild)
+        plan["operations"]["replace_skills"].append({"slot": "Helmet", "gems": [{"skill_id": "RighteousFire", "level": 19, "enable_global1": True}]})
+        outcome = self.evaluate_plan(plan, "self-degen")
+        result = poe.read_json(self.run_dir / "candidates/self-degen/evaluation.json")["result"]
+        self.assertGreater(result["stats"].get("TotalBuildDegen", 0), 0)
+        self.assertLess(result["stats"]["NetLifeRegen"], 0)
+        self.assertEqual(outcome["status"], "invalid")
+        self.assertTrue(any("净秒回" in error for error in outcome["errors"]), outcome["errors"])
+
+    def test_19_native_route_counts_small_ascendancy_points_and_requires_respec(self):
+        result = engine.calculate(self.pob, queries=[{"kind": "nodes", "query": "Inquisitor", "limit": 100},
+                                                   {"kind": "gems", "query": "id:ShieldCrush", "limit": 1}])
+        nodes = result["catalog_batch"][0]["entries"]
+        gems = {entry["skill_id"]: entry for entry in result["catalog_batch"][1]["entries"]}
+        route = route_fixture()
+        route["class_id"], route["ascendancy"] = 5, "Inquisitor"
+        stage = route["stages"][-1]
+        stage["ascendancy_points"] = 8
+        stage["ascendancy_nodes"] = [39790, 32816, 53884, 48214]
+        checked, _ = routes.validate(route, gems, "3.29", result["classes"], nodes=nodes)
+        self.assertEqual(checked["stages"][-1]["ascendancy_used"], 8)
+        stage["ascendancy_nodes"].append(40059)
+        with self.assertRaisesRegex(ValueError, "共需 10 点"):
+            routes.validate(route, gems, nodes=nodes)
+        stage["ascendancy_nodes"].remove(40059)
+        route["stages"][1].update({"ascendancy_points": 2, "ascendancy_nodes": [40059]})
+        with self.assertRaisesRegex(ValueError, "洗点与切换原因"):
+            routes.validate(route, gems, nodes=nodes)
+        stage["ascendancy_respec_reason"] = "先准备后悔石，退还忏悔之兆与连接小点，再分配廉简之途。"
+        routes.validate(route, gems, nodes=nodes)
 
 
 if __name__ == "__main__": unittest.main()

@@ -18,12 +18,14 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
     "LifeRegenRecovery": "生命秒回", "ManaRegenRecovery": "魔力秒回",
     "EnergyShieldRegenRecovery": "能量护盾秒回", "EnergyShieldRecharge": "能量护盾充能速率（需启动充能）",
+    "EnergyShieldLeechGainRate": "能量护盾吸取速率（需持续命中）", "ESCost": "主技能直接能盾消耗", "ESPerSecondCost": "主技能每秒能盾消耗（含 EB）",
+    "NetLifeRegen": "扣除自身持续伤害后生命净秒回", "NetManaRegen": "扣除自身持续伤害后魔力净秒回", "NetEnergyShieldRegen": "扣除自身持续伤害后能盾净秒回",
     "LifeLeechGainRate": "生命吸取速率（需持续命中）", "LifeCost": "主技能单次生命消耗",
     "ManaLeechGainRate": "魔力吸取速率（需持续命中）",
     "LifePerSecondCost": "主技能每秒生命消耗", "ManaCost": "主技能单次魔力消耗", "ManaPerSecondCost": "主技能每秒魔力消耗",
@@ -105,7 +107,7 @@ def validate_intent(value, original):
     engine.validate_game_version(value.get("game_version"), value["league"], version_source=value.get("version_source"))
     bx.require(isinstance(value.get("version_source"), str) and value["version_source"].startswith(("https://", "http://")), "version_source 需要实际支持国服赛季与版本对应关系的网页 URL。")
     bx.require(isinstance(value.get("version_checked_at"), str), "version_checked_at 需要实际查阅日期。")
-    datetime.fromisoformat(value["version_checked_at"].replace("Z", "+00:00"))
+    engine.validate_checked_at(value["version_checked_at"])
     bx.require(value.get("mode") in {"refine", "rebuild", "both"}, "mode 应为 refine/rebuild/both。")
     budget = value.get("budget")
     bx.require(isinstance(budget, dict) and set(budget) <= {"amount", "currency"}, "budget 需要 amount 与 currency。")
@@ -302,21 +304,44 @@ def readiness(result, intent, plan):
     duration = plan.get("burst_seconds")
     if duration is not None:
         bx.require(type(duration) in (int, float) and math.isfinite(duration) and duration > 0, "burst_seconds 应为有限正数。")
-    for resource, label in (("Mana", "魔力"), ("Life", "生命")):
-        cost = stats.get(resource + "PerSecondCost", 0)
-        single = stats.get(resource + "Cost", 0)
-        regen = stats.get(resource + "RegenRecovery", 0)
+    eb = result.get("resource_rules", {}).get("energy_shield_protects_mana", False)
+    for resource, cost_key, label in (("Mana", "Mana", "魔力"), ("Life", "Life", "生命"), ("EnergyShield", "ES", "能量护盾")):
+        cost = stats.get(cost_key + "PerSecondCost", 0)
+        single = stats.get(cost_key + "Cost", 0)
+        raw_regen = stats.get(resource + "RegenRecovery", 0)
+        regen = stats.get("Net" + resource + "Regen", raw_regen)
         leech = stats.get(resource + "LeechGainRate", 0)
         pool = stats.get(resource + "Unreserved", stats.get(resource, 0))
-        net = cost - regen - leech
+        recharge = 0
+        if resource == "Mana" and eb:
+            single = 0
+        if resource == "EnergyShield":
+            pool = min(pool, stats.get("EnergyShieldRecoveryCap", pool))
+            if eb: single += stats.get("ManaCost", 0)
+            if cost <= 0 and single <= 0 and regen >= 0:
+                continue
+            safe_eb_recharge = eb and not stats.get("TotalBuildDegen", 0) and not any(stats.get(key, 0) for key in ("sharedMindOverMatter", "PhysicalMindOverMatter", "FireMindOverMatter", "ColdMindOverMatter", "LightningMindOverMatter", "ChaosMindOverMatter"))
+            conditional_recharge = mode == "conditional" and isinstance(plan.get("config_evidence", {}).get("energy_shield_recharge"), str) and plan["config_evidence"]["energy_shield_recharge"].strip()
+            if stats.get("EnergyShieldRechargeAppliesToEnergyShield") and (safe_eb_recharge or conditional_recharge):
+                recharge = stats.get("EnergyShieldRecharge", 0)
+                if recharge:
+                    delay = stats.get("EnergyShieldRechargeDelay", 2)
+                    warnings.append(f"能盾资源计入已启动的充能 {recharge:.1f}/秒；启动延迟 {delay:.2f} 秒。" + ("EB 且未检测到伤害转魔力或自身持续伤害；技能消耗本身不打断充能。" if safe_eb_recharge else "按 energy_shield_recharge 的有条件覆盖依据计算；充能被打断时不能沿用此续航。"))
+                    if max(cost - regen - leech, 0) * delay > pool:
+                        errors.append("能盾储量不足以覆盖满速使用时的充能启动延迟；先等待充能、降低消耗或增加无需充能的回复，并明确实际操作。")
+            if eb:
+                warnings.append("EB 消耗按能盾池保守核对，未自动把耗尽后的魔力池/魔力回复合并为能盾供给。")
+            if stats.get("EnergyShieldRecharge", 0) and not recharge:
+                warnings.append("能盾充能未计入持续回复；伤害可能打断充能。需要条件计算时用 conditional，并在 config_evidence.energy_shield_recharge 说明启动、打断与覆盖依据。")
+        net = cost - regen - leech - recharge
         if single > 0 and (pool < single or resource == "Life" and pool <= single):
             errors.append(f"可用{label} {pool:.1f} 不能支付主技能单次消耗 {single:.1f}。")
-        record = {"resource": label, "pool": pool, "cost_per_second": cost, "regeneration": regen, "leech_on_hit": leech,
+        record = {"resource": label, "pool": pool, "cost_per_second": cost, "regeneration": regen, "raw_regeneration": raw_regen, "leech_on_hit": leech, "recharge": recharge,
                   "net_cost": net, "sustainable_while_hitting": net <= 0.01,
-                  "seconds_without_hits": max(pool - (1 if resource == "Life" else 0), 0) / (cost - regen) if cost > regen else None}
+                  "seconds_without_hits": max(pool - (1 if resource == "Life" else 0), 0) / (cost - regen - recharge) if cost > regen + recharge else None}
         if net > 0.01:
             record["maximum_burst_seconds"] = max(pool - (1 if resource == "Life" else 0), 0) / net
-            message = f"主技能满速施放每秒消耗{label} {cost:.1f}，秒回 {regen:.1f}、命中吸取 {leech:.1f}，净缺口 {net:.1f}；不能持续满速使用。"
+            message = f"主技能满速施放每秒消耗{label} {cost:.1f}，扣除自身持续伤害后净秒回 {regen:.1f}、命中吸取 {leech:.1f}、计入充能 {recharge:.1f}，净缺口 {net:.1f}；不能持续满速使用。"
             if intent.get("resource_mode", "sustained") == "sustained":
                 errors.append(message + "请修复续航。只有用户明确接受爆发/停手玩法时才改用 resource_mode=burst。")
             elif duration is None or duration > record["maximum_burst_seconds"]:
@@ -326,7 +351,7 @@ def readiness(result, intent, plan):
                 record["recovery_seconds_at_regen_only"] = downtime
                 record["duty_cycle"] = duration / (duration + downtime) if downtime is not None else None
                 warnings.append(message + (f"按 {duration:g} 秒爆发，停手仅靠秒回至少恢复 {downtime:.1f} 秒。" if downtime is not None else "停手后的恢复时间无法由秒回证明，需要另外核实恢复操作。"))
-        if cost > regen + 0.01 and leech:
+        if cost > regen + recharge + 0.01 and leech:
             warnings.append(f"{label}续航依赖命中吸取；空挥、无敌阶段和转场不保证满速持续。")
         resources.append(record)
     return {"errors": errors, "warnings": warnings, "unused_points": unused,
@@ -394,6 +419,12 @@ def check_constraints(original, document, before, after, intent, plan):
         errors.append("整体换流派需要说明装备准备和切换顺序。")
     if plan.get("template_xml") and not plan.get("sources"):
         errors.append("引用完整配装模板需要记录来源。")
+    for source in plan.get("sources", []):
+        if source.get("checked_at"):
+            try:
+                engine.validate_checked_at(source["checked_at"])
+            except ValueError as exc:
+                errors.append(str(exc))
     return errors
 
 
@@ -416,6 +447,7 @@ def budget_summary(plan, intent, requirements=None):
         bx.require(isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and math.isfinite(lo) and math.isfinite(hi) and 0 <= lo <= hi, "价格范围无效。")
         if status == "verified_cn":
             bx.require(entry.get("source", "").startswith(("https://", "http://")) and entry.get("checked_at") and entry.get("league") == intent["league"], "国服已核实价格需要来源链接、时间和相同赛季。")
+            engine.validate_checked_at(entry["checked_at"])
         low += lo
         high += hi
     materials = []
@@ -607,7 +639,7 @@ def report_html(state, outcome):
     condition_summary = ("常态" if conditions.get("mode") == "steady" else "条件") + "面板；守护增益：" + ("开启" if conditions.get("guard_active") else "关闭") + "；启用药剂：" + ("、".join(conditions.get("active_flasks", [])) or "无")
     resources = []
     for item in audit.get("resources", []):
-        note = f"{item['resource']}：每秒消耗 {item['cost_per_second']:.2f}，秒回 {item['regeneration']:.2f}，命中吸取 {item['leech_on_hit']:.2f}。"
+        note = f"{item['resource']}：每秒消耗 {item['cost_per_second']:.2f}，扣除自身持续伤害后净秒回 {item['regeneration']:.2f}，命中吸取 {item['leech_on_hit']:.2f}，计入充能 {item.get('recharge', 0):.2f}。"
         if item.get("maximum_burst_seconds") is not None:
             note += f"静态净消耗估算最多连续 {item['maximum_burst_seconds']:.2f} 秒；不代表可持续。"
         resources.append(note)
@@ -669,7 +701,7 @@ def probe(args):
     original = bx.read_document(run / "original.xml")
     before = read_json(run / "baseline.json")
     rows = []
-    keys = ("CombinedDPS", "FullDPS", "HitChance", "Life", "EnergyShield", "ManaCost", "ManaPerSecondCost", "ManaRegenRecovery", "ManaLeechGainRate", "LifePerSecondCost", "LifeRegenRecovery", "LifeLeechGainRate")
+    keys = ("CombinedDPS", "FullDPS", "HitChance", "Life", "EnergyShield", "ManaCost", "ManaPerSecondCost", "ManaRegenRecovery", "ManaLeechGainRate", "LifePerSecondCost", "LifeRegenRecovery", "LifeLeechGainRate", "ESCost", "ESPerSecondCost", "EnergyShieldRegenRecovery", "EnergyShieldLeechGainRate", "NetLifeRegen", "NetEnergyShieldRegen")
     for skill_id, document, result in zip(ids, documents, calculations[1:]):
         errors, warnings = mechanical_issues(document, result, state["intent"])
         errors.extend(check_constraints(original, document, before, result, state["intent"], outcome["plan"]))
@@ -815,11 +847,13 @@ def main(argv=None):
             route = read_json(args.file)
             ids = routes.gem_ids(route)
             queries = [{"kind": "gems", "query": "id:" + skill_id, "limit": 2} for skill_id in ids]
-            queries += [{"kind": "links", "query": routes.link_query(stage), "limit": 1} for stage in route.get("stages", [])]
+            queries += [{"kind": "links", "query": query, "limit": 1} for query in routes.link_queries(route)]
+            queries.append({"kind": "nodes", "query": route["ascendancy"], "limit": 100})
             calculation = engine.calculate(engine.resolve_root(args.pob), queries=queries)
             gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] if query["kind"] == "gems" for entry in query["entries"]}
             compatibility = {query["query"]: query["entries"][0] for query in calculation["catalog_batch"] if query["kind"] == "links"}
-            checked, warnings = routes.validate(route, gems, calculation["data_version"], calculation["classes"], compatibility)
+            nodes = [entry for query in calculation["catalog_batch"] if query["kind"] == "nodes" for entry in query["entries"]]
+            checked, warnings = routes.validate(route, gems, calculation["data_version"], calculation["classes"], compatibility, nodes)
             output = Path(args.out).resolve()
             bx.require(output != Path(args.file).resolve(), "路线说明不能覆盖输入 JSON。")
             bx.require(output.suffix.lower() == ".html", "--out 请指定 HTML 文件。")

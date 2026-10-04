@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import csv
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,24 @@ SCRIPTS = Path(__file__).resolve().parent
 
 class EngineError(ValueError):
     pass
+
+
+def validate_checked_at(value):
+    """A research timestamp records a past observation, never a forecast."""
+    if not isinstance(value, str):
+        raise EngineError("查阅日期需要实际 YYYY-MM-DD 或带时区的 ISO 时间。")
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            future = date.fromisoformat(value) > date.today()
+        else:
+            checked = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if checked.tzinfo is None:
+                raise ValueError("missing timezone")
+            future = checked > datetime.now(timezone.utc) + timedelta(minutes=5)
+    except ValueError as exc:
+        raise EngineError("查阅日期无效；请使用实际 YYYY-MM-DD 或含 +08:00 / Z 时区的 ISO 时间。") from exc
+    if future:
+        raise EngineError("查阅日期位于未来；请从本机当前日期/时间记录真实查阅时间。")
 
 
 def version(root: Path) -> str:
