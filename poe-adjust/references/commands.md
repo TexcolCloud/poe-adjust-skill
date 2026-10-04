@@ -20,7 +20,7 @@ python $entry status --run '<工作区>/配装任务/会话'
 
 `--pob '<PoECharm 或内部 PoB 文件夹>'` 可放在任何子命令后。会话建立后通常无需重复提供。`inspect` 的结果较大，优先保存到文件并读取相关部分。
 
-`--run` 始终指向同一个会话目录。首次 start 要求目录为空或尚不存在；原始文件和已有诊断放在其他目录也可以。读取诊断时用 `Get-Content -Raw -Encoding UTF8 ... | ConvertFrom-Json`，优先选取 `calculation.stats`、`calculation.warnings` 和相关技能组，不需要逐行读完整个大文件。
+`--run` 始终指向同一个会话目录。首次 start 要求目录为空或尚不存在；原始文件和已有诊断放在其他目录也可以。`inspect --calculate --out` 仍直接返回简短的 `diagnosis_summary`，向玩家原样报告这段诊断，不再乘命中率或另造“有效 DPS”。完整文件也包含该摘要。进一步读诊断时用 `Get-Content -Raw -Encoding UTF8 ... | ConvertFrom-Json`，选取相关 `calculation.stats`、`calculation.warnings`、`calculation.active_skills` 和 `calculation.damage_sources`，不需要逐行读完整大文件。
 
 start 返回 overview，已含职业、等级、两个版本和技能组，不需要为了首次问询再 inspect。inspection 文件保留原 XML 字段：skill_groups[].gems[].skillId/nameSpec；计算结果则为 calculation.gems[].id/name。不要反复试猜字段名。任务点/升华进度仍由用户确认，不能从缓存的 unallocatedPassives 推断已完成任务数。
 

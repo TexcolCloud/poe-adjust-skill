@@ -18,7 +18,7 @@ import buildxml as bx
 import engine
 import routes
 
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -57,6 +57,20 @@ def write_text(path, text):
 
 def write_json(path, value):
     write_text(path, json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False))
+
+
+def diagnosis_summary(result):
+    """Keep the first player-facing diagnosis on the native calculation basis."""
+    stats = result["stats"]
+    minion = any(skill.get("is_main") and skill.get("minion") for skill in result.get("active_skills", []))
+    damage, hit = ("MinionCombinedDPS", "MinionHitChance") if minion else ("CombinedDPS", "HitChance")
+    rows = [f"当前主技能：{result.get('main_skill_name', result.get('main_skill', '未识别'))}。"]
+    rows += [f"{METRICS[key]}：{stats[key]:g}" for key in (damage, hit, "Life", "EnergyShield", "ChaosResist", "ManaUnreserved") if key in stats]
+    rows.append("DPS 已包含引擎的命中计算，不再乘命中率。其他技能是否计入总输出以 damage_sources 的实际分项为准，不能根据装备着召唤宝石推断。")
+    if stats.get("ManaUnreserved", 0) < 0:
+        rows.append("原文件的保留配置超出可用魔力，需要调整同时开启的保留技能。各技能可能支付魔力、生命或能盾，不能据此断言所有技能都不能使用。")
+    rows.append("这是原文件当前配置的诊断，未证明续航可持续，也不能直接用它承诺改装后的实战提升；后续候选会核对常态条件与资源。")
+    return "\n\n".join(rows)
 
 
 def read_run(path):
@@ -885,9 +899,11 @@ def main(argv=None):
             if args.calculate:
                 computed = engine.calculate(engine.resolve_root(args.pob), bx.serialise(document))
                 result["calculation"] = {key: value for key, value in computed.items() if key not in {"xml", "config_keys"}}
+                result["diagnosis_summary"] = diagnosis_summary(computed)
             if args.out:
                 write_json(args.out, result)
-                result = {"inspection": str(Path(args.out).resolve()), "build": result["build"]}
+                result = {"inspection": str(Path(args.out).resolve()), "build": result["build"],
+                          **({"diagnosis_summary": result["diagnosis_summary"], "reply_policy": "诊断数值原样使用 diagnosis_summary；随后只问尚未明确的玩家偏好，不重新推导有效 DPS。"} if args.calculate else {})}
         elif args.command == "decode":
             destination = Path(args.out).resolve()
             bx.require(destination != Path(args.input).resolve(), "解码输出不能覆盖输入文件。")
@@ -930,6 +946,10 @@ def main(argv=None):
             bx.require(output.suffix.lower() == ".html", "--out 请指定 HTML 文件。")
             write_text(output, routes.render(checked, warnings, calculation["engine_version"], calculation["tree_version"]))
             result = {"status": "route_checked", "file": str(output), "stages": len(checked["stages"]), "gem_types_checked": len(gems), "engine_version": calculation["engine_version"], "warnings": warnings, "not_calculated": "路线等级与依赖校验；未实算完整阶段装备 DPS/生存。需要具体阶段 XML 时，继续建立完整配装候选并 evaluate/export。"}
+            result["user_summary"] = (f"已生成《{checked['name']}》，共 {len(checked['stages'])} 个阶段，详见 {output.name}。\n\n"
+                                      "本机已检查宝石等级、主辅兼容、物理孔位、升华连接，以及文件记录的章节、职业和偏好约束。领取表来源与文字机制仍需逐项核对，不能把无程序警告当作实战验证。\n\n"
+                                      "尚未使用完整阶段装备实算伤害、生存和续航。按每段的领取进度与切换条件推进；实际角色形成后，可提供新的 XML 继续计算。")
+            result["reply_policy"] = "交付 HTML 后原样使用 user_summary；不要在最终聊天重复编写一套未经实算的伤害、抗性或续航承诺。"
         else:
             run, state = read_run(args.run)
             result = {"run": str(run), "phase": state["phase"], "pob_path": state["pob_path"], "engine_version": state["engine_version"], "skill_version": VERSION, "intent": state.get("intent"), "candidates": [p.parent.name for p in (run / "candidates").glob("*/evaluation.json")]}

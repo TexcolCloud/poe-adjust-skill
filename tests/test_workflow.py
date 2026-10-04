@@ -51,6 +51,20 @@ class DocumentTests(unittest.TestCase):
             poe.write_text(path, text)
             self.assertEqual(bx.digest(path.read_bytes()), bx.digest(text))
 
+    def test_diagnosis_preserves_native_damage_and_distinguishes_resource_pools(self):
+        result = {"main_skill_name": "Spectral Shield Throw", "stats": {"CombinedDPS": 33770, "HitChance": 56, "ManaUnreserved": -275}}
+        summary = poe.diagnosis_summary(result)
+        self.assertIn("主技能综合 DPS：33770", summary)
+        self.assertNotIn("18911", summary)
+        self.assertIn("不再乘命中率", summary)
+        self.assertIn("不能据此断言所有技能都不能使用", summary)
+        result["active_skills"] = [{"is_main": True, "minion": True}]
+        result["stats"].update(MinionCombinedDPS=1234, MinionHitChance=95)
+        summary = poe.diagnosis_summary(result)
+        self.assertIn("召唤物单体综合 DPS：1234", summary)
+        self.assertIn("召唤物命中率 %：95", summary)
+        self.assertNotIn("33770", summary)
+
     def test_inspection_never_overwrites_input(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "原始角色.xml"
@@ -279,13 +293,13 @@ class DocumentTests(unittest.TestCase):
 def route_fixture():
     return {"name": "离线开荒路线测试", "confirmed": True, "goal": "验证分阶段推荐的限制", "league": "测试赛季", "class_id": 4,
             "game_version": "3.29",
-            "ascendancy": "Champion", "trade_mode": "ssf", "budget": {"amount": 0, "currency": "divine"}, "version_status": "unverified",
+            "ascendancy": "Champion", "trade_mode": "ssf", "allow_minions": False, "allow_mule": False, "budget": {"amount": 0, "currency": "divine"}, "version_status": "unverified",
             "sources": [{"id": "gem", "title": "测试来源", "url": "https://example.org/gem", "checked_at": "2026-10-04", "version": "测试数据"}],
-            "gems": {"ShieldCrush": {"acquisition": "vendor", "source_id": "gem", "source_note": "仅验证文档结构，不作为实际领取资料。"}},
-            "stages": [{"name": "测试阶段", "level": level, "weapon_setup": "one_hand_shield",
+            "gems": {"ShieldCrush": {"acquisition": "vendor", "source_id": "gem", "source_note": "仅验证文档结构，不作为实际领取资料。", "available_from_act": 1, "class_ids": list(range(7))}},
+            "stages": [{"name": "测试阶段", "level": level, "act": act, "weapon_setup": "one_hand_shield",
                         "skill_groups": [{"name": "主技能", "slot": "Gloves", "use": "main", "gems": [{"skill_id": "ShieldCrush", "level": 1}]}],
                         "gear": ["盾牌"], "passives": ["生命"], "ascendancy_points": 0, "ascendancy_nodes": [], "resources": "核对消耗与魔力药剂",
-                        "checks": ["属性需求满足"], "transition": ["下一阶段核心技能准备好"]} for level in (1, 12, 68)]}
+                        "checks": ["属性需求满足"], "transition": ["下一阶段核心技能准备好"]} for level, act in ((1, 1), (12, 2), (68, 11))]}
 
 
 class RouteTests(unittest.TestCase):
@@ -299,6 +313,23 @@ class RouteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "需要角色 70 级"):
             routes.validate(self.route, self.gems)
 
+    def test_route_auto_levels_resolve_without_changing_input_and_report_all_errors(self):
+        self.gems["ShieldCrush"]["level_requirements"] += [{"gem_level": 3, "character_level": 12}, {"gem_level": 18, "character_level": 68}]
+        for stage in self.route["stages"]: stage["skill_groups"][0]["gems"][0]["level"] = "auto"
+        original = copy.deepcopy(self.route)
+        checked, _ = routes.validate(self.route, self.gems)
+        self.assertEqual([stage["skill_groups"][0]["gems"][0]["level"] for stage in checked["stages"]], [1, 3, 18])
+        self.assertEqual(self.route, original)
+        for stage in self.route["stages"]: stage["skill_groups"][0]["gems"][0]["level"] = 70
+        with self.assertRaises(ValueError) as caught: routes.validate(self.route, self.gems)
+        for label in ("1 级阶段", "12 级阶段", "68 级阶段", "最高可练到宝石 18 级"):
+            self.assertIn(label, str(caught.exception))
+        self.route["stages"][0]["skill_groups"][0]["gems"][0]["level"] = "auto"
+        self.gems["ShieldCrush"]["min_level"] = 2
+        self.gems["ShieldCrush"]["level_requirements"][0]["character_level"] = 2
+        with self.assertRaisesRegex(ValueError, "最早需要角色 2 级"):
+            routes.validate(self.route, self.gems)
+
     def test_route_rejects_wrong_ascendancy_and_incompatible_support(self):
         classes = [{"id": 4, "ascendancies": [{"name": "Champion"}]}]
         self.route["ascendancy"] = "Elementalist"
@@ -308,6 +339,25 @@ class RouteTests(unittest.TestCase):
         links = {"ShieldCrush": {"incompatible": ["SupportGreaterMultipleProjectiles"]}}
         with self.assertRaisesRegex(ValueError, "以下辅助不支持"):
             routes.validate(self.route, self.gems, "3.29", classes, links)
+
+    def test_route_enforces_recorded_acquisition_chapter_class_and_player_preferences(self):
+        acquisition = self.route["gems"]["ShieldCrush"]
+        acquisition["available_from_act"] = 3
+        with self.assertRaisesRegex(ValueError, "早于已记录的第 3 章"):
+            routes.validate(self.route, self.gems)
+        acquisition["available_from_act"], acquisition["class_ids"] = 1, [3]
+        with self.assertRaisesRegex(ValueError, "职业范围不含当前职业"):
+            routes.validate(self.route, self.gems)
+        acquisition["via_mule"] = True
+        with self.assertRaisesRegex(ValueError, "未允许另建小号"):
+            routes.validate(self.route, self.gems)
+        self.route["allow_mule"] = True
+        routes.validate(self.route, self.gems)
+        self.gems["ShieldCrush"]["tags"]["minion"] = True
+        with self.assertRaisesRegex(ValueError, "用户选择不使用召唤"):
+            routes.validate(self.route, self.gems)
+        self.route["allow_minions"] = True
+        routes.validate(self.route, self.gems)
 
     def test_ssf_does_not_depend_on_trade_or_random_core_without_fallback(self):
         self.route["gems"]["ShieldCrush"]["acquisition"] = "trade"
@@ -616,6 +666,10 @@ class RealEngineTests(unittest.TestCase):
         route = route_fixture()
         checked, _ = routes.validate(route, gems)
         self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["name"], gems["ShieldCrush"]["display_name"])
+        route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = "auto"
+        checked, _ = routes.validate(route, gems)
+        actual = checked["stages"][-1]["skill_groups"][0]["gems"][0]["level"]
+        self.assertEqual(actual, max(row["gem_level"] for row in gems["ShieldCrush"]["level_requirements"] if row["character_level"] <= 68))
         route["gems"]["Sunder"] = copy.deepcopy(route["gems"]["ShieldCrush"])
         route["stages"][0]["skill_groups"][0]["gems"][0]["skill_id"] = "Sunder"
         with self.assertRaisesRegex(ValueError, "需要角色 12 级"):
@@ -828,6 +882,20 @@ class RealEngineTests(unittest.TestCase):
             self.assertEqual(poe.main(command + ["--out", str(query)]), 2)
         self.assertIn("不能覆盖", error.getvalue())
         self.assertEqual(bx.digest(query.read_bytes()), digest)
+
+    def test_25_inspect_returns_safe_diagnosis_even_when_full_data_goes_to_file(self):
+        path = Path(self.temp.name) / "diagnosis.json"
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = poe.main(["inspect", "--input", str(self.sample), "--calculate", "--out", str(path)])
+        self.assertEqual(code, 0)
+        result = json.loads(stdout.getvalue())
+        saved = poe.read_json(path)
+        self.assertEqual(result["diagnosis_summary"], saved["diagnosis_summary"])
+        self.assertIn(f"主技能综合 DPS：{saved['calculation']['stats']['CombinedDPS']:g}", result["diagnosis_summary"])
+        self.assertIn("不再乘命中率", result["diagnosis_summary"])
+        self.assertIn("原样", result["reply_policy"])
+        self.assertLess(len(stdout.getvalue()), 3000)
 
     def test_24_catalog_failure_explains_character_free_queries(self):
         invalid = '<PathOfBuilding><Build className="Marauder" ascendClassName="Chieftain" level="1" targetVersion="3_0"/><Tree><Spec treeVersion="3_29" ascendancyName="Chieftain"><URL>https://www.pathofexile.com/passive-skill-tree/AAAABgAA</URL></Spec></Tree><Skills/><Items/></PathOfBuilding>'
