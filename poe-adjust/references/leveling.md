@@ -59,6 +59,7 @@ route 自动分批读取当前宝石、连线、基底和完整升华目录，�
 | level | 角色等级，未知可省略/null；auto 宝石等级需要已知角色等级 |
 | act / completed_act | 当前前往章节与已完成章节进度分开，正整数/非负整数；章节号不能代替具体任务完成 |
 | entry_conditions | 该阶段条件 claim_id 数组，claim.subjects 包含 `stage:<stage_id>` |
+| entry_checks | 可选数值/配置条件数组；每条含 check_id、locator、op、value、claim_id，见下文 |
 | bases / weapon_setup | `{原生槽位:完整基底名}`；武器布局可选自由说明 |
 | skill_groups | `[{name,slot,use,enabled,gems:[{instance_id,skill_id,level,quality}]}]`；level可填auto，quality默认0 |
 | gear / passives / checks / transition | 各为文字或文字数组，说明目标属性、天赋顺序、可观察检查与下一段条件 |
@@ -86,6 +87,10 @@ route 的 claims 可引用声明的网页/资料，以及本次 `native:catalog#
 
 assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[]}`；scope 不能缩掉用户已明确要求的终点。每段判断核对所列资源技能确实安排、切换前后依赖未丢、操作满足偏好，以及取得条件可执行。来源观测与模型判断分开显示；缺一条实际来源时保留相应缺口，不凭非空文字消除。
 
+数值进入条件用 `entry_checks`：`locator` 指向本阶段原生结果，例如 `/stats/FireResist`、`/stats/ManaUnreserved` 或 `/config_values/resistancePenalty`；`op` 为 ge/le/eq；`value` 是模型结合本次目标选定的有限数值，eq 也支持同类型字符串/布尔值。`claim_id` 引用对应 `stage:<id>` 判断，说明为何选择这条门槛。没有固定抗性或等级要求，不能用其他阶段的值替代。缺实际字段为 unknown，未达到为 unmet，即使有文字理由也保留进入条件缺口，路线只能作为条件草案。
+
+声称“补抗后切换”时，应把相应装备规格、取得方式及效果放进 snapshot 再算；尚未达到的目标保留 entry_checks.unmet，不能在结论说已解决。资源方案填 snapshot.usage 的频率、使用窗口和恢复条件；药剂单件参数可从 calculation 的原生 equipped[].flask_local 或 data 读取，但不包含角色修正、当前充能或补充事件，不能凭它证明无限覆盖。需检查当前前往章节、已完成章节和配置是在同一阶段时点。
+
 弃用字段：version_status、shared_trials 默认值、upgrade_gems、fallback_skill_id、ascendancy_respec_reason，以及旧固定武器/用途枚举。其有效内容分别进入真实用户声明、后续阶段或有引用的 claims。旧字段不能在新 schema 静默忽略。
 
 ## 关键阶段内部 XML
@@ -102,8 +107,10 @@ assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[
 
 同一次 route 会生成阶段 XML、回读并绑定摘要，然后解析 `native:stage:<stage_id>#/stats/Life` 等实际引用。因此 stage/snapshot/resource 等相关判断可同时引用该阶段原生结果；与资源有关的 claim 还需标明 `stage:<stage_id>` 或 `snapshot:<stage_id>`，避免把另一个阶段的使用说明混入。
 
-内部文件位于输出 HTML 同级 `<输出名>.calculations/<阶段摘要>/snapshot.xml` 和 evaluation.json。`calculation` 分开列明完整装备条件、数值、孔位/属性/天赋检查和资源缺口；没有完整输入或计算失败的阶段不生成虚构统计。现有模板遗留的装备/节点也会进入实算，核对它们是否属于本阶段。
+内部文件位于输出 HTML 同级 `<输出名>.calculations/<阶段摘要>/snapshot.xml` 和 evaluation.json；snapshot.json 保存已回读的阶段计算，输入/结果/文件摘要和实际引擎指纹一致才复用。`.state.json` 记录计算阶段与交付是否完成，失败后重跑同一 route 命令即可；损坏或失效的阶段重算，来源与判断仍重新核对。`calculation` 分开列明完整装备条件、数值、孔位/属性/天赋检查和资源缺口；没有完整输入或计算失败的阶段不生成虚构统计。现有模板遗留的装备/节点也会进入实算，核对它们是否属于本阶段。
 
-本阶段实际装备需与 bases 一致，具体物品及规格摘要需出现在截至此阶段的 required_items 中。快照是条件规划，已回读不代表装备可得、剧情完成或目标达到。HTML 和 evidence.json 的状态仍取决于各阶段与来源缺口。
+本阶段实际装备需与 bases 一致，具体物品及规格摘要需出现在截至此阶段的 required_items 中。程序在 calculation.material_specs 返回可直接引用的 item_id/spec_sha256/quantity，不必手工计算摘要。快照是条件规划，已回读不代表装备可得、剧情完成或目标达到。HTML 和 evidence.json 的状态仍取决于各阶段与来源缺口。
+
+route 同时生成 `<输出名>.review.json`，集中列出每阶段事实、物资、引用及缺口。用同一 TeleAgent 模型核对数字/对象、因果、替代方案排除、进入条件和结论范围；在原 route.assessment.review 填 token/findings/unresolved 后重跑。格式和失效规则与配装相同。改动阶段、说明、来源或本机数据后旧复核失效，不自动将旧文本绑定新数值；完整交付以 state.file_exported 为准。
 
 物理实例的 required_items 只登记首次取得，后续沿用不重复计费。再次购买另一颗同名宝石使用新 instance_id；对旧实例升级或改造记录实际转换依据与服务/材料。已匹配的 owned 实例声明自动用于库存核对，无须在 inventory 重抄；显式 inventory 同规格记录会优先使用，但仍核对声明数量和规格。不能重复使用同一份数量凭据抵消多颗物品。

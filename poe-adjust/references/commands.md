@@ -82,6 +82,36 @@ python $entry research --trials --out '<工作区>/trial-facts.json'
 
 doctor/start 的指纹覆盖计算代码、数据、适配器和译名；data_version_basis 说明本机规则版本依据。version_source_hint 只是未核实的历史公告搜索线索，不证明当前赛季或用户区服；research --version 实际读取正文后才返回 version_evidence。软件版本相同但内容变化仍使旧结果失效。接口不兼容明确报告，不自动修改 PoECharm。操作只要求自己需要的能力，不以守护接口缺失否定职业目录。
 
+## 本机原文只读查询
+
+```powershell
+python $entry data --mode list --limit 30 --out '<工作区>/data-index.json'
+python $entry data --mode list --path 'engine/Data' --limit 40 --offset 0
+python $entry data --mode search --path 'engine/Data' --query 'totem' --limit 15 --out '<工作区>/matches.json'
+python $entry data --mode search --path 'translations' --query '图腾' --limit 10
+python $entry data --mode read --path '<上一步返回的source>' --line <实际行号> --limit 30 --out '<工作区>/passage.json'
+```
+
+单页最多 200 条/行，搜索为字面匹配；用 next_offset/next_line 翻页。默认范围是公开代码/资料/简体中文翻译和本机元数据声明的最新标准树；指定 `engine/TreeData/<返回的版本>` 可读其他树，不能当成本赛季规则。搜索 excerpt 可能截短，truncated 明示；采用结论前 read 上下文。read 返回确切行号、原文、文件字节 SHA256 和 evidence_template，补 evidence_id/subject 后放入 evidence 即可。验证时重新读取相同行、比较文件摘要；更新后旧引用变成 unresolved。
+
+先 catalog 查具体对象和合法选项，只有缺信息才搜索原文，不把整个目录塞入上下文。以下是定位提示，文件有变以当次 list 为准：
+
+| 需要核对 | 本机资料位置（相对 engine/，翻译除外） |
+|---|---|
+| 宝石标签、等级表、品质、技能描述与辅助限制 | Data/Gems.lua、Data/Skills；用 catalog gems/skills/links 优先 |
+| 传奇、基底、词缀、物等、药剂参数 | Data/Uniques、Data/Bases、Data/ModExplicit.lua、Data/ModFlask.lua、Data/EnchantmentFlask.lua |
+| 天赋、专精、连接与效果 | TreeData 下实际版本；catalog nodes 优先；translations/tree_dn.csv、tree_sd.csv、tree_rt.csv 辅助对照 |
+| 精华、工艺台、腐化、势力隐性与附魔 | Data/Essence.lua、ModMaster.lua、ModCorrupted.lua、ModEldritch.lua、ModVeiled.lua、BeastCraft.lua 等；不等于完整制作步骤或解锁成本 |
+| 星团、纹身、永恒珠宝 | Data/ClusterJewels.lua、TattooPassives.lua、TimelessJewelData；压缩/二进制种子表只列目录，不伪装成文本解析或已模拟 |
+| 角色成长、资源、敌人基础与洗点表 | Data/Misc.lua、Data/Costs.lua；倍率/权重不是角色最终值 |
+| 召唤物、灵体与技能 | Data/Minions.lua、Data/Spectres.lua、Data/Skills；分清基础倍率、主体和最终输出 |
+| 首领技能与地图词缀 | Data/Bosses.lua、BossSkills.lua、ModMap.lua；只覆盖内置项目，描述存在不代表 apply/计算已实现 |
+| 万神殿、盗贼、战斗条件与默认值 | Data/Pantheons.lua、Modules/ConfigOptions.lua；默认场景由模型按实际进度核对 |
+| 费用、触发、回复、减伤与伤害实现 | Modules/Calc*、ModParser.lua、SkillStatMap.lua、相关 Classes；读实现只作机制依据，完整收益用实算 |
+| 中文效果与交易词条对应 | translations/statDescriptions.csv、Items*.csv 等，Data/TradeSiteStats.lua；不是国服实时行情 |
+
+本接口不开放 Settings、Builds、任意绝对路径或跳出范围的链接；文本只读不执行。结果仅写任务工作区，安装目录与 PoECharm 资料目录受写入检查。它不是 TeleAgent 其他工具的系统级沙箱。目录授权被拒绝后不能换工具绕行，资料缺失就保留缺口。国服当季取得、完整剧情奖励/商店/试炼路线及实时价格仍要联网核实。
+
 ## 用户意图 intent.json
 
 ```json
@@ -148,20 +178,23 @@ tree.masteries/masteries_add 使用节点 ID 字符串到效果 ID 的映射；n
 
 ## 证据、结论与使用方式
 
-每条 evidence：`evidence_id/kind/subject` 必需；可选 text/url/path/excerpt/context/checked_at/message_ref。ID 在 intent+plan 合并后唯一，不以 native: 开头。status/digest/origin 由程序生成。
+每条 evidence：`evidence_id/kind/subject` 必需。其余字段按下列 kind 使用；ID 在 intent+plan 合并后唯一，不以 native: 开头。status/digest/origin 由程序生成。
 
 - user_statement：text 是实际表达，输出 user_declared。用户库存不是程序独立盘点。
 - web：url 与正文实际包含的 excerpt，由脚本读取公开官方/PoEDB 页面，输出 source_observed。其他公开来源可用 TeleAgent 联网工具读取，再使用 artifact。
 - artifact：path 指向本次任务目录内文本，excerpt 必须确实存在，记录内容摘要与采集 URL/时间。输出 artifact_observed，代表片段可追溯，不假装文件必定来自声称的网站。不能用此路径读取平台内部输出目录。
+- local_data：使用 `data read` 的 evidence_template（source/line/count/content_sha256），补 evidence_id/subject。程序从本机重新读取，不接受替代 text/path/url。输出 local_data_observed 只证明原文及摘要，不证明含义与当前方案相关、当季可得或游戏内实测。
 - 原生引用直接写 `native:candidate#/stats/Life`、`native:baseline#/stats/Life` 等 JSON pointer，无需声明 evidence。只能访问本次已有字段，指针不执行代码。引用值与引擎/计算 XML 绑定；不要猜旧数组下标。
 
-claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertainties`。subjects/evidence_refs/conditions/uncertainties 均为字符串数组；claim_id 唯一。缺引用、引用不存在、来源未解决或 uncertainties 非空，保持 unresolved。model_assessed 表示模型作了有引用的判断，**不表示程序证明语义充分**。
+claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertainties`。subjects/evidence_refs/conditions/uncertainties 均为字符串数组；claim_id 唯一。缺引用、引用不存在、来源未解决或 uncertainties 非空，保持 unresolved。程序附上 observations 的真实值、对象上下文和摘要；不得手写这些输出字段。model_assessed 表示模型作了有引用的判断，**不表示程序证明语义充分**。最终 review 另行绑定，不能让旧文字自动得到新方案的复核身份。
 
 常用 subject：`goal`、`progress:normal`、`progress:ascendancy`、`progress:secondary_ascendancy`、`condition:guard`、`condition:Flask 1`、`config:<字段>`、`skill:<skill_ref>`、`dependency:<skill_ref>`、`count:<组>:<宝石位置>`、`resource:Mana:leech`、`resource:EnergyShield:recharge`、`transformation:<槽位>`、`legality:item:<物品ID>`、`migration`、`template_source`。以实际 pending 为索引说明问题；permission、缺失原生量和 capability 缺口不能靠填理由转成程序通过。
 
 `assessment:{goal_claim_ids:["目标claimID"],scope:"实际核对范围",unresolved:[]}`。goal claim 引用用户目标与本次数值/来源，解释收益、代价、是否满足。不得以改变 scope 隐去用户已经明确要求的部分。
 
-usage 每行是 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。引用 evaluation.result.active_skills 本次真实 skill_ref；claim 关联 `skill:<同一引用>`。频率为次/秒，窗口与恢复为秒，有限非负；未知就省略，不能编数。手动副技能需明确实际频率，包括0次的场景也解释。程序核对单次支付、可核算的线性费用、使用窗口与恢复；不能可靠推导的时序留 capability 缺口。默认展示原生满速费用；不要求全部方案满速持续。充能启动与打断条件、吸取受益者单列；调整节奏后未重算的 DPS 不当持续输出。
+usage 每行是 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。引用 evaluation.result.active_skills 本次真实 skill_ref；claim 关联 `skill:<同一引用>`。频率为次/秒，窗口与恢复为秒，有限非负；未知就省略，不能编数。手动副技能需明确实际频率，包括0次的场景也解释。程序核对单次支付、可核算的线性费用、使用窗口与恢复；不能可靠推导的时序留 capability 缺口。默认展示原生满速费用；不要求全部方案满速持续。净缺口没有使用窗口、充能启动前储量不足，不因 prose claim 存在而消除。降频不能沿用满速命中吸取来证明续航，未重算时保持 unknown；DPS 同样不能当节奏调整后的持续输出。
+
+原生 `equipped[].flask_local` 是单件药剂参数，`flask_scope` 明示不包括角色修正、当前充能、补充事件或实际覆盖。开启药剂的快照若声明 continuous，程序会保留 `capability:flask_coverage:<槽位>`；当前适配没有完整覆盖时序测量。可以研究具体有限窗口与缺口，但不能只写“有药剂”就宣称无限续航。
 
 ## 库存和采购
 
@@ -177,12 +210,20 @@ requirements 从实际 XML 差异产生，包含仍装备的禁用/备用宝石�
 
 ## 结果、完整性与交付
 
-evaluate 保存 candidate.xml、requested.xml、plan.json、evaluation.json。读取 result 的实际技能、装备、配置、统计与伤害分项，readiness 的资源、errors/pending、budget、claims/evidence 和逐类 validation。diagnostics 带 code/category/subject/evidence_refs/affects/message/status；未知能力不改写成游戏非法。
+evaluate 保存 candidate.xml、requested.xml、plan.json、evaluation.json、review.json。读取 result 的实际技能、装备、配置、统计与伤害分项，readiness 的资源、errors/pending、budget、claims/evidence 和逐类 validation。diagnostics 带 code/category/subject/evidence_refs/affects/message/status；未知能力不改写成游戏非法。默认值等价性按本机 ConfigTab.GetDefaultState/Save 语义检查，同时核对统计；没有一律丢弃 false。config_values 记录最终保存文件的实际输入，config_saved_values 是省略原生默认值后的保存语义。
+
+最终复核使用现有 TeleAgent 模型，不增加另一模型服务。先完成方案/claims 修订并 evaluate，再阅读 review.json 的 facts/claims：核对数字与技能/主体/阶段、因果证据、替代方案排除理由、切换进入条件以及 summary/迁移说明/最终回答的范围。发现问题就修改并重新 evaluate，直到可以如实记录本轮复核。填写源 plan 的 `assessment.review`，再 evaluate：
+
+```json
+{"token":"本次 review.json 的完整 token","findings":"实际检查内容、发现和仍成立的取舍；不是照抄通过字样","unresolved":[]}
+```
+
+token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源/预算和数值；改变后旧复核失效。`final_review:missing/stale` 保留 draft，findings/unresolved 不改写机械矛盾或其他缺口。此步骤只证明模型复核针对这一版，不证明语言无误；不要用脚本自动填 token，不能以复核记录宣称全部机制验证。
 
 候选名称为1–48位小写英文/数字/连字符。原件、意图、请求 XML、候选记录/文件及引擎内容都有完整性校验；直接手改输出会要求重算。baseline 缓存按意图、共同场景、引擎及适配版本区分，各候选保留自己的基准。
 
 probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。返回各变体原生快照、差异与未评审依赖；不继承旧宝石的使用结论，最终选择仍写完整 plan/evaluate。批量大小为进程资源保护，自动分批比较。
 
-export 再复算并重核来源。blocked 只输出诊断 HTML；draft 输出明确命名的配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json。`file_exported` 与方案状态分开。最后通过 TeleAgent 文件工具交付两份用户文件，以 facts_summary 为事实基础，再解释已引用的取舍；不能将“已回读”说成“全部机制、预算和实战已证实”。
+export 再复算并重核来源和复核 token。blocked 只输出诊断 HTML；draft 输出明确命名的配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json、review.json、delivery.json。只有 XML 与 HTML 均落盘后 delivery.file_exported 才为 true，清除同候选旧状态的另一 XML 文件；失败中断时保持 preparing/会话 exporting，处理错误后重试 export。无 URL 的本地证据仍正常展示。最后交付两份用户文件，以 facts_summary 为事实基础解释取舍；“已回读”不代表全部机制、预算和实战已证实。
 
 退出字段：calculation_mode、resource_mode、unused_points_reason、config_evidence、burst_seconds、upgrade_gems、fallback_skill_id、version_status、verified_cn。分别迁入具体 usage、claims、阶段或来源；旧字段显式报错，不保留双套运行路径。

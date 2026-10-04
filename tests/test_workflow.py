@@ -648,6 +648,168 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):engine.validate_contract({"catalog":[{"id":"future"}]})
 
 
+class ReadOnlyDataTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.base=Path(self.temp.name);self.root=self.base/"Portable"
+        for name in ("Data","Modules","Classes","TreeData/3_90","TreeData/3_91","Builds"):
+            (self.root/name).mkdir(parents=True)
+        (self.root/"manifest.xml").write_text('<Manifest><Version number="99.0"/></Manifest>',encoding="utf-8")
+        (self.root/"GameVersions.lua").write_text('treeVersionList = {"3_90", "3_91"}',encoding="utf-8")
+        (self.root/"changelog.txt").write_text('VERSION[99.0]\n--- 3.91 Test',encoding="utf-8")
+        (self.root/"lua51.dll").write_bytes(b"fixture only")
+        (self.root/"Modules/Build.lua").write_text('return {}',encoding="utf-8")
+        (self.root/"Data/Skills.lua").write_text('return {\n  name = "Test skill",\n  cost = 12,\n  note = "Test description",\n}',encoding="utf-8")
+        (self.root/"Data/seed.zip.part0").write_bytes(b"binary fixture")
+        for name in ("Settings.xml","Builds/private.lua"):
+            (self.root/name).write_text('private Test',encoding="utf-8")
+        for version in ("3_90","3_91"):
+            (self.root/"TreeData"/version/"tree.lua").write_text('Test '+version,encoding="utf-8")
+        self.translations=self.base/"Data/Translate/zh-rCN";self.translations.mkdir(parents=True)
+        (self.translations/"tree_sd.csv").write_text('Test description,测试描述\n',encoding="utf-8")
+
+    def test_inventory_search_paging_and_current_tree_discovery(self):
+        listing=engine.query_sources(self.root,limit=200)
+        names={r["source"] for r in listing["entries"]}
+        self.assertIn("engine/Data/seed.zip.part0",names)
+        self.assertNotIn("engine/Settings.xml",names);self.assertNotIn("engine/Builds/private.lua",names)
+        self.assertIn("engine/TreeData/3_91/tree.lua",names);self.assertNotIn("engine/TreeData/3_90/tree.lua",names)
+        result=engine.query_sources(self.root,mode="search",path="engine/Data",query="Test",limit=1)
+        self.assertEqual((result["total"],result["next_offset"]),(2,1))
+        other=engine.query_sources(self.root,mode="search",path="engine/Data",query="Test",limit=1,offset=1)
+        self.assertEqual(other["entries"][0]["line"],4);self.assertIsNone(other["next_offset"])
+        self.assertEqual(result["skipped"][0]["reason"],"archive")
+        historical=engine.query_sources(self.root,path="engine/TreeData/3_90")
+        self.assertEqual(historical["total"],1)
+        (self.root/"TreeData/3_92").mkdir();(self.root/"TreeData/3_92/tree.lua").write_text("new",encoding="utf-8")
+        (self.root/"GameVersions.lua").write_text('treeVersionList = {"3_90", "3_91", "3_92"}',encoding="utf-8")
+        self.assertEqual(engine.query_sources(self.root)["current_tree_prefix"],"engine/TreeData/3_92")
+
+    def test_local_receipt_is_bound_to_bytes_and_does_not_write_installation(self):
+        before={str(p):bx.digest(p.read_bytes()) for p in self.base.rglob("*") if p.is_file()}
+        receipt=engine.read_source(self.root,"engine/Data/Skills.lua",2,2)
+        self.assertEqual([r["line"] for r in receipt["lines"]],[2,3])
+        declaration={**receipt["evidence_template"],"evidence_id":"cost","subject":"fixture"}
+        evidence=facts.load_evidence([declaration],self.base,{"engine_fingerprint":"fixture"},root=self.root)
+        self.assertEqual(evidence["cost"]["status"],"local_data_observed")
+        self.assertEqual(before,{str(p):bx.digest(p.read_bytes()) for p in self.base.rglob("*") if p.is_file()})
+        (self.root/"Data/Skills.lua").write_text('return {cost=99}',encoding="utf-8")
+        changed=facts.load_evidence([declaration],self.base,{},root=self.root)
+        self.assertEqual(changed["cost"]["status"],"unresolved")
+        self.assertNotIn("text",changed["cost"])
+
+    def test_read_rejects_private_paths_traversal_archives_and_outside_links(self):
+        for source in ("engine/Settings.xml","engine/Builds/private.lua","../Settings.xml","engine/Data/../../Settings.xml",str(self.root/"Settings.xml"),"engine/Data/seed.zip.part0"):
+            with self.subTest(source=source),self.assertRaises(ValueError): engine.read_source(self.root,source)
+        for source in ("engine/Data/Skills.lua",):
+            with self.assertRaises(ValueError): engine.read_source(self.root,source,0,10)
+            with self.assertRaises(ValueError): engine.read_source(self.root,source,1,201)
+        link=self.root/"Data/link.lua"
+        try: link.symlink_to(self.root/"Builds/private.lua")
+        except OSError: self.skipTest("Windows symbolic-link creation unavailable")
+        with self.assertRaises(ValueError): engine.read_source(self.root,"engine/Data/link.lua")
+
+    def test_cli_output_cannot_write_to_application_or_translations(self):
+        engine.resolve_root(str(self.root))
+        for path in (self.root/"Data/out.json",self.translations/"out.json"):
+            with self.assertRaises(ValueError): poe.write_json(path,{"bad":"write"})
+            self.assertFalse(path.exists())
+        output=self.base/"workspace/result.json"
+        with redirect_stdout(io.StringIO()):
+            code=poe.main(["data","--pob",str(self.root),"--mode","read","--path","engine/Data/Skills.lua","--out",str(output)])
+        self.assertEqual(code,0);self.assertTrue(poe.read_json(output)["read_only"])
+        with patch.object(engine,"PROTECTED_ROOTS",set()),self.assertRaises(ValueError):
+            poe.write_json(self.root/"not-registered.json",{})
+        with patch.object(facts,"urlopen") as network,self.assertRaises(ValueError):
+            facts.fetch("https://poedb.tw/us/Gem",self.root/"Data/.poe-evidence","fixture")
+        network.assert_not_called();self.assertFalse((self.root/"Data/.poe-evidence").exists())
+
+    def test_fingerprint_covers_translated_descriptions_and_binary_tables(self):
+        original=engine.fingerprint(self.root)
+        (self.translations/"tree_sd.csv").write_text("Test,更新\n",encoding="utf-8")
+        changed=engine.fingerprint(self.root);self.assertNotEqual(original,changed)
+        (self.root/"Data/seed.zip.part0").write_bytes(b"changed binary")
+        self.assertNotEqual(changed,engine.fingerprint(self.root))
+
+
+class FinalReviewTests(unittest.TestCase):
+    def test_semantics_uses_native_save_defaults_without_dropping_all_false_values(self):
+        common={"class":"fixture","ascendancy":"fixture","level":1,"tree_version":"future","nodes":[],"main_skill":"x","main_group":1,"gems":[],"equipped":[]}
+        explicit={**common,"config_values":{"default_false":False,"default_true":False},"config_saved_values":{"default_true":False}}
+        omitted={**common,"config_values":{"default_true":False},"config_saved_values":{"default_true":False}}
+        self.assertEqual(poe.semantics(explicit),poe.semantics(omitted))
+        changed={**common,"config_values":{},"config_saved_values":{}}
+        self.assertNotEqual(poe.semantics(explicit),poe.semantics(changed))
+
+    def test_review_binds_facts_conditions_prose_and_source_content(self):
+        spec={"summary":"A conditional recommendation","assessment":{"scope":"fixture"}}
+        claims=[{"claim_id":"c","text":"Main skill only","subjects":["goal"],"evidence_refs":["native:candidate#/stats/Life"]}]
+        evidence={"source":{"status":"artifact_observed","digest":"one","recorded_at":"earlier"}}
+        native={"candidate":{"stats":{"Life":100},"xml_sha256":"a","engine_fingerprint":"v"}}
+        assessed=facts.assess_claims(claims,evidence,native)
+        packet,pending=facts.final_review(spec,evidence,assessed,native,spec["assessment"])
+        self.assertIn("final_review:missing",pending)
+        spec["assessment"]["review"]={"token":packet["token"],"findings":"Checked object, numbers, causality, alternatives, conditions and scope.","unresolved":[]}
+        evidence["source"]["recorded_at"]="later"
+        checked,pending=facts.final_review(spec,evidence,assessed,native,spec["assessment"])
+        self.assertFalse(pending);self.assertEqual(checked["status"],"model_reviewed")
+        for object_,key,value in ((native["candidate"]["stats"],"Life",101),(native["candidate"],"xml_sha256","b"),(evidence["source"],"digest","two"),(spec,"summary","different conclusion"),(claims[0],"text","unreviewed claim")):
+            prior=object_[key];object_[key]=value
+            current=facts.assess_claims(claims,evidence,native)
+            _,pending=facts.final_review(spec,evidence,current,native,spec["assessment"])
+            self.assertIn("final_review:stale",pending)
+            object_[key]=prior
+        self.assertEqual(assessed[0]["observations"][0]["value"],100)
+
+    def test_review_unresolved_findings_stay_visible(self):
+        packet,_=facts.final_review({}, {}, [], {}, {})
+        review={"review":{"token":packet["token"],"findings":"Temporal coverage unknown.","unresolved":["coverage"]}}
+        checked,pending=facts.final_review({}, {}, [], {}, review)
+        self.assertEqual(checked["status"],"unresolved");self.assertIn("final_review:coverage",pending)
+
+    def test_resource_prose_cannot_replace_numeric_usage_or_startup(self):
+        result=resource_fixture();result["stats"].update(ManaCost=20,ManaPerSecondCost=60,ManaRegenRecovery=10)
+        claim={"claim_id":"text","status":"model_assessed","subjects":["resource:Mana:usage"],"text":"Drink a potion or cast slowly"}
+        self.assertIn("resource:Mana:usage",poe.readiness(result,{}, {},[claim])["pending"])
+        result["stats"].update(EnergyShield=10,ESCost=1,ESPerSecondCost=50,EnergyShieldRecharge=60,EnergyShieldRechargeDelay=2)
+        claim["subjects"]=["resource:EnergyShield:recharge","resource:EnergyShield:startup"]
+        self.assertIn("resource:EnergyShield:startup",poe.readiness(result,{}, {},[claim])["pending"])
+
+    def test_paced_cost_cannot_keep_full_speed_leech(self):
+        result=resource_fixture();result["stats"].update(ManaCost=20,ManaPerSecondCost=60,ManaLeechGainRate=50)
+        result["active_skills"][0]["costs"]={"Speed":3,"ManaCost":20,"LifeCost":0,"ESCost":0}
+        audit=poe.readiness(result,{}, {"usage":[{"skill_ref":"main","casts_per_second":1}]})
+        self.assertIn("capability:resource:Mana:paced_leech",audit["pending"])
+        self.assertIsNone(audit["resources"][0]["sustainable_while_hitting"])
+
+    def test_flask_prose_cannot_certify_continuous_coverage(self):
+        result=resource_fixture();result["equipped"]=[{"slot":"Flask 1","id":1,"active":True,"flask_local":{"duration":5,"chargesMax":30,"chargesUsed":10}}]
+        claim={"claim_id":"flask","status":"model_assessed","subjects":["condition:Flask 1"]}
+        audit=poe.readiness(result,{}, {"usage":[{"skill_ref":"main","continuous":True}]},[claim])
+        self.assertIn("capability:flask_coverage:Flask 1",audit["pending"])
+        self.assertEqual(audit["conditions"]["flask_facts"][0]["flask_local"]["chargesUsed"],10)
+
+    def test_large_evaluation_terminal_summary_points_to_complete_workspace_record(self):
+        output=io.StringIO()
+        long={"status":"draft","candidate":"fixture","pending":["unknown:"+str(i)+"x"*80 for i in range(200)],"readiness":{"details":"x"*20000}}
+        with patch.object(poe,"evaluate",return_value=long),redirect_stdout(output):
+            code=poe.main(["evaluate","--run",str(ROOT/".work/fixture"),"--name","test","--plan","fixture.json"])
+        response=json.loads(output.getvalue())
+        self.assertEqual(code,0);self.assertEqual(response["pending_total"],200)
+        self.assertEqual(len(response["pending"]),12);self.assertLess(len(output.getvalue()),12000)
+        self.assertTrue(response["details_file"].endswith("evaluation.json"))
+
+    def test_stage_targets_use_actual_values_and_preserve_unmet_conditions(self):
+        claim={"claim_id":"ready","status":"model_assessed","subjects":["stage:a"]}
+        check={"check_id":"chosen-target","locator":"/stats/CustomNewMetric","op":"ge","value":50,"claim_id":"ready"}
+        rows,pending=facts.entry_checks([check],{"stats":{"CustomNewMetric":49}},[claim],"stage:a")
+        self.assertEqual(rows[0]["status"],"unmet");self.assertTrue(pending)
+        rows,pending=facts.entry_checks([check],{"stats":{"CustomNewMetric":50}},[claim],"stage:a")
+        self.assertEqual(rows[0]["status"],"met");self.assertFalse(pending)
+        self.assertEqual(facts.entry_checks([check],{},[claim],"stage:a")[0][0]["status"],"unknown")
+        self.assertTrue(facts.entry_checks([check],{"stats":{"CustomNewMetric":50}},[claim],"stage:b")[1])
+
+
 class RealEngineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1415,6 +1577,27 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("native:snapshot:b",response["pending"])
         self.assertEqual(checked["budget_assessment"]["status"],"user_declared")
         self.assertEqual(checked["budget_assessment"]["materials"][0]["quantity"],1)
+        self.assertEqual(first["calculation"]["material_specs"][0]["spec_sha256"],held_item["spec_sha256"])
+        stage["entry_checks"]=[{"check_id":"conditional-life","locator":"/stats/Life","op":"ge","value":first["calculation"]["stats"]["Life"]+1,"claim_id":"stage"}]
+        route["assessment"]={"goal_claim_ids":["stage"],"scope":"Fixture only"}
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}),patch.object(poe,"roundtrip",side_effect=ValueError("must reuse this verified stage")):
+            response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        changed=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        self.assertTrue(changed["stages"][0]["calculation"]["roundtrip_verified"])
+        self.assertEqual(changed["stages"][0]["calculation"]["entry_checks"][0]["status"],"unmet")
+        route["assessment"]["review"]={"token":response["review_token"],"findings":"Fixture condition remains explicitly unmet.","unresolved":[]}
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):
+            response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        reviewed=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        self.assertEqual(reviewed["final_review"]["status"],"model_reviewed")
+        self.assertTrue(any("entry_check:" in p for p in response["pending"]))
+        self.assertTrue(poe.read_json(output.with_suffix(".state.json"))["file_exported"])
+        snapshot=Path(first["calculation"]["xml_path"]);snapshot.write_text(snapshot.read_text(encoding="utf-8")+"\n",encoding="utf-8")
+        with patch.object(facts,"gem_facts",return_value={}),patch.object(poe,"roundtrip",wraps=poe.roundtrip) as replay:
+            poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        self.assertEqual(replay.call_count,1)
 
     def test_37_unparsed_nonflask_remains_unknown_even_when_native_active_false(self):
         result=engine.calculate(self.pob,bx.serialise(self.original))
@@ -1422,6 +1605,44 @@ class RealEngineTests(unittest.TestCase):
         item.update(active=False,unparsed=["Future unsupported modifier"])
         _,_,pending=poe.mechanical_issues(self.original,result,{})
         self.assertIn("item:"+str(item["id"])+":unparsed",pending)
+
+    def test_38_native_default_omission_is_equivalent_but_real_changes_fail(self):
+        document=copy.deepcopy(self.original)
+        bx.set_config(document,{"conditionEnemyRareOrUnique":False})
+        result=engine.calculate(self.pob,bx.serialise(document))
+        self.assertIs(result["config_defaults"]["conditionEnemyRareOrUnique"],False)
+        saved=poe.roundtrip(self.pob,result,document)
+        self.assertNotIn("conditionEnemyRareOrUnique",result["config_values"])
+        changed=engine.calculate(self.pob,saved)
+        changed["config_saved_values"]["conditionEnemyRareOrUnique"]=True
+        with patch.object(engine,"calculate",return_value=changed),self.assertRaisesRegex(ValueError,"配置"):
+            poe.roundtrip(self.pob,result,document)
+
+    def test_39_final_review_and_optional_url_survive_export_and_failed_render_is_not_success(self):
+        plan=copy.deepcopy(self.refine)
+        source=Path(self.temp.name)/"local-evidence.txt";source.write_text("Offline local record",encoding="utf-8")
+        plan["evidence"]=[{"evidence_id":"artifact","kind":"artifact","subject":"fixture","path":source.name,"excerpt":"Offline local record"}]
+        plan["claims"]=[{"claim_id":"review","text":"Fixture conclusion; remaining gaps are retained.","subjects":["goal"],"evidence_refs":["artifact","native:candidate#/stats/Life"]}]
+        plan["assessment"]={"goal_claim_ids":["review"],"scope":"Fixture, not a player build"}
+        first=self.evaluate_plan(plan,"reviewed")
+        plan["assessment"]["review"]={"token":first["review_token"],"findings":"Checked current facts, object, conditions and limited conclusion.","unresolved":[]}
+        second=self.evaluate_plan(plan,"reviewed")
+        self.assertEqual(first["review_token"],second["review_token"])
+        self.assertNotIn("final_review:stale",second["pending"])
+        result=poe.export(args(run=str(self.run_dir),name="reviewed"))
+        final=poe.read_json(self.run_dir/"output/reviewed/final-assessment.json")
+        self.assertEqual(final["review_packet"]["status"],"model_reviewed")
+        self.assertIsNone(final["evidence"]["artifact"]["url"])
+        self.assertTrue(result["file_exported"])
+        manifest=poe.read_json(self.run_dir/"output/reviewed/delivery.json")
+        for name,digest in manifest["files"].items(): self.assertEqual(bx.digest((self.run_dir/"output/reviewed"/name).read_bytes()),digest)
+        with patch.object(poe,"report_html",side_effect=OSError("fixture render failure")),self.assertRaises(OSError):
+            poe.export(args(run=str(self.run_dir),name="reviewed"))
+        self.assertEqual(poe.read_json(self.run_dir/"run.json")["phase"],"exporting")
+        self.assertFalse(poe.read_json(self.run_dir/"output/reviewed/delivery.json")["file_exported"])
+        self.assertTrue(poe.export(args(run=str(self.run_dir),name="reviewed"))["file_exported"])
+        plan["summary"]="Unreviewed changed explanation"
+        self.assertIn("final_review:stale",self.evaluate_plan(plan,"reviewed")["pending"])
 
 
 

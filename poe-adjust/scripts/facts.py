@@ -71,6 +71,8 @@ def fetch(url, folder, context):
     bx.require(parsed.scheme == "https" and parsed.hostname in HOSTS and not parsed.username and parsed.port in (None, 443),
                "自动事实抓取只支持所列公开数据/官方站点的 HTTPS 页面；其他资料由联网工具查阅并标注人工核对。")
     folder = Path(folder)
+    import engine
+    engine.check_output_path(folder / "source.json")
     key = hashlib.sha256(url.encode()).hexdigest()
     path = folder / (key + ".json")
     stamp = datetime.now(timezone.utc)
@@ -129,16 +131,17 @@ def pointer(value, locator):
     return value
 
 
-def load_evidence(declarations, folder, context):
+def load_evidence(declarations, folder, context, *, root=None):
     """Observe source artifacts; caller-written verification flags are not inputs."""
     bx.require(isinstance(declarations, list), "evidence 应为数组。")
     base = Path(folder).resolve()
     result = {}
     for entry in declarations:
-        bx.require(isinstance(entry, dict) and set(entry) <= {"evidence_id", "kind", "subject", "text", "url", "path", "excerpt", "context", "checked_at", "message_ref"}, "证据字段无效；status/digest/origin 由程序生成。")
+        bx.require(isinstance(entry, dict) and set(entry) <= {"evidence_id", "kind", "subject", "text", "url", "path", "excerpt", "context", "checked_at", "message_ref", "source", "line", "count", "content_sha256"}, "证据字段无效；status/digest/origin 由程序生成。")
         key, kind = entry.get("evidence_id"), entry.get("kind")
         bx.require(isinstance(key, str) and key and "#" not in key and not key.startswith("native:") and key not in result, "evidence_id 需要唯一普通标识，native: 留给计算结果。")
-        bx.require(kind in {"user_statement", "web", "artifact"}, "证据 kind 为 user_statement/web/artifact。原生字段使用 native:candidate#/stats/Life 等引用。")
+        bx.require(kind in {"user_statement", "web", "artifact", "local_data"}, "证据 kind 为 user_statement/web/artifact/local_data。原生字段使用 native:candidate#/stats/Life 等引用。")
+        bx.require(kind == "local_data" or not set(entry) & {"source", "line", "count", "content_sha256"}, "source/line/count/content_sha256 仅用于 local_data。")
         bx.require(isinstance(entry.get("subject"), str) and entry["subject"], "证据需要具体 subject。")
         record = {"evidence_id": key, "kind": kind, "subject": entry["subject"], "context": entry.get("context", {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         bx.require(isinstance(record["context"], dict), "证据 context 应为对象。")
@@ -157,6 +160,14 @@ def load_evidence(declarations, folder, context):
                 excerpt = entry.get("excerpt")
                 bx.require(isinstance(excerpt, str) and excerpt.strip() and excerpt in text, "网页证据需实际存在于正文的 excerpt，链接本身不是结论依据。")
                 record.update(source_record(page), text=excerpt, status="source_observed", origin="program_fetch")
+            elif kind == "local_data":
+                import engine
+                bx.require(not set(entry) & {"text", "path", "url", "excerpt", "message_ref"}, "local_data 原文由程序读取，不接受替代正文或文件路径。")
+                bx.require(isinstance(entry.get("content_sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", entry["content_sha256"]), "local_data 使用 data read 返回的 content_sha256。")
+                receipt = engine.read_source(root or engine.resolve_root(), entry.get("source", ""), entry.get("line"), entry.get("count"))
+                bx.require(receipt["content_sha256"] == entry["content_sha256"], "本机资料已更新，旧内容引用失效；重新 data read 后审查结论。")
+                text = receipt["text"]
+                record.update({k: v for k, v in receipt.items() if k != "evidence_template"}, status="local_data_observed", origin="program_local_read")
             else:
                 path = (base / entry.get("path", "")).resolve()
                 bx.require(path.is_relative_to(base) and path.is_file() and path.stat().st_size <= 2_000_000, "资料必须是本任务工作区内不超过 2 MB 的文本文件；不读取平台内部输出目录。")
@@ -210,13 +221,69 @@ def assess_claims(claims, evidence, native=None):
                 missing.append(str(exc))
         row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] else "unresolved"
         row["missing_evidence"] = missing
-        row["scope"] = "已检查引用存在及状态；资料是否充分支持文字结论仍是模型判断。"
+        row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
+                               for ref in row["evidence_refs"] if ref in evidence and evidence[ref].get("status") != "unresolved"]
+        row["scope"] = "model_assessed 表示有引用的模型判断，程序仅核对引用存在及状态；数值见 observations，文字蕴含关系与因果并未自动证明。最终复核另按当前 review token 绑定。"
         result.append(row)
     return result
 
 
 def has_claim(claims, subject):
     return any(row["status"] == "model_assessed" and subject in row["subjects"] for row in claims)
+
+
+def final_review(specification, evidence, claims, observations, assessment):
+    """Bind model review to current inputs, facts and prose, without judging prose in code."""
+    def stable(value):
+        if isinstance(value, dict):
+            return {k: stable(v) for k, v in value.items() if k not in {"recorded_at", "review", "runtime"}}
+        if isinstance(value, list): return [stable(v) for v in value]
+        return value
+    payload = stable({"specification": specification, "evidence": evidence, "claims": claims, "facts": observations})
+    token = bx.digest(json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False))
+    review = assessment.get("review")
+    if review is not None:
+        bx.require(isinstance(review, dict) and set(review) <= {"token", "findings", "unresolved"}, "assessment.review 使用 token/findings/unresolved。")
+        bx.require(isinstance(review.get("token"), str), "review.token 使用本次返回的完整 token。")
+        bx.require(isinstance(review.get("findings"), str) and review["findings"].strip(), "review.findings 说明对数字/对象、因果、替代方案排除、切换条件和结论范围的实际复核结果。")
+        bx.require(isinstance(review.get("unresolved", []), list) and all(isinstance(v, str) and v.strip() for v in review.get("unresolved", [])), "review.unresolved 应为尚未解决的问题数组。")
+    matches = review is not None and review["token"] == token
+    pending = [] if matches else ["final_review:stale" if review else "final_review:missing"]
+    if matches: pending += ["final_review:" + value for value in review.get("unresolved", [])]
+    packet = {"token": token, "status": "model_reviewed" if matches and not pending else "unresolved",
+              "facts": observations, "claims": claims, "findings": review.get("findings") if matches else None,
+              "check": "逐条核对数字及主体/阶段、因果依据、排除替代方案的理由、切换进入条件与最终保证范围。修改后重新生成本包，再填写 assessment.review；不要自动回填 token。",
+              "scope": "摘要绑定防止旧复核沿用到新方案；同一模型自审，不能证明自由文字无误或等同独立模型/实战验证。"}
+    return packet, pending
+
+
+def entry_checks(checks, native, claims, subject):
+    """Compare model-chosen thresholds with current measurements; no gameplay targets here."""
+    import math
+    import operator
+    bx.require(isinstance(checks, list), "entry_checks 应为数组。")
+    comparisons = {"eq": operator.eq, "ge": operator.ge, "le": operator.le}
+    rows, pending, seen = [], [], set()
+    for check in checks:
+        bx.require(isinstance(check, dict) and set(check) == {"check_id", "locator", "op", "value", "claim_id"}, "entry_checks 使用 check_id/locator/op/value/claim_id。")
+        key = check["check_id"]
+        bx.require(isinstance(key, str) and key and key not in seen and check["op"] in comparisons, "check_id 应唯一；op 使用 eq/ge/le。")
+        seen.add(key)
+        expected = check["value"]
+        bx.require(type(expected) in (int, float, bool, str) and (type(expected) is not float or math.isfinite(expected)), "检查目标需要有限数字、布尔值或字符串。")
+        row = dict(check, status="unknown", actual=None)
+        try:
+            value = pointer(native, check["locator"])
+            scalar = type(value) in (int, float, bool, str)
+            numeric = type(value) in (int, float) and type(expected) in (int, float)
+            bx.require(scalar and (type(value) is not float or math.isfinite(value)) and (numeric or check["op"] == "eq" and type(value) is type(expected)), "本次字段缺少同类型可比较值。")
+            row.update(actual=value, status="met" if comparisons[check["op"]](value, expected) else "unmet")
+        except ValueError as exc: row["reason"] = str(exc)
+        linked = next((c for c in claims if c["claim_id"] == check["claim_id"] and subject in c["subjects"] and c["status"] == "model_assessed"), None)
+        row["basis_status"] = "model_assessed" if linked else "unresolved"
+        if row["status"] != "met" or not linked: pending.append("entry_check:" + subject + ":" + key)
+        rows.append(row)
+    return rows, pending
 
 
 def material_ref(entry):

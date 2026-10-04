@@ -210,6 +210,14 @@ result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet
 local configOptions = LoadModule("Modules/ConfigOptions")
 result.config_keys, result.config_lists = {}, {}
 result.config_values = scalarTable(mainEnv.configInput)
+result.config_defaults = setmetatable({}, {__jsontype = "object"})
+result.config_saved_values = setmetatable({}, {__jsontype = "object"})
+assert(type(build.configTab.GetDefaultState) == "function", "Native config save defaults are unavailable")
+for key, value in pairs(result.config_values) do
+  local default = build.configTab:GetDefaultState(key, type(value))
+  result.config_defaults[key] = default
+  if value ~= default then result.config_saved_values[key] = value end
+end
 result.config_labels = {}
 for _, entry in ipairs(configOptions) do
   if entry.var then
@@ -277,7 +285,9 @@ for name, slot in pairs(build.itemsTab.slots) do
       active = slot.active, sockets = item.sockets, weapon_set = slot.weaponSet,
       valid_for_slot = build.itemsTab:IsItemValidForSlot(item, name),
       socket_colours_always_match = item.sockets and item.sockets.colourAlwaysMatches or false,
-      requirements = item.requirements, unparsed = unparsed})
+      requirements = item.requirements, unparsed = unparsed,
+      flask_local = item.flaskData and scalarTable(item.flaskData),
+      flask_scope = item.flaskData and "Item-local values; excludes character modifiers, current charges, refill events and actual effect coverage"})
   end
 end
 table.sort(result.equipped, function(a, b) return a.slot < b.slot end)

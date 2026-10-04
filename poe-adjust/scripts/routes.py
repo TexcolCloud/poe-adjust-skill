@@ -121,7 +121,7 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     resolve_gem_levels(stages,gems)
     asc_nodes,paths=engine.ascendancy_paths(route["ascendancy"],nodes or []) if route.get("ascendancy") else ({},{})
     for stage in stages:
-        bx.require(set(stage)<={"stage_id","name","level","act","completed_act","entry_conditions","weapon_setup","bases","skill_groups","gear","passives","ascendancy_points","ascendancy_nodes","resources","checks","transition","required_items","key_transition","snapshot"},"阶段存在旧策略字段或未知字段。")
+        bx.require(set(stage)<={"stage_id","name","level","act","completed_act","entry_conditions","entry_checks","weapon_setup","bases","skill_groups","gear","passives","ascendancy_points","ascendancy_nodes","resources","checks","transition","required_items","key_transition","snapshot"},"阶段存在旧策略字段或未知字段。")
         sid=stage.get("stage_id")
         bx.require(isinstance(sid,str) and sid and sid not in stage_ids,"stage_id 需要唯一且稳定。")
         stage_ids.add(sid)
@@ -143,6 +143,9 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
         conditions=strings(stage.get("entry_conditions",[]),sid+" entry_conditions",required=False)
         for key in conditions:
             if not any(c["claim_id"]==key and c["status"]=="model_assessed" and "stage:"+sid in c["subjects"] for c in claims): pending.append("entry_condition:"+sid+":"+key)
+        if stage.get("entry_checks") and not stage.get("snapshot"):
+            _, gaps = facts.entry_checks(stage["entry_checks"], {}, claims, "stage:"+sid)
+            pending += gaps
         for field in ("gear","passives","checks","transition"):
             stage[field]=strings(stage.get(field,[]),sid+" "+field,required=False)
         if not facts.has_claim(claims,"stage:"+sid): pending.append("stage_assessment:"+sid)
@@ -214,7 +217,7 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     for key in ("allow_minions",):
         if key in route and not facts.has_claim(claims,"preference:"+key): pending.append("preference:"+key)
     assessment=route.get("assessment",{})
-    bx.require(isinstance(assessment,dict) and set(assessment)<={"goal_claim_ids","scope","unresolved"},"路线 assessment 使用 goal_claim_ids/scope/unresolved。")
+    bx.require(isinstance(assessment,dict) and set(assessment)<={"goal_claim_ids","scope","unresolved","review"},"路线 assessment 使用 goal_claim_ids/scope/unresolved/review。")
     for key in ("goal_claim_ids","unresolved"):
         bx.require(isinstance(assessment.get(key,[]),list) and all(isinstance(v,str) and v for v in assessment.get(key,[])),"assessment."+key+" 需要字符串数组。")
     goal_ids={c["claim_id"] for c in claims if c["status"]=="model_assessed" and "goal" in c["subjects"]}
