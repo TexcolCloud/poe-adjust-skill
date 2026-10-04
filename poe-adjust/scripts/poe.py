@@ -19,7 +19,7 @@ import engine
 import facts
 import routes
 
-VERSION = "1.7.2"
+VERSION = "1.7.3"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -556,6 +556,7 @@ def compare(before, after, comparable=True):
 
 def semantics(result):
     return {"class": result["class"], "ascendancy": result["ascendancy"], "level": result["level"], "tree_version": result["tree_version"],
+            "config_values": result["config_values"],
             "nodes": result["nodes"], "main_skill": result["main_skill"], "main_group": result["main_group"],
             "gems": [{key: gem.get(key) for key in ("group", "index", "id", "level", "quality", "enabled", "group_enabled", "slot", "matches_socket", "socket_quality_bonus")} for gem in result["gems"]],
             "equipped": [{key: item.get(key) for key in ("slot", "id", "name", "base", "active")} for item in result["equipped"]]}
@@ -565,7 +566,7 @@ def roundtrip(root, result, document):
     saved = bx.preserve_extensions(document, bx.parse(result["xml"]))
     xml = bx.serialise(saved)
     reloaded = engine.calculate(root, xml)
-    bx.require(semantics(result) == semantics(reloaded), "XML 回读后装备、天赋或技能发生变化，未通过导出检查。")
+    bx.require(semantics(result) == semantics(reloaded), "XML 回读后配置、装备、天赋或技能发生变化，未通过导出检查。")
     for key in METRICS:
         a, b = result["stats"].get(key), reloaded["stats"].get(key)
         if a is None and b is None: continue
@@ -733,6 +734,15 @@ def actual_changes(before, after):
     return rows or ["核心职业、主技能、在用宝石与天赋没有变化；装备和配置差异见后文。"]
 
 
+def scenario_summary(result):
+    """Describe the native calculation input, including engine-provided defaults."""
+    values = result["config_values"]
+    boss = values.get("enemyIsBoss")
+    label = result["config_labels"].get("enemyIsBoss")
+    enemy = f"{label}（{boss}）" if label else str(boss) if boss is not None else "未提供（未推断内部默认规则）"
+    return f"敌人类型：{enemy}；敌人等级参数：{values.get('enemyLevel', '未提供（按引擎内部规则）')}。"
+
+
 def report_html(state, outcome):
     esc = lambda value: html.escape(str(value), quote=True)
     intent, plan = state["intent"], outcome["plan"]
@@ -790,6 +800,7 @@ def report_html(state, outcome):
             source.get("display_name", source.get("name", "")), source.get("count", 1), f"{source.get('dps',0):,.1f}", source.get("skillPart", ""), source.get("trigger", ""))) + "</tr>")
     damage_table = ('<h3>原生 Full DPS 分项</h3><p>仅包含 XML 中勾选计入总伤害的技能，数量与覆盖须结合实际玩法。主技能综合 DPS 不是所有已装技能的总和。</p><table><tr><th>技能/来源</th><th>计入数量</th><th>分项 DPS</th><th>技能部分</th><th>触发</th></tr>' + ''.join(damage_rows) + '</table>') if damage_rows else '<p>本方案没有原生 Full DPS 分项；不要把主技能面板解释为所有已装技能的总伤害。</p>'
     scenario = json.dumps(intent["scenario"], ensure_ascii=False)
+    actual_scenario = json.dumps(result["config_values"], ensure_ascii=False, indent=2)
     changes = json.dumps(plan.get("operations", {}), ensure_ascii=False, indent=2)
     condition_notes = json.dumps(plan.get("config_evidence", {}), ensure_ascii=False, indent=2)
     crafted_note = ""
@@ -808,7 +819,7 @@ def report_html(state, outcome):
 <section><h2>前后对比</h2><p>原角色：{esc(state.get('baseline_label','用户导入角色'))}；候选：{esc(outcome['result']['main_skill_name'])}。总 DPS 只汇总勾选计入的技能，不能代替实际刷图速度。</p>{baseline_note}<table><thead><tr><th>指标</th><th>原方案</th><th>新方案</th><th>变化</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
 <section><h2>技能与插槽安排</h2><p>按下列顺序镶嵌，连线以 XML 中装备为准。本机识别到匹配孔色品质加成为 {esc(result.get('matching_socket_quality_bonus', '未确认'))}。表内为本机按孔位计算的部分，其他装备或辅助的品质影响以 PoECharm 最终面板为准；实际游戏规则须与目标版本一致。</p><table><tr><th>位置与顺序</th><th>宝石</th><th>基础等级 / 品质</th><th>匹配孔色加成</th><th>状态</th></tr>{''.join(skill_rows)}</table></section>
 <section><h2>购买与准备</h2><p>已列成本：{b['low']:g}–{b['high']:g} {esc(b['currency'])}。待核实项目未计入这个范围；原 XML 也不代表游戏仓库盘点。</p><h3>程序从前后 XML 检测到的物品准备</h3>{listing(materials)}<h3>采购、制作和其他步骤</h3>{listing(shopping)}{crafted_note}<h2>切换顺序</h2>{listing(plan.get('migration_steps',[]))}</section>
-<section><h2>计算条件与待核实项</h2><p>{esc(condition_summary)}</p><p>共同场景：<code>{esc(scenario)}</code></p>{listing(resources)}{skill_table}{damage_table}{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
+<section><h2>计算条件与待核实项</h2><p>{esc(condition_summary)}</p><p>{esc(scenario_summary(result))}</p><p>共同场景：<code>{esc(scenario)}</code></p><details><summary>引擎实际采用的配置与文件核对依据</summary><p>以下为本次计算读回的配置输入，含引擎填入的默认值；选中条件的实战覆盖由设计说明解释。</p><pre>{esc(actual_scenario)}</pre><p>配装 XML SHA256：<code>{esc(outcome['xml_sha256'])}</code><br>计算文件指纹：<code>{esc(outcome['engine_fingerprint'])}</code></p></details>{listing(resources)}{skill_table}{damage_table}{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
 <section><h2>资料依据与设计说明</h2><ul>{''.join(sources)}</ul><p>{esc(plan['summary'])}</p><details><summary>具体改动及条件依据</summary><pre>{esc(changes)}</pre><pre>{esc(condition_notes)}</pre></details></section>
 <section><h2>如何使用</h2><p>在 PoECharm 中打开同目录的“改进配装.xml”，核对当前主技能、装备与天赋；按照上面的准备顺序在游戏内调整。它不会修改服务器角色。</p></section></html>'''
 
@@ -892,6 +903,7 @@ def export(args):
     damage_keys = ("MinionCombinedDPS", "FullDPS") if minion_main else ("CombinedDPS",)
     hit_key = "MinionHitChance" if minion_main else "HitChance"
     user_summary = [f"配装 XML 已通过本机 PoECharm 计算及保存回读。目标：{state['intent']['league']} / {state['intent']['game_version']}。",
+                    scenario_summary(verification),
                     "当前计算场景下：" + "；".join(f"{METRICS[key]} {stats[key]:,.1f}" for key in damage_keys + ("Life", "EnergyShield", hit_key, "ChaosResist") if key in stats) + "。"]
     if not facts_ready:
         user_summary.insert(0, "这是待核实草案：目标版本官方正文尚未核实，暂不能确认为目标赛季可用方案。")

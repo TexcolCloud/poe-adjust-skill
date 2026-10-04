@@ -838,6 +838,16 @@ class RealEngineTests(unittest.TestCase):
         plan["operations"]["config"]["enemyIsBoss"] = "Boss"
         outcome = self.evaluate_plan(plan, "valid-config-value")
         self.assertEqual(outcome["status"], "validated", outcome["errors"])
+        recorded = poe.read_json(self.run_dir / "candidates/valid-config-value/evaluation.json")
+        self.assertEqual(recorded["result"]["config_values"]["enemyLevel"], self.intent["scenario"]["enemyLevel"])
+        self.assertEqual(recorded["result"]["config_values"]["enemyIsBoss"], "Boss")
+        self.assertEqual(recorded["result"]["config_labels"]["enemyIsBoss"], "Standard Boss")
+        output = poe.export(args(run=str(self.run_dir), name="valid-config-value"))
+        self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", output["user_summary"])
+        report = Path(output["files"][1]).read_text(encoding="utf-8")
+        self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", report)
+        self.assertIn(recorded["xml_sha256"], report)
+        self.assertIn(recorded["engine_fingerprint"], report)
 
     def test_09_resource_shortfall_and_local_sources_remain_visible(self):
         plan = copy.deepcopy(self.refine)

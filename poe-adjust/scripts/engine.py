@@ -186,7 +186,8 @@ def validate_contract(result):
     """Reject missing evidence instead of silently treating absent fields as zero."""
     required = {"stats": dict, "resource_rules": dict, "gems": list, "equipped": list,
                 "active_skills": list, "damage_sources": list, "classes": list, "excluded_guard_checks": list,
-                "nodes": list, "config_keys": list, "config_lists": dict, "warnings": list, "xml": str,
+                "nodes": list, "config_keys": list, "config_lists": dict, "config_values": dict, "config_labels": dict,
+                "warnings": list, "xml": str,
                 "tree_version": str, "latest_tree_version": str, "capabilities": dict}
     for key, kind in required.items():
         if not isinstance(result.get(key), kind):

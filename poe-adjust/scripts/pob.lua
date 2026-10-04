@@ -105,6 +105,8 @@ end
 result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet
 local configOptions = LoadModule("Modules/ConfigOptions")
 result.config_keys, result.config_lists = {}, {}
+result.config_values = scalarTable(mainEnv.configInput)
+result.config_labels = {}
 for _, entry in ipairs(configOptions) do
   if entry.var then
     table.insert(result.config_keys, entry.var)
@@ -114,6 +116,7 @@ for _, entry in ipairs(configOptions) do
         for _, option in ipairs(entry.list) do
           assert(type(option.val) == "string" or type(option.val) == "number" or type(option.val) == "boolean", "Unsupported native config option: " .. entry.var)
           table.insert(values, option.val)
+          if option.val == result.config_values[entry.var] then result.config_labels[entry.var] = option.label end
         end
       end
       result.config_lists[entry.var] = values
