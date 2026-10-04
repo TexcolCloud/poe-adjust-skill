@@ -1,5 +1,13 @@
 # POE 配装助手测试记录
 
+## 18:11 局部优化首轮应用中断与恢复
+
+冻结 1.7.4 的任务于 18:07:42.455 中断，累计第八次观察到 TeleAgent 退出。主进程监测捕获 `-36861`（`0xffff7003`），窗口/进程消失；应用/资源耗尽事件查询未取得记录，空闲物理内存约 18.49 GiB。记录 `.work/teleagent-process-7808-exit.json`、`.work/teleagent-exit-8-system-evidence.json`。
+
+[Crashpad 的码定义](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/crashpad/crashpad/util/win/termination_codes.h) 与 [DumpAndCrash 实现](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/crashpad/crashpad/client/crashpad_client_win.cc) 支持“未连接崩溃处理器的转储路径”这一解释，不提供原始异常根因。没有根据其他产品同码报告把此例认定为内存不足、ASAR 校验或具体模型问题。
+
+正常重开原任务，仅输入“继续”后已恢复运行，仍无首份交付。首轮应注明一次权限拒绝和一次应用恢复，且有共享历史；不能记无人干预或独立盲测。新增临时只读进程计数监测，未改应用运行参数、权限、设置或交付技能。
+
 ## 18:04 1.7.5 原生点数诊断补充
 
 本机原始诊断为 103 普通天赋/6 主升华；冻结实测问询说已用 4 点，程序已提供的事实没有被正确转述。候选现直接在简短诊断中输出原生 CountAllocNodes，区分已用与可用、普通与主/次级升华，不再依赖模型数大点。未把该修正或正确数字发送给当前首次测试。

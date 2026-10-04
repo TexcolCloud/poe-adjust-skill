@@ -1,5 +1,9 @@
 # POE 配装助手交付记录
 
+18:11 平台第八次退出已捕获退出码：只读监测记录主进程 PID 7808 于 18:07:42.455 退出，`-36861` / `0xffff7003`；Sky 同时确认窗口不在，进程列表为空。最近 8 分钟未取得应用 1000/1001/1002 或系统 2004 事件，可用物理内存约 18.49 GiB。证据 `.work/teleagent-process-7808-exit.json` 与 `.work/teleagent-exit-8-system-evidence.json`。上游 [Crashpad termination_codes.h](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/crashpad/crashpad/util/win/termination_codes.h) 将此码定义为未连接处理器的转储请求；[DumpAndCrash 分支](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/crashpad/crashpad/client/crashpad_client_win.cc) 在未连接时使用它。仅能作为退出路径线索，不能据此断言 OOM、ASAR、模型或本技能是根因。
+
+正常启动恢复到新窗口 75892842，原任务显示暂停；只输入“继续”，UI 已确认运行。安装仍冻结 1.7.4，未改应用参数、权限或安全设置。首轮当前包含一次权限拒绝与一次重开恢复，不能记无人干预。首次候选被原有检查拒绝升华超点、丢失节点、生命/命中下限、未分配点以及常态守护/药剂；模型继续自修复，未交付。临时监测替换为 PID 14236 / exec session 33307，每 60 秒记录公开进程内存/CPU/句柄计数并保留退出码，最多四小时；位于 `.work/teleagent-process-14236-*`，不进入技能包。
+
 18:04 候选 1.7.5 补充原生已分配点数到 diagnosis_summary，分别列普通/主升华/次级升华，说明包含连接小点、不是剩余点数，不推断玩家进度。当前冻结实测误报已用 4 点；普通诊断文件实际为 103 普通/6 升华，尚未向测试模型纠正。真实计数来自既有 CountAllocNodes，缺失/布尔/负数拒绝。27 项定向回归通过（19.153 秒），累计 54 个不同用例有通过记录；首次边界测试错误使用已裁剪诊断代替完整原生接口，被 config_keys 缺失先拦截，已移到完整结果测试并保留失败日志。未改生产计算结果来迎合断言。
 
 原生校验器、编译、diff 和最新 doctor 均通过。更新同一未安装候选 ZIP，11 文件/105,530 字节，SHA256 `2931f444058005fbef3e5277b12681611a8d53713efeea35d58a6288bc0df73d`，fingerprint `352d50f23f682c47e3d658f255910b986a1ff3a1103b1d84b57410272012aaae`；下文 17:58 中间包已替换。TeleAgent 安装仍 1.7.4，当前任务准备首次候选，尚未交付。
