@@ -19,7 +19,7 @@ import engine
 import facts
 import routes
 
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -241,8 +241,24 @@ def mechanical_issues(document, result, intent):
     stats = result["stats"]
     config_keys = set(result["config_keys"])
     for entry in bx.active_config(document).findall("Input"):
-        if entry.get("name") not in config_keys:
-            errors.append("引擎不识别配置：" + entry.get("name", ""))
+        name = entry.get("name", "")
+        if name not in config_keys:
+            errors.append("引擎不识别配置：" + name)
+        elif name in result["config_lists"]:
+            allowed = result["config_lists"][name]
+            value = None
+            kinds = [kind for kind in ("string", "number", "boolean") if kind in entry.attrib]
+            if len(kinds) == 1:
+                kind = kinds[0]
+                if kind == "string": value = entry.get(kind)
+                elif kind == "boolean" and entry.get(kind) in ("true", "false"): value = entry.get(kind) == "true"
+                elif kind == "number":
+                    try: value = float(entry.get(kind))
+                    except ValueError: pass
+            matches = any((type(value) == type(option) or type(value) in (int, float) and type(option) in (int, float)) and value == option for option in allowed)
+            if not matches:
+                choices = json.dumps(allowed[:12], ensure_ascii=False) if allowed else "本机选项暂不可读取，不能验证"
+                errors.append(f"无效配置值：{name}={value!r}；本机允许值 {choices}。用 catalog config 返回的 val，不要使用显示标签 label。")
     for warning in warnings:
         if "negative" in warning or "not have enough" in warning or "too many" in warning:
             errors.append(warning)
@@ -623,6 +639,20 @@ def evaluate(args):
     release_inactive_sockets(document)
     result = engine.calculate(root, bx.serialise(document))
     bx.require(result["engine_fingerprint"] == baseline["engine_fingerprint"] == info["engine_fingerprint"], "前后计算期间引擎内容发生变化，请更新完成后重新 evaluate。")
+    missing_nodes = sorted({int(value) for value in bx.active_spec(document).get("nodes", "").split(",") if value} - set(result["nodes"]))
+    tree_diagnostics = []
+    if missing_nodes:
+        # Inspect the retained native tree, without guessing that dropped nodes
+        # are unsupported or automatically changing the player's allocation.
+        queried = engine.calculate(root, result["xml"], queries=[{"kind": "nodes", "query": "id:" + str(node), "limit": 1} for node in missing_nodes[:8]])
+        bx.require(queried["engine_fingerprint"] == result["engine_fingerprint"], "天赋诊断期间引擎发生变化，请更新完成后重新 evaluate。")
+        for node_id, query in zip(missing_nodes, queried["catalog_batch"]):
+            node = next((entry for entry in query["entries"] if entry["id"] == node_id), None)
+            detail = {"id": node_id, "found": node is not None}
+            if node:
+                detail.update({key: node[key] for key in ("name", "ascendancy_name", "reachable", "points_to_allocate", "path") if key in node})
+                detail["name"] = node.get("display_name", node["name"])
+            tree_diagnostics.append(detail)
     errors, warnings = mechanical_issues(document, result, intent)
     mechanical_errors = list(errors)
     constraint_errors = check_constraints(original, document, baseline, result, intent, plan)
@@ -667,6 +697,7 @@ def evaluate(args):
                               "version_basis": version_proof["status"], "mechanics_sources": "requires_review", "delivery_data": "roundtrip_verified",
                               "scope": "validated 表示已实现的机械/资源/用户约束通过；网页论据与设计文字另行审查。"},
                "actual_changes": actual_changes(baseline, result),
+               "tree_diagnostics": tree_diagnostics,
                "target_version_evidence": version_proof,
                "baseline_warnings": baseline.get("warnings", []),
                "errors": list(dict.fromkeys(errors)), "warnings": list(dict.fromkeys(warnings)), "budget": budget, "readiness": audit,
@@ -677,9 +708,10 @@ def evaluate(args):
     state["updated_at"] = now()
     write_json(run / "run.json", state)
     return {"candidate": str(destination), "status": outcome["status"], "errors": outcome["errors"], "warnings": outcome["warnings"], "budget": budget,
-            "baseline_warnings": outcome["baseline_warnings"],
+            "baseline_warnings": outcome["baseline_warnings"], "tree_diagnostics": tree_diagnostics,
             "comparison": outcome["comparison"], "readiness": audit, "roundtrip_verified": True,
-            "next": "读取 evaluation.json 中实际技能/触发/伤害分项及计划说明，审查是否达到用户目标。有辅助选择空间时用 probe 比较，再将选定方案 evaluate/export。" if not errors else "先解决 errors；保持已确认的目标、进度和下限，修改方案后重新 evaluate。"}
+            "next": "读取 evaluation.json 中实际技能/触发/伤害分项及计划说明，审查是否达到用户目标。有辅助选择空间时用 probe 比较，再将选定方案 evaluate/export。" if not errors else
+                    "先解决 errors；保持已确认的目标、进度和下限，修改方案后重新 evaluate。" + (" tree_diagnostics 列出前8个丢失节点：found=false 只表示当前树/珠宝配置未找到；found=true 时核对升华归属和相对已保留树的 path，不把缺连接当引擎不支持。path 含目标节点，需合并并检查点数，不能代替整个节点表。" if tree_diagnostics else "")}
 
 
 def actual_changes(before, after):
@@ -996,7 +1028,7 @@ def main(argv=None):
             result = bx.summary(document)
             if args.calculate:
                 computed = engine.calculate(engine.resolve_root(args.pob), bx.serialise(document))
-                result["calculation"] = {key: value for key, value in computed.items() if key not in {"xml", "config_keys"}}
+                result["calculation"] = {key: value for key, value in computed.items() if key not in {"xml", "config_keys", "config_lists"}}
                 result["diagnosis_summary"] = diagnosis_summary(computed)
             if args.out:
                 write_json(args.out, result)

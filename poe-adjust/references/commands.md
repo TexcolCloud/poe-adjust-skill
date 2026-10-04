@@ -35,7 +35,7 @@ python $entry catalog --kind translations --query '盾' --limit 12
 python $entry catalog --kind gems --query 'Shield Crush' --limit 10
 python $entry catalog --kind skills --query 'Embrace Madness' --limit 3
 python $entry catalog --kind nodes --input '<角色.xml>' --query 'life' --limit 15
-python $entry catalog --kind nodes --input '<角色.xml>' --query '12345' --limit 1
+python $entry catalog --kind nodes --input '<角色.xml>' --query 'id:12345' --limit 1
 python $entry catalog --kind nodes --query 'Chieftain' --limit 30 --out '<工作区>/chieftain.json'
 python $entry catalog --kind uniques --query 'Emperor' --limit 3
 python $entry catalog --kind config --query 'enemyIsBoss' --limit 3
@@ -56,6 +56,10 @@ python $entry research --trials --out '<工作区>/试炼依据.json'
 **查职业、升华节点 ID/原文、宝石或辅助兼容时不需要角色 XML。** 无角色开荒直接省略 `--input`，所有职业的数据都可查。不为目录查询手写最小 XML、下载构筑或解码巨大分享码；这些步骤不能改善查询。名称搜索也可能匹配贵族的同名节点，按 ascendancy_name 筛选实际升华，取 type=Notable 的大点。仅当需要相对于现有角色的天赋连接路径、已分配状态时，给 catalog 加真实 `--input '<角色.xml>'`。无输入时返回的节点 ID/stats/linked 可用于路线校验，path/allocated 不代表用户角色。
 
 用完整升华英文名查询且结果未截断时，节点还提供 `ascendancy_path`、`ascendancy_path_names`、`ascendancy_path_cost`，表示从该升华起点实际经过的大小点及总点数。它与相对于载入角色的 path/points_to_allocate 不同。route 合并各分支计数并展示必经大点；不能省略前置、虚构连接或在已用八点之外追加升华。
+
+`nodes` 的 `id:数字` 精确查询节点；裸数字仍可能匹配名称/说明。evaluate 遇到未保留节点时自动返回最多 8 项 `tree_diagnostics`，含是否在当前树/珠宝配置中找到、升华归属及相对已保留树的连接路径。不存在于当前树不等于游戏中不存在，可能缺珠宝、错误职业或数据版本；找到但未保留时先查连接，不归咎引擎兼容。路径含目标节点，合并后仍需核对总点数和保留限制。
+
+`config` 的列表型选项返回 `options`（val/label）及能确认的 `default_value`。JSON 使用实际 val，而非显示标签；evaluate/export 会按本机选项拒绝无效值或无法核对的列表，不凭敌人等级推断首领类型，也不把默认选项当作用户确认的场景。
 
 一次需要多个查询时优先 `--batch`，只启动一次引擎。文件格式 `{"queries":[{"kind":"gems","query":"id:ShieldCrush","limit":2},{"kind":"nodes","query":"Champion","limit":30},{"kind":"config","query":"enemyIsBoss","limit":3}]}`。支持 gems/skills/nodes/uniques/config/classes/links/bases/affixes，最多 30 项；translations 单独查询。返回 `queries[].entries`。`gems` 的 `id:技能ID` 是精确检索；结果含各宝石等级的 `level_requirements`（gem_level/character_level/strength/dexterity/intelligence）、`min_level`、`special_variant`、`vaal`，开荒时据此核对等级与属性，而非猜测。
 

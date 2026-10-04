@@ -758,6 +758,18 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(result["status"], "invalid")
         self.assertTrue(any("天赋" in err for err in result["errors"]))
         self.assertTrue(any("保留" in err for err in result["errors"]))
+        self.assertEqual(result["tree_diagnostics"], [{"id": 99999999, "found": False}])
+        available = engine.calculate(self.pob, bx.serialise(self.original), catalog="nodes", query="Champion", limit=100)["catalog"]
+        node = next(n for n in available if not n["allocated"] and n["type"] == "Notable" and n["points_to_allocate"] == 2)
+        disconnected = copy.deepcopy(self.refine)
+        disconnected["operations"]["tree"] = {"nodes": nodes + [node["id"]]}
+        result = self.evaluate_plan(disconnected, "disconnected-tree")
+        detail = next(row for row in result["tree_diagnostics"] if row["id"] == node["id"])
+        self.assertTrue(detail["found"])
+        self.assertTrue(detail["reachable"])
+        self.assertEqual(detail["path"], node["path"])
+        self.assertEqual(detail["points_to_allocate"], 2)
+        self.assertEqual(disconnected["operations"]["tree"]["nodes"], nodes + [node["id"]])
 
     def test_05_modified_candidate_cannot_be_exported(self):
         result = self.evaluate_plan(self.refine, "tamper")
@@ -808,10 +820,24 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(requested.issubset(set(saved["result"]["nodes"])))
 
     def test_08_item_skill_and_condition_mechanics_are_queryable(self):
-        skills = engine.calculate(self.pob, catalog="skills", query="Embrace Madness", limit=5)["catalog"]
+        queried = engine.calculate(self.pob, queries=[{"kind": "skills", "query": "Embrace Madness", "limit": 5},
+                                                    {"kind": "config", "query": "Glorious Madness", "limit": 10},
+                                                    {"kind": "config", "query": "enemyIsBoss", "limit": 1}])["catalog_batch"]
+        skills = queried[0]["entries"]
         self.assertTrue(any(s["id"] == "EmbraceMadness" and s["from_item"] and "Debuffs" in s["description"] for s in skills))
-        options = engine.calculate(self.pob, catalog="config", query="Glorious Madness", limit=10)["catalog"]
+        options = queried[1]["entries"]
         self.assertTrue(any(s["var"] == "touchedDebuffsCount" and "recovery rate" in s["tooltip"] for s in options))
+        boss = queried[2]["entries"][0]
+        self.assertIn({"val": "Boss", "label": "Standard Boss"}, boss["options"])
+        self.assertEqual(boss["default_value"], boss["options"][boss["defaultIndex"] - 1]["val"])
+        plan = copy.deepcopy(self.refine)
+        plan["operations"]["config"] = {"enemyIsBoss": "Standard Boss"}
+        plan["config_evidence"] = {"enemyIsBoss": "验证显示标签不应冒充配置值。"}
+        outcome = self.evaluate_plan(plan, "invalid-config-label")
+        self.assertTrue(any("无效配置值" in error for error in outcome["errors"]), outcome["errors"])
+        plan["operations"]["config"]["enemyIsBoss"] = "Boss"
+        outcome = self.evaluate_plan(plan, "valid-config-value")
+        self.assertEqual(outcome["status"], "validated", outcome["errors"])
 
     def test_09_resource_shortfall_and_local_sources_remain_visible(self):
         plan = copy.deepcopy(self.refine)

@@ -103,9 +103,22 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     costs = scalarTable(costs)})
 end
 result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet
-result.config_keys = {}
-for _, entry in ipairs(LoadModule("Modules/ConfigOptions")) do
-  if entry.var then table.insert(result.config_keys, entry.var) end
+local configOptions = LoadModule("Modules/ConfigOptions")
+result.config_keys, result.config_lists = {}, {}
+for _, entry in ipairs(configOptions) do
+  if entry.var then
+    table.insert(result.config_keys, entry.var)
+    if entry.type == "list" then
+      local values = setmetatable({}, {__jsontype = "array"})
+      if type(entry.list) == "table" then
+        for _, option in ipairs(entry.list) do
+          assert(type(option.val) == "string" or type(option.val) == "number" or type(option.val) == "boolean", "Unsupported native config option: " .. entry.var)
+          table.insert(values, option.val)
+        end
+      end
+      result.config_lists[entry.var] = values
+    end
+  end
 end
 result.points, result.ascendancy_points, result.secondary_ascendancy_points = build.spec:CountAllocNodes()
 for _, line in ipairs(build.controls.warnings.lines or {}) do table.insert(result.warnings, line) end
@@ -280,10 +293,11 @@ local function queryCatalog(kind, query, limit)
       end
     end
   elseif kind == "nodes" then
+    local exactId = q:match("^id:(%d+)$")
     for id, node in pairs(build.spec.nodes) do
       local ascendancy = build.spec.tree.ascendNameMap[node.ascendancyName]
       local ascendancyName = ascendancy and ascendancy.ascendClass.name or node.ascendancyName or ""
-      if matches(node.name) or matches(ascendancyName) or matches(node.ascendancyName) or matches(table.concat(node.sd or {}, " ")) or tostring(id) == q then
+      if (exactId and tostring(id) == exactId) or (not exactId and (matches(node.name) or matches(ascendancyName) or matches(node.ascendancyName) or matches(table.concat(node.sd or {}, " ")) or tostring(id) == q)) then
         local links, path = {}, {}
         for _, adjacent in pairs(node.linked or {}) do table.insert(links, adjacent.id) end
         for _, pathNode in ipairs(node.path or {}) do table.insert(path, pathNode.id) end
@@ -300,9 +314,16 @@ local function queryCatalog(kind, query, limit)
       for _, raw in pairs(group) do if matches(raw) then table.insert(entries, {raw = raw}) end end
     end
   elseif kind == "config" then
-    for _, section in ipairs(LoadModule("Modules/ConfigOptions")) do
+    for _, section in ipairs(configOptions) do
       if section.var and (matches(section.var) or matches(section.label) or matches(type(section.tooltip) == "string" and section.tooltip or "")) then
-        table.insert(entries, scalarTable(section))
+        local option = scalarTable(section)
+        if type(section.list) == "table" then
+          option.options = {}
+          for _, value in ipairs(section.list) do table.insert(option.options, scalarTable(value)) end
+          local default = section.defaultIndex and section.list[section.defaultIndex]
+          if default then option.default_value = default.val end
+        end
+        table.insert(entries, option)
       end
     end
   else error("Unknown catalog") end
