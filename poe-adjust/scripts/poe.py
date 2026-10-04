@@ -16,9 +16,10 @@ import xml.etree.ElementTree as ET
 
 import buildxml as bx
 import engine
+import facts
 import routes
 
-VERSION = "1.6.5"
+VERSION = "1.7.0"
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -87,7 +88,7 @@ def begin(args):
     source = Path(args.input).resolve()
     document = bx.read_document(source)
     root = engine.resolve_root(args.pob)
-    info = engine.check(root)
+    info = engine.health(root)
     run = Path(args.run).resolve()
     if (run / "run.json").exists():
         _, state = read_run(run)
@@ -155,13 +156,15 @@ def validate_intent(value, original):
 def set_intent(args):
     run, state = read_run(args.run)
     intent = validate_intent(read_json(args.file), bx.read_document(run / "original.xml"))
-    engine.validate_game_version(intent["game_version"], intent["league"], engine.check(engine.resolve_root(state["pob_path"]))["data_version"])
+    info = engine.check(engine.resolve_root(state["pob_path"]))
+    engine.validate_game_version(intent["game_version"], intent["league"], engine.require_data_version(info))
     state["intent"] = intent
     state["intent_hash"] = bx.digest(json.dumps(intent, ensure_ascii=False, sort_keys=True))
+    state["target_version_evidence"] = facts.version_fact(intent["version_source"], intent["game_version"], intent["league"], run / ".poe-evidence", info["engine_fingerprint"])
     state["phase"] = "designing"
     state["updated_at"] = now()
     write_json(run / "run.json", state)
-    return {"run": str(run), "phase": state["phase"], "intent": intent, "next": "联网核实版本和候选方案，写 plan.json 后 evaluate。旧意图下的候选不能导出。"}
+    return {"run": str(run), "phase": state["phase"], "intent": intent, "target_version_evidence": state["target_version_evidence"], "next": "核对版本正文与关键机制后写 plan.json 并 evaluate。正文未核实时保留为草案；旧意图下的候选不能导出。"}
 
 
 def prepared(original, intent, *, baseline=False):
@@ -191,7 +194,7 @@ def release_inactive_sockets(document):
 
 
 def socket_layout_issues(document, result):
-    """Mirror PoB 3.29's sequential socket assignment; colours grant quality only."""
+    """Check physical links using the engine's sequential socket assignment."""
     errors = []
     equipped = {item["slot"]: item for item in result["equipped"]}
     texts = {int(item.get("id")): bx.text_item(item) for item in document.findall("Items/Item")}
@@ -229,7 +232,10 @@ def socket_layout_issues(document, result):
 
 def mechanical_issues(document, result, intent):
     errors, warnings = [], list(result.get("warnings", []))
-    engine.validate_game_version(intent.get("game_version"), intent["league"], result.get("data_version"), intent.get("version_source"))
+    engine.validate_game_version(intent.get("game_version"), intent["league"], engine.require_data_version(result), intent.get("version_source"))
+    for capability in ("matching_socket_quality", "native_resource_costs", "native_gem_requirements"):
+        if not result.get("capabilities", {}).get(capability):
+            errors.append(f"本机接口尚未验证 {capability}，不能认证依赖此能力的完整配装；请保留诊断结果供维护者适配。")
     if result["tree_version"] != result["data_version"].replace(".", "_"):
         errors.append("天赋版本与当前机制/宝石数据版本不同；当前适配仅接受对应标准天赋树，不能把旧树或特殊模式树当作当前普通赛季。")
     stats = result["stats"]
@@ -585,10 +591,16 @@ def evaluate(args):
     plan = read_json(plan_path)
     original = bx.read_document(run / "original.xml")
     root = engine.resolve_root(args.pob or state["pob_path"])
-    bx.require(engine.version(root) == state["engine_version"], "此会话期间引擎版本发生变化，请重新建立会话。")
+    info = engine.check(root)
+    engine.validate_game_version(intent["game_version"], intent["league"], engine.require_data_version(info))
+    if state.get("engine_fingerprint") != info["engine_fingerprint"]:
+        # Preserve confirmed intent and the original snapshot; invalidate evidence.
+        state.update(engine.health(root))
+        write_json(run / "run.json", state)
     base_path = run / "baseline.json"
     cached_baseline = read_json(base_path) if base_path.exists() else {}
-    if cached_baseline.get("intent_hash") == state["intent_hash"] and cached_baseline.get("skill_version") == VERSION:
+    if (cached_baseline.get("intent_hash") == state["intent_hash"] and cached_baseline.get("skill_version") == VERSION
+            and cached_baseline.get("engine_fingerprint") == info["engine_fingerprint"]):
         baseline = cached_baseline
     else:
         baseline = engine.calculate(root, bx.serialise(prepared(original, intent, baseline=True)))
@@ -604,8 +616,11 @@ def evaluate(args):
     document = bx.apply_plan(prepared(source, intent), resolved_plan)
     release_inactive_sockets(document)
     result = engine.calculate(root, bx.serialise(document))
+    bx.require(result["engine_fingerprint"] == baseline["engine_fingerprint"] == info["engine_fingerprint"], "前后计算期间引擎内容发生变化，请更新完成后重新 evaluate。")
     errors, warnings = mechanical_issues(document, result, intent)
-    errors.extend(check_constraints(original, document, baseline, result, intent, plan))
+    mechanical_errors = list(errors)
+    constraint_errors = check_constraints(original, document, baseline, result, intent, plan)
+    errors.extend(constraint_errors)
     audit = readiness(result, intent, plan)
     errors.extend(audit["errors"])
     warnings.extend(audit["warnings"])
@@ -634,11 +649,19 @@ def evaluate(args):
     if comparison_notes:
         warnings.append("只提供诊断数值差，不输出同条件实战提升百分比：" + "".join(comparison_notes))
     xml = roundtrip(root, result, document)
+    version_proof = facts.version_fact(intent["version_source"], intent["game_version"], intent["league"], run / ".poe-evidence", result["engine_fingerprint"])
+    if version_proof["status"] != "source_observed": warnings.append("目标赛季版本正文未核实：" + version_proof.get("reason", "缺少依据"))
     destination = run / "candidates" / args.name
     write_text(destination / "candidate.xml", xml)
-    outcome = {"skill_version": VERSION, "name": plan.get("name", args.name), "evaluated_at": now(), "engine_version": result["engine_version"],
+    outcome = {"skill_version": VERSION, "name": plan.get("name", args.name), "evaluated_at": now(), "engine_version": result["engine_version"], "engine_fingerprint": result["engine_fingerprint"],
                "intent_hash": state["intent_hash"], "original_sha256": state["original_sha256"], "xml_sha256": bx.digest(xml),
                "status": "invalid" if errors else "validated", "roundtrip_verified": True,
+               "validation": {"mechanical": "passed" if not mechanical_errors + audit["errors"] else "failed",
+                              "user_constraints": "passed" if not constraint_errors else "failed",
+                              "version_basis": version_proof["status"], "mechanics_sources": "requires_review", "delivery_data": "roundtrip_verified",
+                              "scope": "validated 表示已实现的机械/资源/用户约束通过；网页论据与设计文字另行审查。"},
+               "actual_changes": actual_changes(baseline, result),
+               "target_version_evidence": version_proof,
                "baseline_warnings": baseline.get("warnings", []),
                "errors": list(dict.fromkeys(errors)), "warnings": list(dict.fromkeys(warnings)), "budget": budget, "readiness": audit,
                "comparison_notes": comparison_notes, "comparison": compare(baseline, result, not comparison_notes), "plan": plan, "crafted_items": crafted_items, "result": {k: v for k, v in result.items() if k != "xml"}}
@@ -653,9 +676,29 @@ def evaluate(args):
             "next": "读取 evaluation.json 中实际技能/触发/伤害分项及计划说明，审查是否达到用户目标。有辅助选择空间时用 probe 比较，再将选定方案 evaluate/export。" if not errors else "先解决 errors；保持已确认的目标、进度和下限，修改方案后重新 evaluate。"}
 
 
+def actual_changes(before, after):
+    """Use recalculated objects for the delivery summary, never stale plan prose."""
+    rows = []
+    for key, label in (("class", "职业"), ("ascendancy", "升华"), ("main_skill_name", "主技能"), ("level", "角色等级")):
+        old = before.get(key + "_cn", before.get(key))
+        new = after.get(key + "_cn", after.get(key))
+        if old != new: rows.append(f"{label}：{old} → {new}。")
+    def gem_set(result):
+        return Counter((gem.get("display_name", gem.get("name", gem.get("id", "未识别宝石"))), gem.get("slot", ""), gem.get("level", 1), gem.get("quality", 0)) for gem in active_gems(result) if not gem.get("source"))
+    old_gems, new_gems = gem_set(before), gem_set(after)
+    for label, difference in (("新增或调整后启用", new_gems - old_gems), ("移出原位置或停用", old_gems - new_gems)):
+        for (name, slot, level, quality), count in difference.items():
+            rows.append(f"{label}：{name} · {slot} · {level} 级/{quality} 品质 ×{count}。")
+    added, removed = set(after["nodes"]) - set(before["nodes"]), set(before["nodes"]) - set(after["nodes"])
+    if added or removed:
+        rows.append(f"天赋实际增加 {len(added)} 个节点、移除 {len(removed)} 个节点；含升华，具体分配见 XML。")
+    return rows or ["核心职业、主技能、在用宝石与天赋没有变化；装备和配置差异见后文。"]
+
+
 def report_html(state, outcome):
     esc = lambda value: html.escape(str(value), quote=True)
     intent, plan = state["intent"], outcome["plan"]
+    result = outcome["result"]
     def listing(values):
         return "<ul>" + "".join("<li>" + esc(v) + "</li>" for v in values) + "</ul>" if values else "<p>无。</p>"
     rows = []
@@ -718,15 +761,17 @@ def report_html(state, outcome):
     baseline_note = ""
     if outcome.get("baseline_warnings"):
         baseline_note = '<p class="note">原始方案存在下列诊断提示；有资源不足等问题时，其面板仅作诊断参考，不能视为游戏内可持续达到的表现。</p>' + listing(outcome["baseline_warnings"])
+    version_note = "已抓取官方版本正文；具体机制与国服差异另行核对。" if outcome.get("target_version_evidence", {}).get("status") == "source_observed" else "待核实草案：未完成目标版本正文核对，不能据此确认适用于目标赛季。"
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>POE 配装说明</title>
 <style>body{{font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif;background:#f5f4f0;color:#1f2933;max-width:1040px;margin:32px auto;padding:0 24px}}header,section{{background:white;border:1px solid #dddcd6;border-radius:12px;padding:24px;margin:18px 0}}h1{{font-size:30px;margin:0}}h2{{font-size:21px;color:#235b53}}small{{color:#58666c}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:right;padding:9px;border-bottom:1px solid #e5e7eb}}th:first-child{{text-align:left}}pre{{white-space:pre-wrap;word-break:break-word;font-size:13px}}a{{color:#17695e}}.note{{background:#fff8df;padding:14px;border-radius:8px}}@media print{{body{{margin:0}}section{{break-inside:avoid}}}}</style>
-<header><small>POE 配装助手 · {esc(outcome['evaluated_at'])} · PoB {esc(outcome['engine_version'])} · 游戏数据 {esc(outcome['result']['data_version'])}</small><h1>{esc(outcome['name'])}</h1><p>{esc(plan['summary'])}</p><p>计算与 XML 回读已通过。预算状态：{esc(labels[b['status']])}。<a href="{esc(intent['version_source'])}">赛季版本依据</a>（{esc(intent['version_checked_at'])} 查阅）</p></header>
+<header><small>POE 配装助手 · {esc(outcome['evaluated_at'])} · PoB {esc(outcome['engine_version'])} · 游戏数据 {esc(outcome['result']['data_version'])}</small><h1>{esc(outcome['name'])}</h1><p>已按最终 XML 复算并回读。预算状态：{esc(labels[b['status']])}。<a href="{esc(intent['version_source'])}">赛季版本依据</a>（{esc(intent['version_checked_at'])} 查阅）</p><p>{esc(version_note)}</p><p>程序核对计算、资源和已记录的用户约束；来源论据与设计说明仍需核对，不代表已经游戏实战验证。</p></header>
+<section><h2>实际改动</h2>{listing(outcome['actual_changes'])}</section>
 <section><h2>你的目标</h2><p>{esc(intent['goal'])}</p><p>{esc(intent['league'])} · 目标等级 {intent['target_level']} · 预算 {esc(intent['budget']['amount'])} {esc(intent['budget']['currency'])}</p><p>{esc(intent['notes'])}</p></section>
 <section><h2>前后对比</h2><p>原角色：{esc(state.get('baseline_label','用户导入角色'))}；候选：{esc(outcome['result']['main_skill_name'])}。总 DPS 只汇总勾选计入的技能，不能代替实际刷图速度。</p>{baseline_note}<table><thead><tr><th>指标</th><th>原方案</th><th>新方案</th><th>变化</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
-<section><h2>技能与插槽安排</h2><p>按下列顺序镶嵌，连线以 XML 中装备为准。3.29 允许宝石插入不同颜色的普通孔；颜色匹配时有品质加成。表内品质加成为本机按孔位计算的部分，其他装备或辅助的品质影响以 PoECharm 最终面板为准。</p><table><tr><th>位置与顺序</th><th>宝石</th><th>基础等级 / 品质</th><th>匹配孔色加成</th><th>状态</th></tr>{''.join(skill_rows)}</table></section>
+<section><h2>技能与插槽安排</h2><p>按下列顺序镶嵌，连线以 XML 中装备为准。本机识别到匹配孔色品质加成为 {esc(result.get('matching_socket_quality_bonus', '未确认'))}。表内为本机按孔位计算的部分，其他装备或辅助的品质影响以 PoECharm 最终面板为准；实际游戏规则须与目标版本一致。</p><table><tr><th>位置与顺序</th><th>宝石</th><th>基础等级 / 品质</th><th>匹配孔色加成</th><th>状态</th></tr>{''.join(skill_rows)}</table></section>
 <section><h2>购买与准备</h2><p>已列成本：{b['low']:g}–{b['high']:g} {esc(b['currency'])}。待核实项目未计入这个范围；原 XML 也不代表游戏仓库盘点。</p><h3>程序从前后 XML 检测到的物品准备</h3>{listing(materials)}<h3>采购、制作和其他步骤</h3>{listing(shopping)}{crafted_note}<h2>切换顺序</h2>{listing(plan.get('migration_steps',[]))}</section>
 <section><h2>计算条件与待核实项</h2><p>{esc(condition_summary)}</p><p>共同场景：<code>{esc(scenario)}</code></p>{listing(resources)}{skill_table}{damage_table}{listing(plan.get('assumptions',[]))}{listing(outcome['warnings'])}<p>{esc(plan.get('legality_notes',''))}</p><p class="note">结果用于配装规划。PoB 未完整支持的机制、实际操作和装备供给可能影响游戏表现。原始角色文件保持不变。</p></section>
-<section><h2>资料依据</h2><ul>{''.join(sources)}</ul><details><summary>具体改动及条件依据</summary><pre>{esc(changes)}</pre><pre>{esc(condition_notes)}</pre></details></section>
+<section><h2>资料依据与设计说明</h2><ul>{''.join(sources)}</ul><p>{esc(plan['summary'])}</p><details><summary>具体改动及条件依据</summary><pre>{esc(changes)}</pre><pre>{esc(condition_notes)}</pre></details></section>
 <section><h2>如何使用</h2><p>在 PoECharm 中打开同目录的“改进配装.xml”，核对当前主技能、装备与天赋；按照上面的准备顺序在游戏内调整。它不会修改服务器角色。</p></section></html>'''
 
 
@@ -741,7 +786,7 @@ def read_candidate(args):
     xml = (folder / "candidate.xml").read_text(encoding="utf-8")
     bx.require(bx.digest(xml) == outcome["xml_sha256"], "候选文件在计算后被修改，请重新 evaluate。")
     root = engine.resolve_root(args.pob or state["pob_path"])
-    bx.require(engine.version(root) == outcome["engine_version"], "引擎已升级，请重新计算。")
+    bx.require(engine.check(root)["engine_fingerprint"] == outcome.get("engine_fingerprint"), "引擎、规则数据或适配器已变化，请重新 evaluate；版本号相同也不能沿用旧结果。")
     return run, state, outcome, xml, root
 
 
@@ -795,9 +840,12 @@ def export(args):
         if a is None and b is None: continue
         bx.require(isinstance(a,(int,float)) and isinstance(b,(int,float)) and math.isclose(a,b,rel_tol=1e-8,abs_tol=1e-5), "最终复算数值变化：" + key)
     output = run / "output"
+    intent = state["intent"]
+    outcome["target_version_evidence"] = facts.version_fact(intent["version_source"], intent["game_version"], intent["league"], run / ".poe-evidence", verification["engine_fingerprint"])
+    facts_ready = outcome["target_version_evidence"]["status"] == "source_observed"
     write_text(output / "改进配装.xml", xml)
     write_text(output / "配装说明.html", report_html(state, outcome))
-    state["phase"] = "exported"
+    state["phase"] = "exported" if facts_ready else "exported_draft"
     state["selected_candidate"] = args.name
     state["updated_at"] = now()
     write_json(run / "run.json", state)
@@ -807,6 +855,8 @@ def export(args):
     hit_key = "MinionHitChance" if minion_main else "HitChance"
     user_summary = [f"配装 XML 已通过本机 PoECharm 计算及保存回读。目标：{state['intent']['league']} / {state['intent']['game_version']}。",
                     "当前计算场景下：" + "；".join(f"{METRICS[key]} {stats[key]:,.1f}" for key in damage_keys + ("Life", "EnergyShield", hit_key, "ChaosResist") if key in stats) + "。"]
+    if not facts_ready:
+        user_summary.insert(0, "这是待核实草案：目标版本官方正文尚未核实，暂不能确认为目标赛季可用方案。")
     if outcome.get("comparison_notes"):
         user_summary.append("前后计算存在条件或有效性差异，不提供同条件提升百分比；原面板仅供诊断，比较限制见说明。")
     user_summary.append("DPS 已包含引擎的命中计算。以上是当前主技能口径，其他技能的贡献见说明中实际计入的 Full DPS 分项；实战操作与机制覆盖仍需核实。")
@@ -817,7 +867,7 @@ def export(args):
     if any(skill.get("is_main") and skill.get("generals_cry") for skill in verification.get("active_skills", [])):
         user_summary.append("此方案由将军之吼幻影攻击，依赖尸体来源与战吼循环；幻影吸取未计入玩家回复。")
     user_summary.append("先打开“配装说明.html”查看准备与切换顺序，再在 PoECharm 中打开“改进配装.xml”。这是规划文件，原角色保持不变。")
-    return {"status": "exported", "files": [str(output / "改进配装.xml"), str(output / "配装说明.html")],
+    return {"status": state["phase"], "target_version_evidence": outcome["target_version_evidence"], "files": [str(output / "改进配装.xml"), str(output / "配装说明.html")],
             "user_summary": "\n\n".join(user_summary), "final_reply_policy": "交付文件后原样发送 user_summary 作为聊天结论；具体机制、对比和采购步骤已在 HTML，不另行补算或扩写收益。", "budget_status": outcome["budget"]["status"], "warnings": outcome["warnings"]}
 
 
@@ -853,7 +903,7 @@ def catalog(args):
 def parser():
     p = argparse.ArgumentParser(description="POE 配装助手：本机 PoB 实算、候选校验和 XML 导出。")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("doctor", "inspect", "catalog", "decode", "start", "intent", "evaluate", "probe", "export", "status", "route"):
+    for name in ("doctor", "inspect", "catalog", "research", "decode", "start", "intent", "evaluate", "probe", "export", "status", "route"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--pob", help="PoECharm 文件夹、PoB 文件夹或可执行文件；默认自动发现")
         if name in {"inspect", "decode", "start"}: cmd.add_argument("--input", required=True)
@@ -879,6 +929,9 @@ def parser():
             cmd.add_argument("--input")
             cmd.add_argument("--out", help="将完整查询保存到工作区 JSON，终端只返回索引")
             cmd.add_argument("--limit", type=int, default=20)
+        if name == "research":
+            cmd.add_argument("--gems", required=True, help="逗号分隔的本机宝石 skill_id")
+            cmd.add_argument("--out", required=True, help="工作区事实记录 JSON")
         if name == "route":
             cmd.add_argument("--invoked", action="store_true")
             cmd.add_argument("--file", required=True)
@@ -890,7 +943,7 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         if args.command == "doctor":
-            result = {"skill_version": VERSION, **engine.check(engine.resolve_root(args.pob))}
+            result = {"skill_version": VERSION, **engine.health(engine.resolve_root(args.pob))}
         elif args.command == "inspect":
             if args.out:
                 bx.require(Path(args.out).resolve() != Path(args.input).resolve(), "检查结果不能覆盖原始角色文件。请为 --out 使用不同文件名。")
@@ -915,6 +968,19 @@ def main(argv=None):
         elif args.command == "evaluate": result = evaluate(args)
         elif args.command == "probe": result = probe(args)
         elif args.command == "export": result = export(args)
+        elif args.command == "research":
+            ids = args.gems.split(",")
+            bx.require(1 <= len(ids) <= 60 and len(set(ids)) == len(ids) and all(re.fullmatch(r"[A-Za-z0-9_]+", value) for value in ids), "--gems 需要 1–60 个不同的本机 skill_id。")
+            output = Path(args.out).resolve()
+            bx.require(output.suffix.lower() == ".json", "research --out 请使用工作区 JSON 文件。")
+            calculation = engine.calculate(engine.resolve_root(args.pob), queries=[{"kind": "gems", "query": "id:" + value, "limit": 2} for value in ids])
+            gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] for entry in query["entries"] if entry["skill_id"] in ids}
+            bx.require(set(gems) == set(ids), "部分宝石 ID 未识别，请先 catalog gems 查询。")
+            evidence = facts.gem_facts(gems, output.parent / ".poe-evidence", calculation["engine_fingerprint"], engine.require_data_version(calculation))
+            write_json(output, {"gems": evidence, "engine_fingerprint": calculation["engine_fingerprint"], "data_version": calculation["data_version"]})
+            result = {"file": str(output), "source_checked": [key for key, value in evidence.items() if value["status"] == "source_checked"],
+                      "unverified": [key for key, value in evidence.items() if value["status"] != "source_checked"],
+                      "next": "读取 gems[skill_id].choices，选实际可达的章节/任务/NPC/职业。后续通用商店来自单独规则交叉核对；未核实条目需另查，不能自填 verified。"}
         elif args.command == "catalog":
             bx.require(1 <= args.limit <= 100, "limit 应在 1–100。")
             if args.out:
@@ -940,14 +1006,28 @@ def main(argv=None):
             gems = {entry["skill_id"]: entry for query in calculation["catalog_batch"] if query["kind"] == "gems" for entry in query["entries"]}
             compatibility = {query["query"]: query["entries"][0] for query in calculation["catalog_batch"] if query["kind"] == "links"}
             nodes = [entry for query in calculation["catalog_batch"] if query["kind"] == "nodes" for entry in query["entries"]]
-            checked, warnings = routes.validate(route, gems, calculation["data_version"], calculation["classes"], compatibility, nodes)
+            checked, warnings = routes.validate(route, gems, engine.require_data_version(calculation), calculation["classes"], compatibility, nodes)
             output = Path(args.out).resolve()
             bx.require(output != Path(args.file).resolve(), "路线说明不能覆盖输入 JSON。")
             bx.require(output.suffix.lower() == ".html", "--out 请指定 HTML 文件。")
+            evidence_folder = output.parent / ".poe-evidence"
+            evidence = facts.gem_facts(gems, evidence_folder, calculation["engine_fingerprint"], engine.require_data_version(calculation))
+            fact_warnings, unresolved = facts.reconcile_acquisitions(checked, evidence)
+            warnings += fact_warnings
+            version_source = next((source for source in checked["sources"] if source["id"] == checked.get("version_source")), {})
+            version_proof = facts.version_fact(version_source.get("url", ""), checked["game_version"], checked["league"], evidence_folder, calculation["engine_fingerprint"])
+            checked["fact_evidence"] = {"gems": evidence, "version": version_proof}
+            if version_proof["status"] != "source_observed": warnings.append("赛季正文依据未完成程序核对：" + version_proof.get("reason", "未核实"))
+            facts_ready = not unresolved and version_proof["status"] == "source_observed"
+            checked["delivery_status"] = "route_checked" if facts_ready else "route_draft"
+            evidence_file = output.with_suffix(".evidence.json")
+            write_json(evidence_file, {"engine_fingerprint": calculation["engine_fingerprint"], "checked_route": checked, "warnings": warnings})
             write_text(output, routes.render(checked, warnings, calculation["engine_version"], calculation["tree_version"]))
-            result = {"status": "route_checked", "file": str(output), "stages": len(checked["stages"]), "gem_types_checked": len(gems), "engine_version": calculation["engine_version"], "warnings": warnings, "not_calculated": "路线等级与依赖校验；未实算完整阶段装备 DPS/生存。需要具体阶段 XML 时，继续建立完整配装候选并 evaluate/export。"}
+            result = {"status": checked["delivery_status"], "file": str(output), "evidence_file": str(evidence_file), "unverified_gems": unresolved,
+                      "stages": len(checked["stages"]), "gem_types_checked": len(gems), "engine_version": calculation["engine_version"], "warnings": warnings, "not_calculated": "路线等级与依赖校验；未实算完整阶段装备 DPS/生存。需要具体阶段 XML 时，继续建立完整配装候选并 evaluate/export。"}
             result["user_summary"] = (f"已生成《{checked['name']}》，共 {len(checked['stages'])} 个阶段，详见 {output.name}。\n\n"
-                                      "本机已检查宝石等级、主辅兼容、物理孔位、升华连接，以及文件记录的章节、职业和偏好约束。领取表来源与文字机制仍需逐项核对，不能把无程序警告当作实战验证。\n\n"
+                                      + ("宝石获取已逐项对应实际抓取的任务表/通用商店依据，已找到所填版本的官方正文。" if facts_ready else "这是待核实草案：部分宝石获取或官方版本正文未核实，暂不作为可直接照做的攻略。") + "\n\n"
+                                      "本机已检查宝石等级、主辅兼容、物理孔位、升华连接，以及章节、职业和偏好约束。来源符合不等于国服差异与全部机制正确，仍需核对目标赛季。\n\n"
                                       "尚未使用完整阶段装备实算伤害、生存和续航。按每段的领取进度与切换条件推进；实际角色形成后，可提供新的 XML 继续计算。")
             result["reply_policy"] = "交付 HTML 后原样使用 user_summary；不要在最终聊天重复编写一套未经实算的伤害、抗性或续航承诺。"
         else:

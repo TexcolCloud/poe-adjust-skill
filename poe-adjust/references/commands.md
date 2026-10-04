@@ -24,6 +24,8 @@ python $entry status --run '<工作区>/配装任务/会话'
 
 start 返回 overview，已含职业、等级、两个版本和技能组，不需要为了首次问询再 inspect。inspection 文件保留原 XML 字段：skill_groups[].gems[].skillId/nameSpec；计算结果则为 calculation.gems[].id/name。不要反复试猜字段名。任务点/升华进度仍由用户确认，不能从缓存的 unallocatedPassives 推断已完成任务数。
 
+doctor/start 自动读取本机发布记录和 GameVersions 元数据，并执行启动、查询、XML 保存与回读自检。`data_version_basis.status=corroborated` 表示两份本机依据一致；`unresolved` 时可查询，但不能认证方案。`engine_fingerprint` 覆盖实际计算代码、数据、适配器与译名，版本号相同但内容变化也会使缓存失效。升级后 evaluate 保留原始快照和已确认意图，重跑自检与基线；若规则版本变化则先重新确认目标。旧指纹候选不能直接 export。`capabilities` 是已检测接口能力，不是未来所有机制均正确的保证。历史 version_evidence 缺少新版本链接时，由联网工具寻找官方公告，不改版本数字。
+
 分享码：把实际取得的纯 PoB 分享码存成文本，运行 `decode --input '<分享码.txt>' --out '<模板.xml>'`。也可直接将纯分享码文件交给 inspect/start。网页地址和 HTML 不是分享码；用现有联网工具获取其中的真实分享内容，保留来源。大分享码从已核实的纯文本来源直接下载到工作区，只输出路径和长度；不要在思考、聊天或命令中重新抄写长串，也不要拼接截断的工具输出。仅在具体配装需要模板时才获取，不为开荒资料查询额外导入构筑。
 
 查询：
@@ -42,6 +44,7 @@ python $entry catalog --kind links --query 'ShieldCrush,SupportBrutality,Support
 python $entry catalog --kind bases --query 'Two-Toned Boots' --limit 8
 python $entry catalog --kind affixes --query 'Two-Toned Boots (Armour/Energy Shield)|maximum Life' --limit 15
 python $entry catalog --batch '<queries.json>' --out '<工作区>/catalog-results.json'
+python $entry research --gems 'Fireball,SupportMeleePhysicalDamage' --out '<工作区>/宝石依据.json'
 ```
 
 **查职业、升华节点 ID/原文、宝石或辅助兼容时不需要角色 XML。** 无角色开荒直接省略 `--input`，所有职业的数据都可查。不为目录查询手写最小 XML、下载构筑或解码巨大分享码；这些步骤不能改善查询。名称搜索也可能匹配贵族的同名节点，按 ascendancy_name 筛选实际升华，取 type=Notable 的大点。仅当需要相对于现有角色的天赋连接路径、已分配状态时，给 catalog 加真实 `--input '<角色.xml>'`。无输入时返回的节点 ID/stats/linked 可用于路线校验，path/allocated 不代表用户角色。
@@ -51,6 +54,8 @@ python $entry catalog --batch '<queries.json>' --out '<工作区>/catalog-result
 `classes` 返回当前树的职业与升华 ID/英文名，名称同时从本机翻译表补充 name_cn/display_name；nodes 也带可用中文名称。沿用这些名称，避免错配、误译或使用已移除的升华。`links` 的 query 用逗号依次写一个主动技能 ID 和最多五个辅助 ID，返回 compatible/incompatible。它调用原生技能类型匹配，只用于早期排除不兼容组合；不替代实装后的武器、触发等级/冷却、伤害转换和资源验证。evaluate 还会拒绝未辅助任何已启用技能的辅助宝石。
 
 批量查询和较大的单项查询使用 `--out` 保存到当前任务工作区，命令仅返回文件路径和每项条数；单项完整结果在 entries，批量在 queries[].entries。未指定 --out 且超过 12000 字符时会提示重新指定，完整结果不会截断后冒充齐全。用 `Get-Content -Raw -Encoding UTF8 '<结果.json>' | ConvertFrom-Json` 后选择相关 queries、宝石或字段输出，避免一次读取整个大文件触发 TeleAgent 的工具输出目录授权。输出路径不得与输入 XML/queries.json 相同。
+
+`research` 一次查询最多 60 个本机宝石 ID，再抓取对应公开页面。返回文件中的 `gems[skill_id].choices` 包含 acquisition、available_from_act、quest、npc、class_ids；任务奖励和商店分开，通用商店由额外规则交叉核对，不从宝石等级猜来源。`sources` 保留实际抓取 URL、时间与摘要，status 为 source_checked 或 unverified。只读取本任务字段即可。来源快照自动存在同目录 `.poe-evidence`，一天到期或引擎/校验代码变化后重新抓取；用户不用维护缓存。查不到时保留缺口，不能手写 checked/verified 代替来源。此处未验证国服与国际服全部差异，也未证明交易供给或随机取得。
 
 技能返回 `skill_id` 才是操作字段；`id` 可能是游戏物品路径。查询天赋时带输入文件，使用其版本与当前已点天赋。结果按本机引擎计算的所需新增点数排序；`allocated` 表示已点，`reachable` 表示有可分配路线，`points_to_allocate` 是新增点数，`path` 包含到目标需要的节点 ID。将路线与保留节点合并后设置完整 `tree.nodes`，再评估点数和依赖；不要孤立添加远处的大点。`linked` 返回邻接节点，供调整已有路径时查看。查询只返回最多 100 条；细化关键词，不反复截断全库。
 
@@ -93,7 +98,7 @@ python $entry catalog --batch '<queries.json>' --out '<工作区>/catalog-result
 
 示例数值不是默认事实，按对话填写。`target_level`、`baseline_main_group`、`quest_passive_points`、`ascendancy_points` 均须明确填写，脚本不默认满任务或满升华。用户未回答时先分轮询问。`mode` 为 refine/rebuild/both。预算 amount/currency 必填，金额是本次可投入预算；自力模式可写 0 并将确认已有的物品记为 owned。没有预算时先问。
 
-`game_version` 为已联网核实的游戏主版本（如 3.29），不是 PoB 2.67.2、XML targetVersion=3_0 或国服赛季编号。`version_source` 为实际网页 URL，`version_checked_at` 为查阅日期。国服 [S30 官方公告](https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml) 明确说明 3.29.0；本机机制/宝石数据版本为 3.29。S29 文件名不证明目标赛季，若用户也说 S29，必须先澄清是否永久区/旧文件用于当前赛季。旧树并不切换技能与计算规则。本包暂不支持历史版本实算。
+`game_version` 是已联网核实的游戏主版本，不是 PoB 版本、XML targetVersion 或国服赛季编号。`version_source` 为实际官方网页 URL，`version_checked_at` 为查阅日期。历史 [S30 官方公告](https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml) 明确说明 3.29.0；它不能证明其他赛季。旧文件名不证明用户目标，旧树也不切换机制/宝石规则。本机版本由 doctor 检测，不固定版本号。intent/evaluate/export 的 `target_version_evidence` 来自实际官方正文；抓取或匹配失败时保留 unverified，导出标记 exported_draft，不能宣布赛季适用性已经核实。
 
 `keep_slots` 锁定该插槽原物品的完整文本，而非只锁物品名字。`keep_skill_ids` 要求候选中该技能启用。未明确允许时三个 allow 字段保持 false。`baseline_main_group` 从 inspection 的 `skill_groups[].index` 选择；先确定用户真正使用的主技能。
 

@@ -165,7 +165,7 @@ def validate(route, gems, data_version=None, classes=None, compatibility=None, n
     library = result.get("gems")
     gem_ids(route)
     for skill_id, acquisition in library.items():
-        bx.require(set(acquisition) <= {"acquisition", "source_id", "source_note", "fallback_skill_id", "available_from_act", "class_ids", "via_mule"}, "gems 获取依据存在未知字段。")
+        bx.require(set(acquisition) <= {"acquisition", "source_id", "source_note", "fallback_skill_id", "available_from_act", "class_ids", "via_mule", "quest", "npc"}, "gems 获取依据存在未知字段。")
         bx.require(skill_id in gems, "本机未识别独立宝石：" + skill_id)
         bx.require(acquisition.get("acquisition") in ACQUISITIONS, "宝石需要有效 acquisition。")
         bx.require(acquisition.get("source_id") in source_map and isinstance(acquisition.get("source_note"), str) and acquisition["source_note"].strip(), "宝石获取需要 source_id 与章节/任务/NPC/职业说明 source_note。")
@@ -248,6 +248,7 @@ def render(route, warnings, engine_version, tree_version):
     listing = lambda values: "<ul>" + "".join("<li>" + esc(v) + "</li>" for v in values) + "</ul>"
     class_name = route.get("class_display_name", bx.CLASSES[route["class_id"]])
     ascendancy_name = route.get("ascendancy_display_name", route["ascendancy"])
+    delivery_note = "待核实草案：获取或版本依据仍有缺口，暂不作为可直接照做的攻略。" if route.get("delivery_status") == "route_draft" else "分阶段路线：已完成列出的程序检查，仍需核对机制、国服差异和实际进度。"
     sections = []
     for stage in route["stages"]:
         chapter = f"第 {stage['act']} 章" if stage["act"] <= 10 else "异界"
@@ -272,6 +273,8 @@ def render(route, warnings, engine_version, tree_version):
         if gem.get("via_mule"): fallback += "；需按已确认方案另建小号取得并转交"
         chapter = f"第 {gem['available_from_act']} 章" if gem["available_from_act"] <= 10 else "异界"
         fallback += "；本路线记录的最早取得进度：" + chapter
-        rows.append(f"<tr><td>{esc(gem['name'])}</td><td>{esc(ACQUISITIONS[gem['acquisition']])}：{esc(gem['source_note'])}{esc(fallback)} <a href=\"{esc(sources[gem['source_id']]['url'])}\">依据</a></td></tr>")
+        links = ' '.join(f'<a href="{esc(url)}">获取依据</a>' for url in gem.get("source_urls", [sources[gem['source_id']]['url']]))
+        state = "网页表格已核对" if gem.get("evidence_status") == "source_checked" else "取得办法待核实"
+        rows.append(f"<tr><td>{esc(gem['name'])}</td><td>{esc(ACQUISITIONS[gem['acquisition']])}：{esc(gem['source_note'])}{esc(fallback)} · {state} {links}</td></tr>")
     evidence = [f'<li><a href="{esc(source["url"])}">{esc(source["title"])}</a> · {esc(source["version"])} · {esc(source["checked_at"])}</li>' for source in sources.values()]
-    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(route['name'])}</title><style>body{{font:16px/1.75 system-ui,"Microsoft YaHei",sans-serif;max-width:1080px;margin:32px auto;padding:0 22px;background:#f4f3ef;color:#23303b}}header,section{{padding:26px;background:white;border:1px solid #ddd;border-radius:12px;margin:18px 0}}h1{{font-size:30px}}h2{{color:#235b53}}table{{border-collapse:collapse;width:100%}}td,th{{text-align:left;padding:10px;border-bottom:1px solid #ddd}}.note{{background:#fff5da;padding:14px}}@media print{{section{{break-inside:avoid}}}}</style><header><h1>{esc(route['name'])}</h1><p>{esc(route['goal'])}</p><p>{esc(route['league'])} · {esc(class_name)} → {esc(ascendancy_name)} · {'自力获取' if route['trade_mode']=='ssf' else '允许交易'} · 初始预算 {route['budget']['amount']:g} {esc(route['budget']['currency'])}</p><p class="note">这是分阶段行动路线。已按本机 PoB {esc(engine_version)} / 天赋 {esc(tree_version)} 核对宝石、连线和升华结构；任务领取与国服改动以所列资料和实际游戏为准。尚未使用完整阶段装备进行伤害/生存实算，不承诺面板或通关速度。</p></header>{''.join(sections)}<section><h2>宝石取得总表</h2><table><tr><th>宝石</th><th>取得办法</th></tr>{''.join(rows)}</table></section><section><h2>需要留意</h2>{listing(warnings + route.get('risks', []) + route.get('notes', []))}</section><section><h2>查阅资料</h2><ul>{''.join(evidence)}</ul><p>实际推进后，可提供新的角色 XML，继续计算下一阶段的具体装备与天赋。</p></section></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(route['name'])}</title><style>body{{font:16px/1.75 system-ui,"Microsoft YaHei",sans-serif;max-width:1080px;margin:32px auto;padding:0 22px;background:#f4f3ef;color:#23303b}}header,section{{padding:26px;background:white;border:1px solid #ddd;border-radius:12px;margin:18px 0}}h1{{font-size:30px}}h2{{color:#235b53}}table{{border-collapse:collapse;width:100%}}td,th{{text-align:left;padding:10px;border-bottom:1px solid #ddd}}.note{{background:#fff5da;padding:14px}}@media print{{section{{break-inside:avoid}}}}</style><header><h1>{esc(route['name'])}</h1><p class="note">{esc(delivery_note)}</p><p>{esc(route['goal'])}</p><p>{esc(route['league'])} · {esc(class_name)} → {esc(ascendancy_name)} · {'自力获取' if route['trade_mode']=='ssf' else '允许交易'} · 初始预算 {route['budget']['amount']:g} {esc(route['budget']['currency'])}</p><p class="note">这是分阶段行动路线。已按本机 PoB {esc(engine_version)} / 天赋 {esc(tree_version)} 核对宝石、连线和升华结构；任务领取与国服改动以所列资料和实际游戏为准。尚未使用完整阶段装备进行伤害/生存实算，不承诺面板或通关速度。</p></header>{''.join(sections)}<section><h2>宝石取得总表</h2><table><tr><th>宝石</th><th>取得办法</th></tr>{''.join(rows)}</table></section><section><h2>需要留意</h2>{listing(warnings + route.get('risks', []) + route.get('notes', []))}</section><section><h2>查阅资料</h2><ul>{''.join(evidence)}</ul><p>实际推进后，可提供新的角色 XML，继续计算下一阶段的具体装备与天赋。</p></section></html>'''

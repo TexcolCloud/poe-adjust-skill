@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import csv
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,10 +18,10 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-SUPPORTED_VERSIONS = {"2.67.2": "3.29"}
+# Historical source records, not an engine compatibility allowlist.
 VERSION_EVIDENCE = {
-    "3.28": {"season": "S29", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22602/m14525/202603/982863.shtml"},
-    "3.29": {"season": "S30", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml"},
+    "3.28": {"season": "S29", "name": "沙海幻境", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22602/m14525/202603/982863.shtml"},
+    "3.29": {"season": "S30", "name": "永火之咒", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml"},
 }
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -91,12 +92,61 @@ def resolve_root(hint: str | None = None) -> Path:
     return found[0]
 
 
+def fingerprint(root: Path) -> str:
+    """Hash actual calculation inputs, including same-version local updates.
+
+    Excludes user builds/settings and artwork. No cache is written to the app.
+    The adapter is part of the identity because it determines exported evidence.
+    """
+    paths = [root / name for name in ("manifest.xml", "changelog.txt")]
+    paths += [path for path in root.iterdir() if path.suffix.lower() in {".lua", ".dll"}]
+    for name in ("Classes", "Modules", "Data", "TreeData", "lua"):
+        paths += [path for path in (root / name).rglob("*") if path.suffix.lower() in {".lua", ".json", ".dll"}]
+    translations = root.parent / "Data/Translate/zh-rCN"
+    paths += [translations / name for name in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv")]
+    paths += list(SCRIPTS.glob("*.py")) + [SCRIPTS / name for name in ("headless.lua", "pob.lua")]
+    digest = hashlib.sha256()
+    def label(path):
+        # Stable order and namespaces keep identical relocated installs identical.
+        if path.is_relative_to(root): return "engine/" + path.relative_to(root).as_posix()
+        return ("adapter/" if path.parent == SCRIPTS else "translations/") + path.name
+    for path in sorted(set(paths), key=lambda path: label(path).casefold()):
+        digest.update(label(path).encode("utf-8") + b"\0")
+        if path.is_file():
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+        else:
+            digest.update(b"MISSING")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def metadata(root: Path) -> dict:
+    """Cross-check release notes and tree metadata; never equate a tree to rules."""
+    current = version(root)
+    tree_text = (root / "GameVersions.lua").read_text(encoding="utf-8-sig")
+    tree_list = re.search(r"treeVersionList\s*=\s*\{([^}]+)\}", tree_text)
+    trees = re.findall(r'"(\d+_\d+(?:_[a-z_]+)?)"', tree_list[1]) if tree_list else []
+    standard = [value for value in trees if re.fullmatch(r"\d+_\d+", value)]
+    latest = standard[-1] if standard else None
+    notes = (root / "changelog.txt").read_text(encoding="utf-8-sig")
+    release = re.search(r"^VERSION\[" + re.escape(current) + r"\]", notes, re.M)
+    heading = re.search(r"^---\s+(\d+\.\d+)\b[^\r\n]*", notes[release.start():], re.M) if release else None
+    rules = heading[1] if heading else None
+    matched = rules is not None and latest == rules.replace(".", "_")
+    return {"engine_version": current, "data_version": rules if matched else None,
+            "available_tree_versions": trees, "latest_standard_tree": latest,
+            "data_version_basis": {"status": "corroborated" if matched else "unresolved",
+                "release": current, "changelog_heading": heading[0] if heading else None,
+                "tree_metadata": latest,
+                "scope": "本机发布记录与标准树交叉确认；不代表已核实国服改动或所有游戏机制。"},
+            "version_evidence": VERSION_EVIDENCE.get(rules) if matched else None}
+
+
 def check(root: Path) -> dict:
     if os.name != "nt":
         raise EngineError("此交付包使用 Windows 版 PoECharm，请在 TeleAgent Windows 桌面版运行。")
-    current = version(root)
-    if current not in SUPPORTED_VERSIONS:
-        raise EngineError(f"检测到 PoB {current}，本包已验证版本为 {', '.join(sorted(SUPPORTED_VERSIONS))}。请联系交付者更新适配包；不要改写版本号。")
     dll = root / "lua51.dll"
     with dll.open("rb") as stream:
         stream.seek(0x3C)
@@ -105,9 +155,14 @@ def check(root: Path) -> dict:
         machine = struct.unpack("<H", stream.read(2))[0]
     if machine != 0x8664 or struct.calcsize("P") != 8:
         raise EngineError("需要 64 位 Python 与 64 位 PoECharm。优先使用 TeleAgent 自带的 Python。")
-    data_version = SUPPORTED_VERSIONS[current]
-    return {"pob_path": str(root), "engine_version": current, "data_version": data_version,
-            "version_evidence": VERSION_EVIDENCE[data_version], "python": sys.version.split()[0], "writes_to_installation": False}
+    return {"pob_path": str(root), **metadata(root), "engine_fingerprint": fingerprint(root),
+            "python": sys.version.split()[0], "writes_to_installation": False}
+
+
+def require_data_version(info):
+    if not info.get("data_version"):
+        raise EngineError("本机发布记录与天赋元数据不能一致确认机制/宝石版本。可继续查询目录，但不能认证配装或路线；请保留 doctor 结果供维护者核对，不能仅用最新天赋树推定规则。")
+    return info["data_version"]
 
 
 def validate_game_version(game_version, league, data_version=None, version_source=None):
@@ -116,13 +171,9 @@ def validate_game_version(game_version, league, data_version=None, version_sourc
         raise EngineError("请联网确认目标赛季的 game_version（如 3.29），不能从 S29 或 XML 的 treeVersion 推断。")
     season = re.search(r"(?<![A-Za-z0-9])S\s*(\d+)(?!\d)|第\s*(\d+)\s*赛季", league, re.I)
     season_number = int(next(group for group in season.groups() if group)) if season else None
-    if "沙海幻境" in league:
-        season_number = 29
-    elif "永火之咒" in league:
-        season_number = 30
-    # Tencent's S30 announcement explicitly identifies 3.29.0. S29 is its predecessor.
-    if season_number is not None and ((season_number == 30 and game_version != "3.29") or (season_number < 30 and game_version == "3.29")):
-        raise EngineError("赛季与游戏版本不对应：国服 S30 对应 3.29，S29 不能按 3.29 交付。请澄清是历史赛季、永久区还是旧文件用于当前赛季；不要擅自更改用户目标。")
+    for documented_version, evidence in VERSION_EVIDENCE.items():
+        if (season_number == int(evidence["season"][1:]) or evidence["name"] in league) and game_version != documented_version:
+            raise EngineError(f"赛季与游戏版本不对应：官方 {evidence['season']}（{evidence['name']}）对应 {documented_version}，不能按 {game_version} 交付。请澄清是历史赛季、永久区还是旧文件用于当前赛季；不要擅自更改用户目标。")
     if data_version is not None and game_version != data_version:
         raise EngineError(f"目标游戏版本 {game_version} 与本机机制/宝石数据 {data_version} 不一致。仅切换旧天赋树不能还原旧版规则，需要维护者提供经过验证的对应引擎。")
     for documented_version, evidence in VERSION_EVIDENCE.items():
@@ -130,9 +181,47 @@ def validate_game_version(game_version, league, data_version=None, version_sourc
             raise EngineError(f"引用的官方公告实际为 {evidence['season']} / {documented_version}，不能作为 {game_version} 的版本依据。请打开 doctor/start 返回的 version_evidence.url 核对正文。")
 
 
-def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None) -> dict:
-    check(root)
-    request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit}
+def validate_contract(result):
+    """Reject missing evidence instead of silently treating absent fields as zero."""
+    required = {"stats": dict, "resource_rules": dict, "gems": list, "equipped": list,
+                "active_skills": list, "damage_sources": list, "classes": list,
+                "nodes": list, "config_keys": list, "warnings": list, "xml": str,
+                "tree_version": str, "latest_tree_version": str, "capabilities": dict}
+    for key, kind in required.items():
+        if not isinstance(result.get(key), kind):
+            raise EngineError(f"本机接口缺少有效 {key}；当前适配不能完成此项计算，请维护者检查接口变化。")
+    for key in ("Life", "Str", "Dex", "Int", "ManaUnreserved"):
+        if type(result["stats"].get(key)) not in (int, float):
+            raise EngineError("本机计算缺少核心指标：" + key)
+    if not result["classes"] or not result["config_keys"] or not result["xml"].startswith("<?xml"):
+        raise EngineError("本机目录或 XML 保存能力未通过检查。")
+    ET.fromstring(result["xml"])
+
+
+def health(root: Path) -> dict:
+    result = calculate(root, queries=[{"kind": "gems", "query": "", "limit": 1}, {"kind": "config", "query": "", "limit": 1}], health_probe=True)
+    if not result.get("health_probe", {}).get("roundtrip") or not all(row["entries"] for row in result["catalog_batch"]):
+        raise EngineError("本机启动/目录查询/XML 保存回读自检未通过。")
+    frontend = {"name": "未检测到 PoECharm 外壳", "file_version": None}
+    wrappers = list(root.parent.glob("PoeCharm*.exe"))
+    if len(wrappers) == 1:
+        executable = wrappers[0]
+        frontend = {"name": executable.name, "path": str(executable), "file_version": None}
+        try:
+            quoted = str(executable).replace("'", "''")
+            process = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                                      "(Get-Item -LiteralPath '" + quoted + "').VersionInfo.FileVersion"],
+                                     capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+            frontend["file_version"] = process.stdout.strip() or None
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # UI-wrapper metadata does not determine calculation compatibility.
+    return {**check(root), "frontend": frontend, "capabilities": result["capabilities"], "health_probe": result["health_probe"],
+            "compatibility": "runtime_checked", "limitations": "自检验证接口与基本回读；具体配装仍须 evaluate/export，游戏事实仍须联网查证。"}
+
+
+def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False) -> dict:
+    info = check(root)
+    request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit, "health_probe": health_probe}
     if queries is not None:
         request["queries"] = queries
     if crafts is not None:
@@ -161,7 +250,9 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         result = json.loads(process.stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EngineError("计算引擎没有返回有效结果：" + process.stdout.decode("utf-8", errors="replace")[-1000:]) from exc
-    result["engine_version"] = version(root)
+    if fingerprint(root) != info["engine_fingerprint"]:
+        raise EngineError("计算期间引擎或数据文件发生变化。本次结果已作废，请等待 PoECharm 更新完成后重试。")
+    result.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
     names = {}
     for filename in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv"):
         translations = root.parent / "Data/Translate/zh-rCN" / filename
@@ -169,7 +260,10 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
             with translations.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
                 names.update({row[0]: row[1] for row in csv.reader(stream) if len(row) >= 2})
     for calculation in result.get("calculations", [result]):
-        calculation["engine_version"] = result["engine_version"]
+        validate_contract(calculation)
+        calculation.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
+        if info["available_tree_versions"] and calculation["latest_tree_version"] not in info["available_tree_versions"]:
+            raise EngineError("运行中的天赋数据与安装元数据不一致，请等更新完成后重试。")
         entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", [])
         for query_result in calculation.get("catalog_batch", []):
             entries += query_result["entries"]
@@ -193,7 +287,6 @@ def lua_string(value: str) -> str:
 
 def worker(request: dict) -> dict:
     root = Path(request["pob_path"]).resolve()
-    check(root)
     os.chdir(root)
     directory = os.add_dll_directory(str(root))
     lua = ctypes.CDLL(str(root / "lua51.dll"))

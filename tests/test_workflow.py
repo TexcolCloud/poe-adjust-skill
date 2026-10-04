@@ -15,12 +15,14 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "poe-adjust/scripts"))
 import buildxml as bx
 import engine
+import facts
 import poe
 import routes
 
@@ -43,6 +45,36 @@ def intent_for(root):
 class DocumentTests(unittest.TestCase):
     def setUp(self):
         self.root = bx.parse(SAMPLE)
+
+    def test_engine_metadata_accepts_new_releases_without_allowlist(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "manifest.xml").write_text('<PoBVersion><Version number="9.1.0"/></PoBVersion>', encoding="utf-8")
+            (root / "GameVersions.lua").write_text('treeVersionList = {"3_29", "3_30_ruthless", "3_30"}', encoding="utf-8")
+            (root / "changelog.txt").write_text('VERSION[9.1.0][2027/01/01]\nfixes\nVERSION[9.0.0]\n--- 3.30 - Example ---\n', encoding="utf-8")
+            self.assertEqual(engine.metadata(root)["data_version"], "3.30")
+            before = engine.fingerprint(root)
+            (root / "Modules").mkdir()
+            data = root / "Modules/Data.lua"
+            data.write_text("value = 10", encoding="utf-8")
+            self.assertNotEqual(before, engine.fingerprint(root))
+            before = engine.fingerprint(root)
+            stamp = data.stat()
+            data.write_text("value = 11", encoding="utf-8")
+            os.utime(data, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            self.assertNotEqual(before, engine.fingerprint(root))
+            (root / "GameVersions.lua").write_text('treeVersionList = {"3_31"}', encoding="utf-8")
+            self.assertIsNone(engine.metadata(root)["data_version"])
+            with self.assertRaisesRegex(ValueError, "不能一致确认"):
+                engine.require_data_version(engine.metadata(root))
+            import shutil
+            clone = root / "relocated"
+            shutil.copytree(root, clone, ignore=shutil.ignore_patterns("relocated"))
+            self.assertEqual(engine.fingerprint(root), engine.fingerprint(clone))
+
+    def test_missing_native_contract_is_not_a_zero_value(self):
+        with self.assertRaisesRegex(ValueError, "resource_rules"):
+            engine.validate_contract({"stats": {"Life": 100}})
 
     def test_saved_snapshot_has_exact_content_digest_on_windows(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -170,7 +202,7 @@ class DocumentTests(unittest.TestCase):
         intent = intent_for(self.root)
         for league in ("国服 S29", "国服S29", "第29赛季", "沙海幻境"):
             intent["league"] = league
-            with self.assertRaisesRegex(ValueError, "S30 对应 3.29"):
+            with self.assertRaisesRegex(ValueError, "S29.*对应 3.28"):
                 poe.validate_intent(intent, self.root)
         with self.assertRaisesRegex(ValueError, "机制/宝石数据"):
             engine.validate_game_version("3.28", "历史赛季", "3.29")
@@ -461,9 +493,102 @@ class RouteTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "需要 Windows 本机引擎")
+class FactTests(unittest.TestCase):
+    def setUp(self):
+        self.raw = '''<title>Example - PoEDB</title><h5>Quest /2 </h5><table><tr><th>Act</th></tr>
+        <tr><td>1</td><td>Opening quest</td><td><i title="Quest Reward"></i>Quest Reward</td><td>Marauder</td></tr>
+        <tr><td>1</td><td>Opening quest</td><td><i title="Quest Vendor"></i>Nessa</td><td>Marauder · Templar</td></tr></table>'''
+        self.general = "Siosa in Act 3 sells all unleveled skill gems that can be received as quest rewards for quests you've completed, across all classes. Lilly Roth in Act 6, 10 and Karui Shores sells all unleveled skill gems after completing the Act 6 quest Fallen from Grace."
+        self.rows = facts.quest_rows(self.raw, "Example")
+
+    def test_quest_and_vendor_rows_preserve_actual_class_scope(self):
+        self.assertEqual(len(self.rows), 2)
+        self.assertEqual(self.rows[0]["class_ids"], [1])
+        self.assertEqual(self.rows[1]["class_ids"], [1, 5])
+        self.assertEqual(self.rows[1]["npc"], "Nessa")
+        self.assertEqual(facts.quest_rows(self.raw, "Different gem"), [])
+
+    def test_universal_vendor_requires_both_live_rule_and_eligible_gem(self):
+        rows = facts.universal_rows(self.rows, self.general)
+        self.assertEqual([row["available_from_act"] for row in rows], [3, 6])
+        self.assertEqual(facts.universal_rows([], self.general), [])
+        self.assertEqual(facts.universal_rows(self.rows, "Unavailable page"), [])
+
+    def test_acquisition_cannot_broaden_classes_or_invent_early_vendor(self):
+        route = {"class_id": 1, "gems": {"Example": {"acquisition": "vendor", "available_from_act": 1, "class_ids": list(range(7))}}}
+        proof = {"Example": {"status": "source_checked", "choices": self.rows, "sources": [{"url": "https://poedb.tw/us/Example"}]}}
+        with self.assertRaisesRegex(ValueError, "扩大"): facts.reconcile_acquisitions(route, proof)
+        route["gems"]["Example"]["class_ids"] = [1]
+        route["class_id"] = 3
+        with self.assertRaisesRegex(ValueError, "未对应唯一来源行"): facts.reconcile_acquisitions(route, proof)
+        proof["Example"]["choices"] += facts.universal_rows(self.rows, self.general)
+        route["gems"]["Example"].update(available_from_act=3, npc="Siosa", quest="A Fixture of Fate", source_note="outdated invented explanation")
+        warnings, unresolved = facts.reconcile_acquisitions(route, proof)
+        self.assertFalse(warnings or unresolved)
+        self.assertNotIn("invented", route["gems"]["Example"]["source_note"])
+        self.assertEqual(route["gems"]["Example"]["class_ids"], list(range(7)))
+
+    def test_unknown_sources_stay_unknown(self):
+        route = {"class_id": 1, "gems": {"Example": {"acquisition": "vendor", "available_from_act": 1}}}
+        warnings, unresolved = facts.reconcile_acquisitions(route, {"Example": {"status": "unverified", "reason": "timeout"}})
+        self.assertEqual(unresolved, ["Example"])
+        self.assertIn("timeout", warnings[0])
+        with patch.object(facts, "fetch", side_effect=OSError("offline")):
+            result = facts.gem_facts({"Example": {"skill_id": "Example", "name": "Example"}}, ".unused", "test")
+        self.assertEqual(result["Example"]["status"], "unverified")
+
+    def test_support_names_use_the_actual_source_page(self):
+        record = {"html": self.raw.replace("Example -", "Example Support -"), "url": "https://poedb.tw/us/Example_Support", "checked_at": "2026-10-04", "sha256": "fixture"}
+        with patch.object(facts, "fetch", return_value=record) as fetch:
+            result = facts.gem_facts({"SupportExample": {"skill_id": "SupportExample", "name": "Example", "tags": {"support": True}}}, ".unused", "test")
+        self.assertEqual(fetch.call_args.args[0], record["url"])
+        self.assertEqual(result["SupportExample"]["status"], "source_checked")
+
+    def test_source_league_marker_must_match_target_not_history_text(self):
+        raw = '<a title="Example v3.30" class="league_bar_icon"></a>' + self.raw + '<p>Old 3.29 changes</p>'
+        record = {"html": raw, "url": "https://poedb.tw/us/Example", "checked_at": "2026-10-04", "sha256": "fixture"}
+        with patch.object(facts, "fetch", return_value=record):
+            result = facts.gem_facts({"Example": {"skill_id": "Example", "name": "Example"}}, ".unused", "test", "3.29")
+            self.assertEqual(result["Example"]["status"], "unverified")
+            self.assertEqual(result["Example"]["source_game_version"], "3.30")
+            result = facts.gem_facts({"Example": {"skill_id": "Example", "name": "Example"}}, ".unused", "test", "3.30")
+            self.assertEqual(result["Example"]["status"], "source_checked")
+
+    def test_version_evidence_excludes_related_news_and_requires_body(self):
+        raw = '<nav>S31 3.30</nav><div id="newsDetail"><h2>S31 version</h2><div><p>在3.30.0版本中，测试挑战赛季开放。</p></div></div><footer>S30 3.29</footer>'
+        record = {"html": raw, "url": "https://poe.qq.com/example", "checked_at": "2026-10-04", "sha256": "fixture"}
+        with patch.object(facts, "fetch", return_value=record):
+            result = facts.version_fact(record["url"], "3.30", "S31", ".unused", "test")
+            self.assertEqual(result["status"], "source_observed")
+            result = facts.version_fact(record["url"], "3.29", "S30", ".unused", "test")
+            self.assertEqual(result["status"], "unverified")
+            record["html"] = raw.replace("3.30.0", "3.20.0")
+            self.assertEqual(facts.version_fact(record["url"], "3.30", "S31", ".unused", "test")["status"], "unverified")
+
+    def test_cached_source_is_invalidated_by_context_and_content(self):
+        with tempfile.TemporaryDirectory() as temp:
+            import hashlib
+            url = "https://poedb.tw/us/Example"
+            text = "source"
+            record = {"url": url, "html": text, "sha256": hashlib.sha256(text.encode()).hexdigest(), "checked_at": datetime.now(timezone.utc).isoformat(), "context": "old"}
+            path = Path(temp) / (hashlib.sha256(url.encode()).hexdigest() + ".json")
+            poe.write_json(path, record)
+            with patch.object(facts, "urlopen", side_effect=TimeoutError("offline")) as fetch:
+                self.assertEqual(facts.fetch(url, temp, "old"), record)
+                self.assertEqual(fetch.call_count, 0)
+                with self.assertRaises(TimeoutError): facts.fetch(url, temp, "updated-engine")
+                record["html"] = "altered"
+                poe.write_json(path, record)
+                with self.assertRaises(TimeoutError): facts.fetch(url, temp, "old")
+
+
 class RealEngineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Offline engine tests use an explicit source-boundary stub, not live web.
+        cls.fact_patch = patch.object(facts, "version_fact", return_value={"status": "source_observed", "scope": "offline source-boundary fixture"})
+        cls.fact_patch.start()
+        cls.addClassCleanup(cls.fact_patch.stop)
         try:
             cls.pob = engine.resolve_root(os.environ.get("POECHARM_PATH"))
             cls.sample = Path(os.environ["POE_TEST_XML"]) if os.environ.get("POE_TEST_XML") else cls.pob / "Builds/夷陵盾牌S29 原始配装.xml"
@@ -525,6 +650,15 @@ class RealEngineTests(unittest.TestCase):
         for path in output["files"]: self.assertTrue(Path(path).is_file())
         self.assertIn("不提供同条件提升百分比", output["user_summary"])
         self.assertIn("不能承诺预算内买齐", output["user_summary"])
+        evidence = poe.read_json(self.run_dir / "candidates/refine/evaluation.json")
+        report = Path(output["files"][1]).read_text(encoding="utf-8")
+        self.assertTrue(evidence["actual_changes"])
+        self.assertIn("实际改动", report)
+        self.assertEqual(evidence["validation"]["user_constraints"], "passed")
+        with patch.object(facts, "version_fact", return_value={"status": "unverified", "reason": "offline"}):
+            draft = poe.export(args(run=str(self.run_dir), name="refine"))
+        self.assertEqual(draft["status"], "exported_draft")
+        self.assertIn("待核实草案", draft["user_summary"])
         self.assertEqual(bx.digest(self.sample.read_bytes()), self.original_hash)
         self.assertEqual(bx.digest((self.pob / "Settings.xml").read_bytes()), self.settings_hash)
         self.assertEqual(bx.digest((self.pob / "Data/ModCache.lua").read_bytes()), self.cache_hash)

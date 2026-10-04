@@ -1,4 +1,4 @@
--- Adapter around the version-matched upstream HeadlessWrapper.
+-- Adapter around the bundled upstream HeadlessWrapper, checked at runtime.
 -- All application files are read-only. Inputs/outputs cross the Lua API in memory.
 package.path = "./lua/?.lua;./lua/?/init.lua;" .. package.path
 package.cpath = "./?.dll;" .. package.cpath
@@ -47,8 +47,13 @@ result.level = build.characterLevel
 result.class = build.spec.curClassName
 result.ascendancy = build.spec.curAscendClassName
 result.tree_version = build.spec.treeVersion
-result.data_version = latestTreeVersion:gsub("_", ".")
-result.matching_socket_quality_bonus = data.misc.MatchingSocketQualityBonus or 0
+result.latest_tree_version = latestTreeVersion
+result.matching_socket_quality_bonus = data.misc.MatchingSocketQualityBonus
+result.capabilities = {
+  matching_socket_quality = type(data.misc.MatchingSocketQualityBonus) == "number" and type(build.skillsTab.UpdateSocketGroups) == "function",
+  native_resource_costs = type(GlobalCache.cachedData) == "table" and type(cacheSkillUUID) == "function",
+  native_gem_requirements = type(data.gems) == "table",
+}
 result.classes = {}
 for id, class in pairs(build.spec.tree.classes) do
   local ascendancies = {}
@@ -108,7 +113,7 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
       support = grantedEffect and grantedEffect.support or false,
       supports_skills = supported, support_applied = #supported > 0,
       matches_socket = gem.matchesSocket or false,
-      socket_quality_bonus = gem.matchesSocket and result.matching_socket_quality_bonus or 0,
+      socket_quality_bonus = result.capabilities.matching_socket_quality and (gem.matchesSocket and result.matching_socket_quality_bonus or 0) or nil,
       recognised = gem.gemData ~= nil or gem.grantedEffect ~= nil,
       req_level = gem.reqLevel, req_str = gem.reqStr, req_dex = gem.reqDex, req_int = gem.reqInt})
   end
@@ -308,5 +313,13 @@ if request.xml_batch then
   for _, xml in ipairs(request.xml_batch) do table.insert(response.calculations, calculateRequest({xml = xml})) end
 else
   response = calculateRequest(request)
+  if request.health_probe then
+    local reread = calculateRequest({xml = response.xml})
+    local same = response.level == reread.level and response.class == reread.class and response.tree_version == reread.tree_version
+    for _, key in ipairs({"Life", "Str", "Dex", "Int", "ManaUnreserved", "CombinedDPS"}) do
+      if response.stats[key] ~= reread.stats[key] then same = false end
+    end
+    response.health_probe = {startup = true, catalog = true, save = true, roundtrip = same}
+  end
 end
 _RESULT_JSON = assert(json.encode(response))
