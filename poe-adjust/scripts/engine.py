@@ -162,7 +162,7 @@ def read_source(root, source, line=1, count=20):
     if any(len(value) > 12000 for value in selected) or sum(map(len, selected)) > 48000:
         raise EngineError("所选原文过长，请缩小行范围或使用结构化 catalog；本次没有截断后冒充完整片段。")
     sha = hashlib.sha256(content).hexdigest()
-    return {"source": source, "path": str(row["path"]), "content_sha256": sha, "line": line, "count": len(selected),
+    return {"source": source, "content_sha256": sha, "line": line, "count": len(selected),
             "total_lines": len(lines), "next_line": line + len(selected) if line + len(selected) <= len(lines) else None,
             "lines": [{"line": line + i, "text": value} for i, value in enumerate(selected)],
             "text": "\n".join(selected), "scope": "本机原文及字节摘要；存在不代表当季可取得、已被引擎计算或国服规则一致。",
@@ -184,7 +184,7 @@ def query_sources(root, *, mode="list", path="", query="", line=1, limit=20, off
     entries, skipped, total = [], [], 0
     for row in source_files(root, path):
         if mode == "list":
-            if offset <= total < offset + limit: entries.append({k: str(v) if k == "path" else v for k, v in row.items()})
+            if offset <= total < offset + limit: entries.append({k:v for k,v in row.items() if k!="path"})
             total += 1
             continue
         if row["format"] != "text" or row["bytes"] > 32_000_000:

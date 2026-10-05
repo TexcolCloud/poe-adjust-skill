@@ -25,9 +25,9 @@ python $entry research --version --league '<用户目标赛季>' --source '<官�
 python $entry research --trials --out '<工作区>/trial-facts.json'
 ```
 
-批量文件：`{"queries":[{"kind":"gems","query":"id:Fireball","limit":2,"offset":0}]}`。支持上述原生 kind，translations 单查。单页 limit=1–100，按返回 next_offset 继续；程序自动分批，不限制整体候选/路线数量。长结果使用 --out 后选择相关字段读取，不把整份大 JSON 打到工具输出。多次分批前后指纹须一致。
+批量文件：`{"queries":[{"kind":"gems","query":"id:Fireball","limit":2,"offset":0}]}`。支持上述原生 kind，translations 单查。单页 limit=1–100，按返回 next_offset 继续；程序自动分批，不限制整体候选/路线数量。--out 保存完整数据，摘要中的 queries[].entries_pointer 给出该查询的实际条目位置，entry_fields 按 kind 列出本次条目可出现的字段；用 view 选择需要的字段。summary_complete=false 只表示终端查询元数据未全部展示，完整数据未丢，沿用 next_actions 翻页。多次分批前后指纹须一致。
 
-- classes 返回当前职业与其主升华 ID；rules 含副升华目录、slots、规则来源及 `meaning/status`。observed 不一律表示游戏上限：engine_state 是本次状态，native_fact 是原生事实，engine_constraint 是接口约束，unsupported 是没读到可靠规则。不能把建议/默认值当合法上限。
+- classes 条目的 id 是职业 ID，ascendancies 给出主升华；--class-id 是命令参数名。nodes 条目的 stats 是效果文本，name/display_name 是名称，linked/path 是连接信息；按返回 entry_fields 读取，查询过的效果无需再搜原文件。rules 含副升华目录、slots、规则来源及 `meaning/status`。observed 不一律表示游戏上限：engine_state 是本次状态，native_fact 是原生事实，engine_constraint 是接口约束，unsupported 是没读到可靠规则。不能把建议/默认值当合法上限。
 - bases 返回当前基底 `sockets/valid_slots/affix_limits/requirements`；这是基底原生容量，实际物品可能有独特改变，完整角色需实算。socket_limits 只汇总类别容量，不推荐任一基底；实际选择核对当前属性/等级要求与取得。affixes 返回当前物品词缀池、互斥组及物品等级要求。
 - gems 的 `natural_max_level`、`level_requirements[].naturally_trainable` 与有效数据级别分开。可计算不证明对应裸宝石可获得。quality 不设复制的统一上限，取得方式仍须依据。`base_resources` 是该等级基础费用/保留/辅助倍率，不能代替完整连线续航。
 - links 接受有序宝石 ID，可以多个主动及重复 ID。relations 用 `active_index/support_index/applied` 区分输入位置；valid 仅表示类型查询成功，incompatible 是未起作用的辅助，不证明物理安装、触发、费用或冷却正确。
@@ -65,7 +65,7 @@ python $entry data --mode search --path 'translations' --query '图腾' --limit 
 python $entry data --mode read --path '<上一步返回的source>' --line <实际行号> --limit 30 --out '<工作区>/passage.json'
 ```
 
-单页最多 200 条/行，搜索为字面匹配；用 next_offset/next_line 翻页。默认范围是公开代码/资料/简体中文翻译和本机元数据声明的最新标准树；指定 `engine/TreeData/<返回的版本>` 可读其他树，不能当成本赛季规则。搜索 excerpt 可能截短，truncated 明示；采用结论前 read 上下文。read 返回确切行号、原文、文件字节 SHA256 和 evidence_template，补 evidence_id/subject 后放入 evidence 即可。验证时重新读取相同行、比较文件摘要；更新后旧引用变成 unresolved。
+单页最多 200 条/行，搜索为字面匹配；用 next_offset/next_line 翻页。默认范围是公开代码/资料/简体中文翻译和本机元数据声明的最新标准树；指定 `engine/TreeData/<返回的版本>` 可读其他树，不能当成本赛季规则。source 是 data 接口中的来源名，沿用它和行号继续查询。--out 返回指向工作区凭证的 view 操作，按 next_actions 读原文和模板。搜索 excerpt 可能截短，truncated 明示；采用结论前 read 上下文。read 返回确切行号、原文、文件字节 SHA256 和 evidence_template，补 evidence_id/subject 后放入 evidence 即可。同一文件不同片段的 SHA256 相同是正常的，line/count 区分片段。验证时重新读取相同行、比较文件摘要；更新后旧引用变成 unresolved。
 
 先 catalog 查具体对象和合法选项，只有缺信息才搜索原文，不把整个目录塞入上下文。以下是定位提示，文件有变以当次 list 为准：
 
@@ -83,4 +83,4 @@ python $entry data --mode read --path '<上一步返回的source>' --line <实�
 | 费用、触发、回复、减伤与伤害实现 | Modules/Calc*、ModParser.lua、SkillStatMap.lua、相关 Classes；读实现只作机制依据，完整收益用实算 |
 | 中文效果与交易词条对应 | translations/statDescriptions.csv、Items*.csv 等，Data/TradeSiteStats.lua；不是国服实时行情 |
 
-本接口不开放 Settings、Builds、任意绝对路径或跳出范围的链接；文本只读不执行。结果仅写任务工作区，安装目录与 PoECharm 资料目录受写入检查。它不是 TeleAgent 其他工具的系统级沙箱。目录授权被拒绝后不能换工具绕行，资料缺失就保留缺口。国服当季取得、完整剧情奖励/商店/试炼路线及实时价格仍要联网核实。
+本接口不开放 Settings、Builds、任意绝对路径或跳出范围的链接；文本只读不执行。结果仅写任务工作区，安装目录与 PoECharm 资料目录受写入检查。它不是 TeleAgent 其他工具的系统级沙箱；权限边界见 SKILL.md 的入口约定。国服当季取得、完整剧情奖励/商店/试炼路线及实时价格仍要联网核实。

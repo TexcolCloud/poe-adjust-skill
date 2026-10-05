@@ -1,6 +1,6 @@
 # 入口与调用约定（schema_version 2）
 
-所有 JSON 为 UTF-8，使用实际数字、布尔值和数组。文件路径用 PowerShell 单引号，通过文件传 JSON。每次独立工具调用重新定义变量或直接使用绝对路径，Python 使用 TeleAgent 运行时。
+所有 JSON 为 UTF-8，使用实际数字、布尔值和数组。文件路径用 PowerShell 单引号，通过文件传 JSON。每次独立工具调用重新定义变量或直接使用绝对路径，Python 使用 TeleAgent 运行时。输入路径沿用用户提供的位置，结果路径沿用本次 CLI 返回；恢复先 status/next_actions，不从环境变量猜平台工作空间路径。
 
 ## 命令入口
 

@@ -58,6 +58,45 @@ class DocumentTests(unittest.TestCase):
     def setUp(self):
         self.root = bx.parse(SAMPLE)
 
+    def test_saved_catalog_summary_points_to_actual_fields_and_entries(self):
+        examples=[{"total":2,"entries":[{"id":1,"stats":["native effect"]},{"id":2,"future_field":False}]},
+                  {"queries":[{"kind":"nodes","query":"current","total":2,"entries":[{"id":1,"stats":["native effect"]},{"id":2,"future_field":False}]},
+                              {"kind":"gems","query":"missing","total":0,"entries":[]}]}]
+        with tempfile.TemporaryDirectory() as folder:
+            for index, example in enumerate(examples):
+                with self.subTest(batch=index):
+                    output=Path(folder)/f"catalog-{index}.json";stdout=io.StringIO()
+                    with patch.object(poe,"catalog",return_value=example),redirect_stdout(stdout):
+                        self.assertEqual(poe.main(["catalog","--kind","nodes","--out",str(output)]),0)
+                    response=json.loads(stdout.getvalue());saved=poe.read_json(output)
+                    self.assertEqual(response["entry_fields"]["nodes"],["future_field","id","stats"])
+                    self.assertTrue(response["summary_complete"])
+                    for row in response["queries"]:
+                        self.assertEqual(len(facts.pointer(saved,row["entries_pointer"])),row["returned"])
+                    if index:self.assertEqual(response["entry_fields"]["gems"],[])
+                    self.assertEqual(response["runtime"]["worker_calls"],0)
+
+    def test_large_saved_catalog_summary_stays_bounded_and_paginates_metadata(self):
+        result={"queries":[{"kind":"nodes","query":f"id:{index}","total":1,"entries":[{"id":index,"stats":["native effect"]}]} for index in range(300)]}
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder)/"catalog.json";stdout=io.StringIO()
+            with patch.object(poe,"catalog",return_value=result),redirect_stdout(stdout):
+                self.assertEqual(poe.main(["catalog","--kind","nodes","--out",str(output)]),0)
+            response=json.loads(stdout.getvalue())
+            self.assertLessEqual(len(stdout.getvalue()),12000)
+            self.assertEqual(response["queries_total"],300)
+            self.assertFalse(response["summary_complete"])
+            self.assertTrue(response["queries"])
+            self.assertLess(len(response["queries"]),300)
+            action=response["next_actions"][0]
+            self.assertEqual(action["action"],"view")
+            self.assertEqual(action["file"],str(output))
+            self.assertEqual(action["pointer"],"/queries")
+            self.assertEqual(action["offset"],len(response["queries"]))
+            saved=poe.read_json(output)
+            self.assertEqual(len(saved["queries"]),300)
+            self.assertNotIn("entries",action["fields"])
+
     def test_boolean_text_and_nonfinite_group_values_do_not_change_xml(self):
         before=bx.serialise(self.root)
         operations=[{"groups":[{"index":1,"enabled":"false"}]},{"gems":[{"group":1,"index":1,"enabled":"false"}]},
@@ -670,6 +709,32 @@ class ReadOnlyDataTests(unittest.TestCase):
             (self.root/"TreeData"/version/"tree.lua").write_text('Test '+version,encoding="utf-8")
         self.translations=self.base/"Data/Translate/zh-rCN";self.translations.mkdir(parents=True)
         (self.translations/"tree_sd.csv").write_text('Test description,测试描述\n',encoding="utf-8")
+
+    def test_public_sources_use_virtual_names_instead_of_installation_paths(self):
+        listing=engine.query_sources(self.root,limit=200)
+        self.assertTrue(listing["entries"])
+        self.assertTrue(all("path" not in row for row in listing["entries"]))
+        receipt=engine.read_source(self.root,"engine/Data/Skills.lua",2,2)
+        self.assertNotIn("path",receipt)
+        self.assertEqual(receipt["source"],"engine/Data/Skills.lua")
+        self.assertNotIn(str(self.root),json.dumps(listing))
+        self.assertNotIn(str(self.root),json.dumps(receipt))
+
+    def test_saved_data_read_provides_view_action_for_workspace_receipt(self):
+        output=self.base/"receipt.json";stdout=io.StringIO()
+        with patch.object(engine,"resolve_root",return_value=self.root),redirect_stdout(stdout):
+            self.assertEqual(poe.main(["data","--mode","read","--path","engine/Data/Skills.lua","--line","2","--limit","2","--out",str(output)]),0)
+        response=json.loads(stdout.getvalue());action=response["next_actions"][0]
+        self.assertEqual(action["action"],"view")
+        self.assertEqual(action["file"],str(output))
+        self.assertEqual(action["pointer"],"")
+        self.assertIn("text",action["fields"])
+        self.assertIn("evidence_template",action["fields"])
+        self.assertTrue(response["read_only"])
+        result=poe.view_json(args(file=str(output),pointer=action["pointer"],fields=",".join(action["fields"]),keys=False,query="",offset=0,limit=20))
+        self.assertIn('cost = 12',result["value"]["text"])
+        self.assertEqual(result["missing_fields"],[])
+        self.assertEqual(response["runtime"]["worker_calls"],0)
 
     def test_inventory_search_paging_and_current_tree_discovery(self):
         listing=engine.query_sources(self.root,limit=200)
@@ -1773,6 +1838,10 @@ class RealEngineTests(unittest.TestCase):
         self.assertGreater(len(output.read_text(encoding="utf-8")), 12000)
         data = poe.read_json(output)
         self.assertEqual(len(data["queries"][0]["entries"]), 40)
+        self.assertTrue(response["summary_complete"])
+        self.assertEqual(response["entry_fields"]["gems"],sorted({key for row in data["queries"][0]["entries"] for key in row}))
+        for row in response["queries"]:
+            self.assertEqual(len(facts.pointer(data,row["entries_pointer"])),row["returned"])
         digest = bx.digest(query.read_bytes())
         with redirect_stderr(io.StringIO()) as error:
             self.assertEqual(poe.main(command + ["--out", str(query)]), 2)

@@ -21,7 +21,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 SCHEMA_VERSION = 2
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
@@ -1079,6 +1079,32 @@ def catalog(args):
     result=engine.calculate(root,document,catalog=args.kind,query=args.query,limit=args.limit,offset=offset,class_id=class_id)
     return {k:result.get(k) for k in ("engine_version","tree_version","data_version","engine_fingerprint","tree_context","socket_limits","rules")} | {"total":result.get("catalog_total"),"entries":result.get("catalog",[]),"offset":result.get("catalog_offset"),"next_offset":result.get("catalog_next_offset")}
 
+def saved_catalog_summary(result, output, kind, query):
+    """Expose actual saved locations and field names without flooding the tool UI."""
+    batch="queries" in result
+    queries=result["queries"] if batch else [{"kind":kind,"query":query,**result}]
+    fields={}
+    for row in queries:
+        fields.setdefault(row["kind"],set()).update(key for entry in row["entries"] for key in entry)
+    brief={"catalog_file":str(output),"queries_total":len(queries),"queries":[],
+           "entry_fields":{key:sorted(value) for key,value in fields.items()},"summary_complete":True,
+           "next":"使用 view 读取 catalog_file 与具体 entries_pointer，按 entry_fields 选择需要的实际字段；本机原文只用 data，任务JSON只用 view。"}
+    if len(json.dumps(brief,ensure_ascii=False))>10000:
+        brief["entry_fields"]={}
+        brief["entry_fields_scope"]="字段名较多；用 view --keys 读取 entries_pointer 下具体条目的字段名。"
+    for index,row in enumerate(queries):
+        brief["queries"].append({"kind":row["kind"],"query":row["query"],"returned":len(row["entries"]),"total":row.get("total"),
+                                 "entries_pointer":f"/queries/{index}/entries" if batch else "/entries"})
+        if len(json.dumps(brief,ensure_ascii=False))>11000:
+            brief["queries"].pop();break
+    brief["summary_complete"]=len(brief["queries"])==len(queries)
+    if not brief["summary_complete"]:
+        brief["next_actions"]=[{"action":"view","file":str(output),"pointer":"/queries","fields":["kind","query","total","offset","next_offset"],
+                                "offset":len(brief["queries"]),"limit":10}]
+        brief["summary_scope"]="终端只显示部分查询元数据；完整查询和条目已保存，按 next_actions 继续。"
+    return brief
+
+
 def research(args):
     output = Path(args.out).resolve()
     bx.require(output.suffix.lower() == ".json", "research --out 请使用工作区 JSON 文件。")
@@ -1493,7 +1519,11 @@ def main(argv=None):
                 output=Path(args.out).resolve()
                 bx.require(output.suffix.lower()==".json","data --out 使用任务工作区 JSON 文件。")
                 write_json(output,result)
-                result={"data_file":str(output),"mode":args.mode,"total":result.get("total",result.get("total_lines")),"next_offset":result.get("next_offset"),"next_line":result.get("next_line"),"read_only":True}
+                fields=([key for key in ("source","line","count","text","evidence_template","scope") if key in result] if args.mode=="read" else
+                        sorted({key for row in result["entries"] for key in row}))
+                result={"data_file":str(output),"mode":args.mode,"total":result.get("total",result.get("total_lines")),"next_offset":result.get("next_offset"),"next_line":result.get("next_line"),"read_only":True,
+                        "next_actions":[{"action":"view","file":str(output),"pointer":"" if args.mode=="read" else "/entries","fields":fields,"offset":0,"limit":20}],
+                        "next":"用 view 读取工作区凭证；继续取本机原文沿用 data 的 source 与行号，安装目录保持只读接口访问。"}
             else:
                 bx.require(len(json.dumps(result,ensure_ascii=False))<=12000,"资料输出较大；缩小 --limit 或加 --out '<工作区>/资料.json'，不要读取平台内部工具输出目录。")
         elif args.command == "catalog":
@@ -1505,9 +1535,7 @@ def main(argv=None):
             result = catalog(args)
             if args.out:
                 write_json(output, result)
-                queries = result.get("queries", [{"kind": args.kind, "query": args.query, **result}])
-                result = {"catalog_file": str(output), "queries": [{"kind": query["kind"], "query": query["query"], "returned": len(query["entries"]), "total": query.get("total")} for query in queries],
-                          "next": "完整结果已保存到工作区。按 queries[].entries 或单项 entries 读取需要的字段；不要一次输出整份大 JSON。"}
+                result = saved_catalog_summary(result,output,args.kind,args.query)
             else:
                 bx.require(len(json.dumps(result, ensure_ascii=False)) <= 12000, "查询结果较大；请加 --out '<工作区>/查询结果.json' 保存完整结果，再按相关字段读取，避免 TeleAgent 截断或转存至额外授权目录。")
         elif args.command == "route": result = route_command(args)
