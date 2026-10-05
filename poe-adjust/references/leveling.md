@@ -22,7 +22,7 @@
 
 顶层 gems 是可选目录备注，程序从阶段自动收集 ID，省去重复维护清单。required_items 记录首次取得规格与物理实例，取得可早于首次使用。程序区分 acquired、previous_use 与 used：等级上升、品质不变且当前数据可自然训练时，要求 `training:<stage_id>:<instance_id>` 判断；其他规格变化要求 transformation 判断。判断说明训练经验/加工方式、时点和进入前条件，不能将可练等级当作已练到。不同 skill_id 必须另一实例；缺取得依据保持 acquisition_unknown。每个物理宝石实例 quantity 为1，同名两颗需两个 ID。跨阶段沿用不重复采购，提前储备与练级按实际位置和条件安排。
 
-每阶段 bases 映射当前原生槽位到具体基底，程序核对 valid_slots 与最大孔数。基底最大容量不证明实物已经有该连数、孔色或特殊效果；实际物品需在进入条件中落实，精确影响用角色 XML 实算。没有具体基底则容量未知，不猜同类武器都一样。weapon_setup 可写自由描述，不再用五种固定布局裁决玩法。
+每阶段 bases 映射当前原生槽位到具体基底，`null` 明确该槽没有装备，省略则未提供上下文。程序把声明布局交给本机原生规则，返回 equipment_validation；原生谓词实际读取了未声明槽位时，校验保留未知并列出 unresolved_context，不能把省略当空槽。有快照的阶段使用其实际装备和天赋上下文。目录 valid_slots 只属于该次查询，不能作为全局规则；缺少或不匹配的上下文不套用其他布局。基底最大容量不证明实物已达连数、孔色或特殊效果；取得和规格在进入条件中落实，精确影响用角色 XML 实算。没有具体基底则容量未知，不猜同类武器都一样。weapon_setup 为自由说明，不用固定布局裁决玩法。
 
 核心物资不确定时，模型可以延后切换、等待取得、选择其他流派或安排可执行过渡。用户已备齐、接受取得后再切换的目标，不强制普通备用宝石。声称有过渡就写成具体阶段及连线、装备/属性、资源和进入条件，不能只给 fallback 名称。SSF 禁止依赖交易来自用户明确限制；“不玩召唤”的具体范围按用户意图解释，不把任何 minion 标签都自动禁用。
 
@@ -34,7 +34,7 @@
 python '<技能目录>/scripts/poe.py' route --invoked --file '<工作区>/route.json' --out '<工作区>/开荒路线.html'
 ```
 
-route 自动分批读取当前宝石、连线、基底和完整升华目录，并核对证据。输出 HTML 及同名 `.evidence.json`。按照 pending 修订；最终 status 是 draft/scoped_result 或预算已知矛盾的 blocked。阶段是否实算以 calculation 及对应 XML/证据记录为准，路线状态不代替实算范围。用 TeleAgent 文件工具交付 HTML，简要说明范围和缺口；可解释已引用 claims，不另造一套收益数字。
+route 自动分批读取当前宝石、连线、基底和完整升华目录，并核对证据。输出 HTML 及同名 `.evidence.json`。按照 pending 修订；最终 status 是 draft/scoped_result 或预算已知矛盾的 blocked。阶段是否实算以 calculation 及对应 XML/证据记录为准，路线状态不代替实算范围。用 TeleAgent 文件工具交付 XML 和中文 HTML，最终回答直接使用 facts_summary，再解释已引用 claims；不另写重复说明或另一套收益数字。
 
 先读 errors、stage_summary、delivery_brief 和 next_actions。native_calculated:true 仅证明计算完成，status:blocked 仍有错误；修正后再交配装 XML。原生输入错误给 diagnostic.location/expected/actual；unsupported 是接口范围，failed 是本次计算失败，not_calculated 是未提供可计算输入。修复时保留计划功能；若改变技能/天赋/装备，按最终阶段重新评审用户目标、进入条件和资源，不能将删成单宝石的诊断文件当完整路线。HTML 显示实际校验和条件，完整资料留 evidence.json，按需读字段。
 
@@ -71,6 +71,8 @@ route 自动分批读取当前宝石、连线、基底和完整升华目录，�
 | ascendancy_points / ascendancy_nodes | 本阶段声明可用升华点数与累计目标节点 ID；程序合并当前原生连接路径，不只数大点；留点允许 |
 | resources | 费用、回复、操作与限制的文字说明；引用相应 stage/usage 判断，不作为精确实算结果 |
 | required_items | 本阶段新增取得/加工需求，下面说明 |
+
+生成快照的 calculation.configuration_context 列出种子来源、种子 Input 原文、snapshot.operations.config 显式覆盖和 resolved_values 实际值。种子可能来自原生空构筑或指定模板，其已有设置不证明适合本阶段。模型先查 catalog config，按剧情进度、敌人类型和效果实际条件作选择；程序不按等级或职业硬填场景。
 
 宝石 required_items 条目：
 

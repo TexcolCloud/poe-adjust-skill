@@ -411,8 +411,9 @@ class RouteTests(unittest.TestCase):
         self.evidence={"user":{"kind":"user_statement","status":"user_declared","subject":"intent"}}
         self.bases={"Iron Gauntlets":{"name":"Iron Gauntlets","sockets":4,"valid_slots":["Gloves"]}}
         self.slots=[{"name":"Gloves"}]
+        self.equipment={stage["stage_id"]:{"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Iron Gauntlets","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}} for stage in self.route["stages"]}
     def check(self):
-        return routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,evidence=self.evidence)
+        return routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,equipment=self.equipment,evidence=self.evidence)
     def test_same_level_and_current_character_start(self):
         self.route["stages"]=self.route["stages"][1:];self.route["stages"][1]["level"]=12
         checked,_=self.check();self.assertEqual([s["level"] for s in checked["stages"]],[12,12])
@@ -435,8 +436,20 @@ class RouteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"孔位"):self.check()
     def test_slots_and_capacity_come_from_native_base(self):
         self.bases["Iron Gauntlets"]["valid_slots"]=["Future Slot"]
-        with self.assertRaisesRegex(ValueError,"无法放入"):self.check()
-        self.bases["Iron Gauntlets"].pop("valid_slots");checked,_=self.check();self.assertIn("native:base_slot:Iron Gauntlets",checked["pending"])
+        checked,_=self.check();self.assertNotIn("native:equipment:stage-0:Gloves",checked["pending"])
+        self.equipment["stage-0"]["checks"]["Gloves"]["valid_for_slot"]=False
+        with self.assertRaisesRegex(ValueError,"不相符"):self.check()
+        self.equipment.clear();checked,_=self.check();self.assertIn("native:equipment:stage-0:Gloves",checked["pending"])
+
+    def test_slot_check_from_other_layout_is_unknown_and_does_not_certify(self):
+        self.equipment["stage-0"]["bases"]={"Gloves":"Different Base"}
+        self.equipment["stage-0"]["checks"]["Gloves"]["valid_for_slot"]=False
+        checked,_=self.check();self.assertIn("native:equipment:stage-0:Gloves",checked["pending"])
+
+    def test_explicit_empty_base_is_not_an_unknown_catalog_name_or_socket_host(self):
+        self.route["stages"][0]["bases"]["Gloves"]=None
+        self.assertEqual(routes.base_names({"stages":[self.route["stages"][0]]}),[])
+        with self.assertRaisesRegex(ValueError,"空槽"):self.check()
     def test_new_native_class_and_quality_do_not_hit_old_limits(self):
         self.route["class_id"]=17;self.classes[0]["id"]=17
         self.route["stages"][0]["skill_groups"][0]["gems"][0]["quality"]=60
@@ -686,6 +699,19 @@ class NativeBoundaryTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_evidence_shape_has_paths_for_unknown_fields_types_and_missing_values(self):
+        for key in ("collected_from","future_bad_field"):
+            with self.subTest(key=key),self.assertRaises(bx.ContractError) as error:
+                facts.evidence_shape([{"evidence_id":"first"},{"evidence_id":"second",key:"value"}],complete=False)
+            self.assertEqual(error.exception.diagnostic["location"],"/evidence/1")
+            self.assertEqual(error.exception.diagnostic["actual"],[key])
+            self.assertIn("kind",error.exception.diagnostic["expected"])
+        with self.assertRaises(bx.ContractError) as error: facts.evidence_shape([{"kind":"artifact","context":[]}],complete=False)
+        self.assertEqual(error.exception.diagnostic["location"],"/evidence/0/context")
+        with self.assertRaises(bx.ContractError) as error: facts.evidence_shape([{}])
+        self.assertEqual(error.exception.diagnostic["location"],"/evidence/0/evidence_id")
+        self.assertIsNone(error.exception.diagnostic["actual"])
+
     def test_typed_claim_checks_reject_false_assertions_and_keep_unknowns(self):
         ref="native:candidate#/stats/Future";claim={"claim_id":"c","text":"{{fact:"+ref+"}}","subjects":["goal"],"checks":[{"reference":ref,"op":"ge","value":10}]}
         for value,status in ((11,"supported"),(9,"refuted"),(None,"unknown"),(True,"unknown"),("11","unknown")):
@@ -1418,6 +1444,24 @@ class EditAndRecoveryTests(unittest.TestCase):
         value=poe.read_json(self.source);self.assertEqual(len(value["stages"]),2);self.assertIsNone(value["stages"][0]["level"])
         self.edit({"set":{},"remove":["/allow_mule"]},second["revision"])
         self.assertNotIn("allow_mule",poe.read_json(self.source));self.assertIsNone(poe.read_json(self.source)["stages"][0]["level"])
+
+    def test_nested_evidence_failure_does_not_commit_or_request_native_calculation(self):
+        for kind in ("route","plan"):
+            with self.subTest(kind=kind):
+                self.source=self.folder/(kind+".json")
+                first=self.edit({"set":{"name":"original"}},kind=kind);before=self.source.read_bytes()
+                with patch.object(engine,"calculate") as native,self.assertRaises(bx.ContractError) as error:
+                    self.edit({"set":{"evidence":[{"evidence_id":"e","future_bad_field":True}]}},first["revision"],kind=kind)
+                self.assertEqual(error.exception.diagnostic["location"],"/evidence/0")
+                native.assert_not_called();self.assertEqual(self.source.read_bytes(),before)
+
+    def test_catalog_batch_failure_identifies_query_and_field_before_native_call(self):
+        for query,location in (({"kind":"classes","class_id":2},"/queries/0"),({"kind":"gems","limit":False},"/queries/0/limit"),({"kind":"metrics","offset":-1},"/queries/0/offset")):
+            poe.write_json(self.request,{"queries":[query]})
+            with self.subTest(query=query),patch.object(engine,"calculate") as native,self.assertRaises(bx.ContractError) as error:
+                poe.catalog(args(kind=None,input=None,batch=str(self.request),class_id=None))
+            self.assertEqual(error.exception.diagnostic["location"],location)
+            self.assertIn("expected",error.exception.diagnostic);self.assertIn("actual",error.exception.diagnostic);native.assert_not_called()
 
     def test_revision_conflict_invalid_shape_and_ambiguous_instance_do_not_mutate(self):
         first=self.edit({"set":{"name":"original"}});before=self.source.read_bytes()
@@ -2403,6 +2447,55 @@ class RealEngineTests(unittest.TestCase):
         plan["summary"]="Unreviewed changed explanation"
         self.assertIn("final_review:stale",self.evaluate_plan(plan,"reviewed")["pending"])
 
+
+
+    def test_43_native_equipment_layouts_match_actual_xml_and_do_not_mutate_seed(self):
+        xml=bx.serialise(self.original)
+        pairs=[("Crude Bow","Spike-Point Arrow Quiver"),("Crude Bow","Splintered Tower Shield"),
+               ("Gnarled Branch","Splintered Tower Shield"),("Driftwood Wand","Glass Shank"),
+               ("Glass Shank","Driftwood Wand"),(None,"Spike-Point Arrow Quiver")]
+        layouts=[{"layout_id":str(i),"bases":{"Weapon 2":offhand,**({"Weapon 1":main} if main else {})},"empty_slots":[] if main else ["Weapon 1"]} for i,(main,offhand) in enumerate(pairs)]
+        layouts.append({"layout_id":"unknown","bases":{"Weapon 2":"Spike-Point Arrow Quiver"}})
+        seed=engine.calculate(self.pob,xml)
+        probed=engine.calculate(self.pob,xml,equipment_layouts=layouts)
+        self.assertEqual(probed["stats"],seed["stats"])
+        self.assertEqual(poe.semantics(probed),poe.semantics(seed))
+        self.assertEqual(bx.item_texts(bx.parse(probed["xml"])),bx.item_texts(bx.parse(seed["xml"])))
+        unknown=probed["equipment_layouts"][-1]["checks"]["Weapon 2"]
+        self.assertNotIn("valid_for_slot",unknown);self.assertIn("Weapon 1",unknown["unresolved_context"])
+        documents=[]
+        for main,offhand in pairs:
+            changes={"items":[{"id":8002,"text":"Rarity: NORMAL\n"+offhand}],"equip":[{"slot":"Weapon 1","item_id":8001 if main else 0},{"slot":"Weapon 2","item_id":8002}]}
+            if main:changes["items"].append({"id":8001,"text":"Rarity: NORMAL\n"+main})
+            documents.append(bx.serialise(bx.apply_plan(self.original,{"mode":"refine","summary":"Native slot regression only","operations":changes},self.native)))
+        actual=engine.calculate(self.pob,xml_batch=documents)
+        for i,(observed,calculated) in enumerate(zip(probed["equipment_layouts"],actual["calculations"])):
+            with self.subTest(pair=pairs[i]):
+                equipped=next((item for item in calculated["equipped"] if item["slot"]=="Weapon 2"),None)
+                valid=observed["checks"]["Weapon 2"]["valid_for_slot"]
+                if equipped:self.assertIs(type(equipped["valid_for_slot"]),bool)
+                self.assertEqual(valid,equipped["valid_for_slot"] if equipped else False)
+                self.assertEqual(valid,i==0)
+                self.assertEqual(observed["context"]["basis"],"declared_base_layout")
+        catalog=engine.calculate(self.pob,catalog="bases",query="id:Spike-Point Arrow Quiver",limit=1)
+        self.assertNotIn("Weapon 2",catalog["catalog"][0]["valid_slots"])
+        self.assertEqual(catalog["catalog"][0]["valid_slots_context"]["basis"],"empty_equipment")
+
+    def test_44_route_uses_declared_layout_instead_of_empty_catalog_slot_result(self):
+        route=route_fixture();route["ascendancy"]="";route["stages"]=route["stages"][-1:]
+        route["evidence"]=[{"evidence_id":"user","kind":"user_statement","subject":"intent","text":"Offline SSF structure validation"}]
+        stage=route["stages"][0];stage["bases"].update({"Weapon 1":"Crude Bow","Weapon 2":"Spike-Point Arrow Quiver"})
+        path=Path(self.temp.name)/"equipment-route.json";output=path.with_suffix(".html");poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):result=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        self.assertTrue(result["file_exported"]);self.assertEqual(result["errors"],[])
+        checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]["stages"][0]
+        self.assertTrue(checked["equipment_validation"]["checks"]["Weapon 2"]["valid_for_slot"])
+        self.assertNotIn("native:equipment:"+stage["stage_id"]+":Weapon 2",result["pending"])
+        self.assertIn("declared_base_layout",output.read_text(encoding="utf-8"))
+        stage["bases"]["Future Slot"]=None;poe.write_json(path,route)
+        with self.assertRaises(engine.EngineError) as error:poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        self.assertEqual(error.exception.diagnostic["location"],"/stages/0/bases/Future Slot")
+        state=poe.read_json(output.with_suffix(".state.json"));self.assertEqual(state["status"],"blocked");self.assertFalse(state["file_exported"])
 
 
 if __name__ == "__main__": unittest.main()

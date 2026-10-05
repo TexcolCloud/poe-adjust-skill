@@ -23,6 +23,7 @@ def preflight(route, *, complete=True):
     bx.require(route.get("schema_version")==2,"路线使用 schema_version=2。",location="/schema_version",expected=2,actual=route.get("schema_version"))
     for field in ("evidence","claims","inventory","shopping","objectives","stages"):
         if field in route: bx.require(isinstance(route[field],list),field+" 应为数组。",location="/"+field,expected="array",actual=type(route[field]).__name__)
+    facts.evidence_shape(route.get("evidence",[]),complete=complete)
     stages=route.get("stages",[])
     if complete:
         bx.require(route.get("confirmed") is True,"先确认路线方向。",location="/confirmed",expected=True,actual=route.get("confirmed"))
@@ -34,7 +35,7 @@ def preflight(route, *, complete=True):
         sid=stage.get("stage_id")
         bx.require(isinstance(sid,str) and sid.strip() and "#" not in sid and sid not in seen,"stage_id 需要唯一、非空且不含引用分隔符 #。",location=path+"/stage_id",expected="unique stage identifier",actual=sid)
         seen.add(sid)
-        if "bases" in stage: bx.require(isinstance(stage["bases"],dict) and all(isinstance(v,str) and v for v in stage["bases"].values()),"bases 为槽位到基底名称的对象。",location=path+"/bases",expected="object of names",actual=stage["bases"])
+        if "bases" in stage: bx.require(isinstance(stage["bases"],dict) and all(v is None or isinstance(v,str) and v for v in stage["bases"].values()),"bases 为槽位到基底名称或明确空槽 null 的对象。",location=path+"/bases",expected="object of names or explicit null slots",actual=stage["bases"])
         for field in ("level","act","completed_act","ascendancy_points"):
             if stage.get(field) is not None: bx.require(type(stage[field]) is int and stage[field]>=(0 if field in {"completed_act","ascendancy_points"} else 1),field+" 使用相应非负/正整数。",location=path+"/"+field,expected="nonnegative integer" if field in {"completed_act","ascendancy_points"} else "positive integer",actual=stage[field])
         for field in ("skill_groups","required_items","ascendancy_nodes","entry_conditions","entry_checks"):
@@ -81,8 +82,8 @@ def base_names(route):
     names=set()
     for stage in route.get("stages",[]):
         bases=stage.get("bases",{})
-        bx.require(isinstance(bases,dict) and all(isinstance(v,str) and v for v in bases.values()),"bases 应为槽位到本机基底名称的映射。")
-        names.update(bases.values())
+        bx.require(isinstance(bases,dict) and all(v is None or isinstance(v,str) and v for v in bases.values()),"bases 应为槽位到本机基底名称或明确空槽 null 的映射。")
+        names.update(v for v in bases.values() if v is not None)
     return sorted(names)
 
 
@@ -137,7 +138,7 @@ def validate_group(group,stage,gems,library,compatibility,capacity,warnings,pend
         if checked.get("incompatible"): warnings.append(stage["stage_id"]+" / "+group["name"]+" 中有未作用于主动的辅助；核对是否用于练级/后续阶段，不计辅助收益："+",".join(checked["incompatible"]))
 
 
-def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=None,*,bases=None,slots=None,evidence=None,claims=None):
+def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=None,*,bases=None,slots=None,equipment=None,evidence=None,claims=None):
     preflight(route)
     bx.require(route.get("schema_version")==2 and route.get("confirmed") is True,"先确认路线方向，再使用 schema_version=2。")
     for key in ("name","goal","league","scope"):
@@ -220,16 +221,23 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
                 bx.require(route.get("allow_mule") is not False,"用户不允许小号取物。",location=item_path+"/via_mule",expected=False,actual=True)
                 if route.get("allow_mule") is None: pending.append("permission:allow_mule")
         usage={}; seen=set(); stage["socket_evidence"]={}
+        layout=(equipment or {}).get(sid,{})
+        stage["equipment_validation"]=copy.deepcopy(layout) or {"status":"unknown","scope":"尚无这一阶段实际布局的原生校验；目录 valid_slots 只属于其查询上下文。"}
         for slot,name in stage.get("bases",{}).items():
-            bx.require(slot in native_slots,"不是当前原生槽位："+slot)
+            base_path=stage_path+"/bases/"+slot.replace("~","~0").replace("/","~1")
+            bx.require(slot in native_slots,"不是当前原生槽位："+slot,location=base_path,expected=sorted(native_slots),actual=slot)
             base=(bases or {}).get(name)
-            bx.require(base,"未知本机基底："+name)
-            if "valid_slots" not in base: pending.append("native:base_slot:"+name)
-            else: bx.require(slot in base["valid_slots"],name+" 无法放入 "+slot)
+            if name is not None: bx.require(base,"未知本机基底："+name,location=base_path,expected="current native base name",actual=name)
+            check=layout.get("checks",{}).get(slot,{}) if layout.get("bases")==stage.get("bases",{}) else {}
+            if check.get("base")!=name or type(check.get("valid_for_slot")) is not bool:
+                pending.append("native:equipment:"+sid+":"+slot)
+            else:
+                bx.require(check["valid_for_slot"],str(name)+" 与当前布局的 "+slot+" 不相符。",location=base_path,expected="native-compatible item or declared empty slot in this equipment/tree context",actual={"base":name,"context":layout.get("context",{})})
         stage["instance_transitions"]=[]
         for group_index,group in enumerate(groups):
             slot=group.get("slot")
             bx.require(slot=="" or slot in native_slots,"技能组槽位不是当前原生选项。")
+            bx.require(slot not in stage.get("bases",{}) or stage["bases"][slot] is not None,"明确空槽不能承载技能组。",location=stage_path+f"/skill_groups/{group_index}/slot",expected="occupied or unspecified slot",actual=slot)
             base=(bases or {}).get(stage.get("bases",{}).get(slot),{})
             capacity=base.get("sockets")
             if slot and type(capacity) is not int: pending.append("native:socket_capacity:"+sid+":"+slot)
@@ -318,9 +326,9 @@ def render(route,warnings,engine_version,tree_version,*,evidence_file=None):
         stats="".join(f"<tr><td>{esc(key)}</td><td>{esc(format(value,'.10g') if type(value) in (int,float) else value if value is not None else '未知')}</td></tr>" for key,value in calculation.get("stats",{}).items())
         numbers=f"<h3>当前条件下的原生数值</h3><table>{stats}</table><p>这些是实际装入对象的计算值。被忽略的装备/节点或未满足的需求见已知错误，不能把当前值当所声明完整配装已经生效。</p>" if stats else ""
         material_rows=[f"{facts.material_ref(item)} ×{item['quantity']}：{item.get('acquisition','取得方式未定')} · {item.get('evidence_status','未核对')}" for item in stage.get("required_items",[])]
-        details={"sockets":stage["socket_evidence"],"ascendancy_nodes":stage["ascendancy_allocated_nodes"],
+        details={"sockets":stage["socket_evidence"],"equipment_validation":stage.get("equipment_validation",{}),"ascendancy_nodes":stage["ascendancy_allocated_nodes"],
                  "instance_transitions":stage.get("instance_transitions",[]),
-                 **{k:v for k,v in calculation.items() if k in {"xml_path","config_values","readiness","material_specs","entry_checks","diagnostic"}}}
+                 **{k:v for k,v in calculation.items() if k in {"xml_path","config_values","configuration_context","readiness","material_specs","entry_checks","diagnostic"}}}
         sections.append(f"<section><h2>{esc(stage['name'])} [{esc(stage['stage_id'])}]</h2><p><b>阶段校验：{esc(labels.get(status,status))}</b></p><p>等级 {esc(stage.get('level','未知'))} · 前往第 {esc(stage.get('act','未知'))} 章；已完成进度 {esc(stage.get('completed_act','未声明'))}</p><h3>已知错误</h3>{bullets(calculation.get('errors',[]))}<p>{esc(calculation.get('reason',''))}</p><h3>进入条件</h3>{conditions}{''.join(groups)}<p>所列宝石属性需求：{esc(stage['attribute_requirements'])}。实际装备效果见本阶段计算记录。</p>{numbers}{bullets(stage['gear']+stage['passives']+stage['transition']+stage['checks'])}<p>模型资源安排（未核实部分见缺口）：{esc(stage.get('resources','资源使用安排尚未说明'))}</p><h3>新增物资</h3>{bullets(material_rows)}<details><summary>本阶段待核实项与原生条件</summary>{bullets(calculation.get('pending',[]))}<pre>{esc(json.dumps(details,ensure_ascii=False,indent=2))}</pre></details></section>")
     objectives=bullets([row["text"]+" ["+row["status"]+"]："+"；".join(judgment(key) for key in row["claim_ids"]) for row in route.get("objective_coverage",[])])
     conclusions=bullets([judgment(key) for key in claims])

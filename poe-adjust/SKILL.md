@@ -2,7 +2,7 @@
 name: poe-adjust
 description: 仅在用户明确调用“POE 配装助手”或 poe-adjust 后，为 PoE1 国服进行多轮问询、联网研究、本机 PoECharm 实算、配装优化或整体换流派、开荒路线及文件交付。普通游戏问答和技能设计讨论不启动流程。
 name_cn: POE 配装助手
-description_cn: 聊清目标，复用本机 PoECharm 设计配装或开荒路线，交付角色 XML 和中文说明。
+description_cn: 聊清目标，复用本机 PoECharm 设计配装或开荒路线，交付角色 XML 和程序生成的中文 HTML 说明。
 ---
 
 # POE 配装助手
@@ -32,12 +32,14 @@ description_cn: 聊清目标，复用本机 PoECharm 设计配装或开荒路线
 2. 方向确认后先用 edit 保存方案头部，再逐阶段/操作补充同一源文件；已有记录用返回的标识更新，避免反复组装整份 JSON。围绕影响选择的未知机制提出可验证问题，批量查询当前描述、归属和合法值，用 inspect/data/probe 选择最小有效实验，再决定候选与切换时机。共同场景写 plan.scenario，候选差异写 operations.config，核对实际 config_values；比较组合时整体复算，不相加单项收益。
 3. 配装 evaluate，开荒 route。先读 delivery_brief、errors、stage_summary 和 next_actions；按 diagnostic.location/expected/actual 修具体输入，按来源 reason 取真实片段。不能把可修复遗漏说成不可验证条件，也不能靠删用户目标所需组件消除错误。每次修改后按最终实际技能、天赋、装备和配置重新判断各项 objective；对应 claim.subjects 的 `objective:<id>` 说明达到/未达到、证据、条件和代价，文字安排必须在最终对象中落实。用本次 skill_ref、物资规格及 evidence_template，不猜引用。
 4. 阅读当前 review.json，逐项核对数字的主体/阶段、单位、因果、替代方案排除、进入条件和结论范围。事实用 `{{fact:native:candidate#/stats/Life}}` 生成含当前标签、单位与对象的 rendered_text；涉及达标、预算内等可比较命题写 checks，以实际值决定 supported/refuted/unknown。available_stat_keys 列出当次指标，缺相关值用 view/inspect 按需读取。若解释与值冲突，用现有接口查主体、条件及单项影响。修订重算后填写本次 assessment.review；它绑定这一版自审，不证明自由文字正确。
-5. 配装 export 最终复算；路线同时看 state.status/stage_summary 和 file_exported。直接交付生成文件并保留草案文件名，最终回答先沿用 publication/facts_summary 的状态、事实和全部缺口类别，再说明主观取舍。blocked 继续修正或交诊断；draft 明示未解决项和进入条件；scoped_result 说明所评审范围。预算 unknown 不写预算内买齐，时间线未知不写无限续航；文件落盘不能替代目标达成证明。
+5. 配装 export 最终复算；路线同时看 state.status/stage_summary 和 file_exported。直接交付生成的 XML 与中文 HTML，保留草案文件名。最终回答先直接使用返回的 facts_summary，随后解释有依据的主观取舍；不另写一份重复结论的说明文件。blocked 继续修正或交诊断；draft 明示未解决项和进入条件；scoped_result 说明所评审范围。预算 unknown 不写预算内买齐，时间线未知不写无限续航；文件落盘不能替代目标达成证明。
 
 ## 核验与恢复
 
 资源按每个技能的支付、原生频率、主体与启动条件核对。混合动作需要共同时间线时用 timeline；程序仅投影当前固定净回复与离散费用，未覆盖的触发、动态效果、药剂补充或行动互斥保持未知。节奏改变后未重算的 DPS 仍只代表原生快照。开荒区分取得规格、训练/加工和使用规格，进入前条件不能由可练等级替代；“补抗、喝药、慢放”落实到具体对象、取得及使用条件。
 
 原 XML 的缓存面板不作新计算依据。普通组的非空 slot 占孔，禁用不释放孔位。玩家、召唤物、幻影的伤害与回复分开；未读到的机制保持未知。计算成功和条目存在不证明可得或可立即切换。
+
+目录 valid_slots 仅描述其查询的装备/天赋上下文；路线由当前阶段整套布局重新调用原生规则，不能用一次空配装查询裁决所有阶段。阶段 configuration_context 区分种子配置、显式覆盖与实际值；种子默认值不代表目标场景。每个关键阶段由模型结合当前 config 原文选择计算条件，进度不能只按等级猜。数值比较先确认这些条件与用户目标相符。
 
 失败先读 diagnostic 和落盘状态，有 location 修对应字段；用 status 返回的 next_actions、review 和有效产物继续。有新信息才重试同一错误。大结果写工作区后按需读字段，缓存自动管理，最终导出复算。

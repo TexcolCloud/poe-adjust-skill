@@ -22,7 +22,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.7.0"
+VERSION = "2.7.1"
 SCHEMA_VERSION = 2
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
@@ -159,7 +159,9 @@ def edit_document(args):
                     matches=[g for g in available if g.get("skill_id")==need.get("skill_id")]
                     if len(matches)==1: need["instance_id"]=matches[0]["instance_id"]
                     else: bx.require(False,"同名宝石数量有歧义；用返回的实例 ID 明确取得对象。",location="/stages",expected="unambiguous instance_id",actual=need)
-    else: bx.plan_shape(result,complete=False)
+    else:
+        bx.plan_shape(result,complete=False)
+        facts.evidence_shape(result.get("evidence",[]),complete=False)
     # Validate local structure before touching the only source. Semantic choices
     # and current native legality remain evaluate/route responsibilities.
     bx.require((path.read_bytes() if path.is_file() else None)==existing,"保存前方案已变化，请重新读取 revision。",location="/file",actual=str(path))
@@ -931,6 +933,7 @@ def evaluate(args):
     source_plan_sha256=bx.digest(plan_path.read_bytes())
     plan = read_json(plan_path)
     bx.plan_shape(plan)
+    facts.evidence_shape(plan.get("evidence",[]))
     bx.require(plan.get("schema_version")==SCHEMA_VERSION,"plan 使用 schema_version=2，旧策略字段请按 references/build.md 与 evidence.md 迁移。")
     original = bx.read_document(run / "original.xml")
     root = engine.resolve_root(args.pob or state["pob_path"])
@@ -1200,12 +1203,12 @@ def export(args):
              "next_actions":outcome["next_actions"],
             "reply_policy":"直接交付返回的文件，保留草案文件名；先沿用 delivery_brief/facts_summary 的真实状态和全部缺口类别，再解释 claims[].rendered_text 中有依据的取舍。最终聊天与HTML保持同一结论；不把复核token或回读当机制、预算或目标达成证明。"}
 
-def native_queries(root,queries,xml="",class_id=None):
+def native_queries(root,queries,xml="",class_id=None,equipment_layouts=None):
     bx.require(isinstance(queries,list) and queries,"queries 应为非空数组。")
     result=None
     rows=[]
     for offset in range(0,len(queries),30):
-        chunk=engine.calculate(root,xml,queries=queries[offset:offset+30],class_id=class_id)
+        chunk=engine.calculate(root,xml,queries=queries[offset:offset+30],class_id=class_id,**({"equipment_layouts":equipment_layouts} if offset==0 and equipment_layouts is not None else {}))
         if result is not None: bx.require(chunk["engine_fingerprint"]==result["engine_fingerprint"],"分批查询期间引擎变化，请重试。")
         else: result=chunk
         rows.extend(chunk["catalog_batch"])
@@ -1221,10 +1224,13 @@ def catalog(args):
     document=bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
     if getattr(args,"batch",None):
         queries=read_json(args.batch).get("queries")
-        bx.require(isinstance(queries,list) and queries,"queries 应为非空数组。")
-        for query in queries:
-            bx.require(isinstance(query,dict) and set(query)<={"kind","query","limit","offset"} and query.get("kind") in kinds,"查询使用 kind/query/limit/offset；translations 单独查询。")
-            bx.require(isinstance(query.get("query",""),str) and type(query.get("limit",20)) is int and 1<=query.get("limit",20)<=100 and type(query.get("offset",0)) is int and query.get("offset",0)>=0,"limit=1–100，offset 为非负整数。")
+        bx.require(isinstance(queries,list) and queries,"queries 应为非空数组。",location="/queries",expected="nonempty array",actual=queries)
+        for index,query in enumerate(queries):
+            location=f"/queries/{index}"
+            bx.require_keys(query,{"kind","query","limit","offset"},location,"查询使用 kind/query/limit/offset；职业由全局 --class-id 或 --input 提供。")
+            bx.require(query.get("kind") in kinds,"查询 kind 无效；translations 单独查询。",location=location+"/kind",expected=sorted(kinds),actual=query.get("kind"))
+            for key,default,predicate,expected in (("query","",lambda v:isinstance(v,str),"string"),("limit",20,lambda v:type(v) is int and 1<=v<=100,"integer 1–100"),("offset",0,lambda v:type(v) is int and v>=0,"nonnegative integer")):
+                bx.require(predicate(query.get(key,default)),"查询 "+key+" 无效。",location=location+"/"+key,expected=expected,actual=query.get(key,default))
         result=native_queries(root,queries,document,class_id)
         return {k:result.get(k) for k in ("engine_version","tree_version","data_version","engine_fingerprint","tree_context","socket_limits","rules")} | {"queries":result["catalog_batch"]}
     bx.require(args.kind,"catalog 需要 --kind 或 --batch。")
@@ -1320,6 +1326,10 @@ def route_snapshots(route,native,root,folder,output):
             else:
                 source=bx.parse(native["xml"])
             operations=copy.deepcopy(snap.get("operations",{}))
+            configuration={"seed_basis":"template_xml" if snap.get("template_xml") else "native_empty_build",
+                           "seed_inputs":[dict(row.attrib) for row in bx.active_config(source).findall("Input")],
+                           "declared_overrides":copy.deepcopy(operations.get("config",{})),
+                           "scope":"种子中的设置不代表本阶段场景已被选择；模型核对当前配置原文与 resolved_values，决定具体条件，未核实部分明示。null 删除覆盖并允许原生默认值，不等于数值0或关闭。"}
             op_path=f"/stages/{stage_index}/snapshot/operations"
             bx.require_keys(operations,routes.SNAPSHOT_OPERATION_FIELDS,op_path,"阶段等级和基础技能列表来自 stage；snapshot.operations 不能另设 level/replace_skills。")
             for index,change in enumerate(operations.get("gems",[])):
@@ -1364,7 +1374,8 @@ def route_snapshots(route,native,root,folder,output):
                 write_json(cache_path,{"request_sha256":bx.digest(requested),"result":calculated,
                                       "result_sha256":bx.digest(json.dumps(calculated,sort_keys=True,ensure_ascii=False,allow_nan=False))})
             record.update(status="calculated",xml_path=str(directory/"snapshot.xml"),xml_sha256=bx.digest(saved),engine_fingerprint=calculated["engine_fingerprint"],
-                          result=calculated,document=document,directory=directory,crafted_items=crafts)
+                          result=calculated,document=document,directory=directory,crafted_items=crafts,
+                          configuration_context={**configuration,"resolved_values":calculated.get("config_values",{})})
         except (ValueError,KeyError,TypeError,IndexError,OSError) as exc:
             record.update(failure_record(exc,f"/stages/{stage_index}/snapshot"))
         finally:
@@ -1414,7 +1425,9 @@ def calculate_route(args):
     queries=[{"kind":"gems","query":"id:"+v,"limit":2} for v in ids]
     queries += [{"kind":"links","query":v,"limit":1} for v in routes.link_queries(route)]
     queries += [{"kind":"bases","query":"id:"+v,"limit":2} for v in routes.base_names(route)]
-    calculation=native_queries(root,queries,class_id=route.get("class_id"))
+    layouts=[{"layout_id":s["stage_id"],"location":f"/stages/{index}","bases":{k:v for k,v in s.get("bases",{}).items() if v is not None},"empty_slots":[k for k,v in s.get("bases",{}).items() if v is None]} for index,s in enumerate(route["stages"]) if "snapshot" not in s]
+    calculation=native_queries(root,queries,class_id=route.get("class_id"),equipment_layouts=layouts)
+    equipment={row["layout_id"]:row for row in calculation.get("equipment_layouts",[])}
     catalogs=calculation["catalog_batch"]
     gems={e["skill_id"]:e for q in catalogs if q["kind"]=="gems" for e in q["entries"]}
     links={q["query"]:q["entries"][0] for q in catalogs if q["kind"]=="links"}
@@ -1428,12 +1441,20 @@ def calculate_route(args):
     context={"engine_fingerprint":calculation["engine_fingerprint"],"league":route.get("league"),"game_version":route.get("game_version")}
     registry=facts.load_evidence(route.get("evidence",[]),path.parent,context,root=root)
     claims=facts.assess_claims(route.get("claims",[]),registry,{"catalog":calculation})
-    checked,warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],evidence=registry,claims=claims)
+    checked,warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
     snapshots=route_snapshots(checked,calculation,root,path.parent,output)
+    for stage in checked["stages"]:
+        value=snapshots.get(stage["stage_id"],{}).get("result")
+        if value:
+            checks={item["slot"]:{"base":item["base"],"valid_for_slot":item.get("valid_for_slot")} for item in value["equipped"]}
+            for slot,base in stage.get("bases",{}).items():
+                if base is None: checks[slot]={"base":None,"valid_for_slot":slot not in checks,"status":"observed_empty" if slot not in checks else "occupied"}
+            equipment[stage["stage_id"]]={"bases":stage.get("bases",{}),"checks":checks,
+                                          "context":{"basis":"snapshot_xml","xml_sha256":value.get("xml_sha256"),"tree":value.get("tree_context"),"scope":"Actual native equipment and tree in this stage XML; not proof of availability."}}
     stage_native={"catalog":calculation,**{"stage:"+sid:r["result"] for sid,r in snapshots.items() if "result" in r}}
     if snapshots:
         claims=facts.assess_claims(route.get("claims",[]),registry,stage_native)
-        checked,warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],evidence=registry,claims=claims)
+        checked,warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
     validation_pending=set(checked["pending"])
     route_errors=[]
     stage_materials={}
@@ -1510,7 +1531,7 @@ def calculate_route(args):
     budget=budget_summary({**route,"inventory":list({**owned,**declared}.values())},route,list(requirements.values()),registry,claims)
     checked["budget_assessment"]=budget
     claims=facts.assess_claims(route.get("claims",[]),registry,{**stage_native,"budget":{**budget,"engine_fingerprint":calculation["engine_fingerprint"],"origin":"program_assessment"}})
-    final_checked,final_warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],evidence=registry,claims=claims)
+    final_checked,final_warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
     checked["pending"]=[p for p in checked["pending"] if p not in validation_pending]+final_checked["pending"]
     checked["claims"]=claims;checked["objective_coverage"]=final_checked["objective_coverage"]
     for old,final in zip(checked["stages"],final_checked["stages"]): old["instance_transitions"]=final["instance_transitions"]

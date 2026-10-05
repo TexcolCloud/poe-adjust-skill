@@ -355,7 +355,7 @@ def ascendancy_paths(name, nodes):
     return selected, paths
 
 
-def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, offset: int = 0, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False, class_id: int | None = None, breakdowns: list | None = None, node_probes: list | None = None, cache: bool = True) -> dict:
+def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, offset: int = 0, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False, class_id: int | None = None, breakdowns: list | None = None, node_probes: list | None = None, equipment_layouts: list | None = None, cache: bool = True) -> dict:
     started = time.perf_counter()
     PERFORMANCE["requests"] += 1
     if class_id is not None and (type(class_id) is not int or xml or xml_batch):
@@ -373,6 +373,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         request["xml_batch"] = xml_batch
     if breakdowns is not None: request["breakdowns"] = breakdowns
     if node_probes is not None: request["node_probes"] = node_probes
+    if equipment_layouts is not None: request["equipment_layouts"] = equipment_layouts
     if (breakdowns or node_probes) and not xml:
         raise EngineError("计算明细和天赋筛选需要具体角色 XML。")
     cache_key = hashlib.sha256(json.dumps({"request":request,"fingerprint":info["engine_fingerprint"]},sort_keys=True,ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()

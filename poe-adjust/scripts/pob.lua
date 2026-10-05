@@ -319,7 +319,7 @@ for name, slot in pairs(build.itemsTab.slots) do
     end
     table.insert(result.equipped, {slot = name, id = slot.selItemId, name = item.name, base = item.baseName, base_recognised = item.base ~= nil,
       active = slot.active, sockets = item.sockets, weapon_set = slot.weaponSet,
-      valid_for_slot = build.itemsTab:IsItemValidForSlot(item, name),
+      valid_for_slot = build.itemsTab:IsItemValidForSlot(item, name) == true,
       socket_colours_always_match = item.sockets and item.sockets.colourAlwaysMatches or false,
       requirements = item.requirements, unparsed = unparsed,
       flask_local = item.flaskData and scalarTable(item.flaskData),
@@ -566,10 +566,51 @@ local function queryCatalog(kind, query, limit, offset)
         if build.itemsTab:IsItemValidForSlot(item, slotName) then table.insert(entry.valid_slots, slotName) end
       end
       table.sort(entry.valid_slots)
+      entry.valid_slots_context = {basis = request.xml ~= "" and "input_xml" or "empty_equipment", tree = result.tree_context,
+        scope = "Observed against this query's current equipment and tree; not an unconditional base-slot rule"}
       entry.affix_limits = {total = item.affixLimit, prefix = item.prefixes and item.prefixes.limit, suffix = item.suffixes and item.suffixes.limit}
     end
   end
   return {kind = kind, query = query, total = #entries, offset = offset, next_offset = offset + #selected < #entries and offset + #selected or nil, entries = selected}
+end
+if request.equipment_layouts then
+  result.equipment_layouts = setmetatable({}, {__jsontype = "array"})
+  for index, layout in ipairs(request.equipment_layouts) do
+    local location = layout.location or "/equipment_layouts/" .. (index - 1)
+    inputRule(type(layout.bases) == "table", "Layout bases must map current slots to base names", location .. "/bases", "object", type(layout.bases))
+    local items, missing, bases, checks = {}, {}, setmetatable({}, {__jsontype = "object"}), setmetatable({}, {__jsontype = "object"})
+    local itemSet = setmetatable({}, {__index = function(_, key)
+      missing[key] = true
+      return build.itemsTab.slots[key] and {selItemId = 0} or build.itemsTab.activeItemSet[key]
+    end})
+    for slotName, baseName in pairs(layout.bases) do
+      inputRule(build.itemsTab.slots[slotName] ~= nil, "Unknown native slot", location .. "/bases/" .. slotName, "current native slot", slotName)
+      inputRule(data.itemBases[baseName] ~= nil, "Unknown native base", location .. "/bases/" .. slotName, "current native base", baseName)
+      local item = new("Item", "Rarity: NORMAL\n" .. baseName)
+      local id = #items + 1
+      items[id], itemSet[slotName], bases[slotName] = item, {selItemId = id}, baseName
+    end
+    for _,slotName in ipairs(layout.empty_slots or {}) do
+      inputRule(build.itemsTab.slots[slotName] ~= nil and layout.bases[slotName] == nil, "Empty slot must be native and not also contain a base", location .. (layout.location and "/bases/" .. slotName or "/empty_slots"), "unoccupied native slot", slotName)
+      itemSet[slotName], bases[slotName] = {selItemId = 0}, json.null
+      checks[slotName] = {base = json.null, valid_for_slot = true, status = "declared_empty"}
+    end
+    -- Borrow the installed predicate with an isolated item set. No game-specific
+    -- weapon pairing branches and no mutations to the loaded build or its XML.
+    local tab = setmetatable({items = items}, {__index = build.itemsTab})
+    for slotName, baseName in pairs(layout.bases) do
+      missing = {}
+      local valid = tab:IsItemValidForSlot(items[itemSet[slotName].selItemId], slotName, itemSet)
+      local unresolved = setmetatable({}, {__jsontype = "array"})
+      for key in pairs(missing) do table.insert(unresolved, key) end
+      table.sort(unresolved)
+      checks[slotName] = {base = baseName, unresolved_context = unresolved}
+      if #unresolved == 0 then checks[slotName].valid_for_slot = valid == true end
+    end
+    table.insert(result.equipment_layouts, {layout_id = layout.layout_id, bases = bases, checks = checks,
+      context = {basis = "declared_base_layout", tree = result.tree_context,
+        scope = "Native compatibility in declared equipment and current tree. Missing item-set fields actually read by the native predicate remain unknown; empty_slots explicitly declares absence. Excludes rolls, availability, sockets and actual passive allocation"}})
+  end
 end
 if request.catalog and request.catalog ~= "" then
   local catalog = queryCatalog(request.catalog, request.query, request.limit, request.offset)

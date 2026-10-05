@@ -15,15 +15,17 @@ GEM_FIELDS = {"skill_id": "skillId", "level": "level", "quality": "quality", "en
 GROUP_FIELDS = {"enabled": "enabled", "slot": "slot", "label": "label", "include_in_full_dps": "includeInFullDPS", "main_active_skill": "mainActiveSkill", "group_count": "groupCount"}
 PLAN_FIELDS={"schema_version", "name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "inventory", "assumptions", "migration_steps", "legality_notes", "scenario", "claims", "usage", "timeline", "assessment", "evidence"}
 OPERATION_FIELDS={"gems", "groups", "replace_skills", "items", "equip", "tree", "level", "main_group", "config", "weapon_set"}
+_UNSET = object()
 
 
 class ContractError(ValueError):
     """An input error with a concrete field and observable repair information."""
-    def __init__(self, message, *, code="invalid_input", location=None, expected=None, actual=None, input_file=None):
+    def __init__(self, message, *, code="invalid_input", location=None, expected=None, actual=_UNSET, input_file=None):
         super().__init__(message)
         self.diagnostic={"code":code,"message":message,"action":"edit_input","retryable":False}
-        for key,value in (("location",location),("expected",expected),("actual",actual),("input_file",input_file)):
+        for key,value in (("location",location),("expected",expected),("input_file",input_file)):
             if value is not None: self.diagnostic[key]=value
+        if actual is not _UNSET: self.diagnostic["actual"]=actual
 
 
 def require(condition, message, **details):

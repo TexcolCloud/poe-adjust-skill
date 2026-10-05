@@ -141,20 +141,37 @@ def pointer(value, locator):
     return value
 
 
+def evidence_shape(declarations, *, complete=True):
+    """Shared cheap input validation; never fetch sources while editing a draft."""
+    fields={"evidence_id", "kind", "subject", "text", "url", "path", "excerpt", "context", "checked_at", "message_ref", "source", "line", "count", "content_sha256"}
+    kinds={"user_statement", "web", "artifact", "local_data"}
+    bx.require(isinstance(declarations,list),"evidence 应为数组。",location="/evidence",expected="array",actual=type(declarations).__name__)
+    for index,entry in enumerate(declarations):
+        location=f"/evidence/{index}"
+        bx.require_keys(entry,fields,location,"证据字段无效；status/digest/origin 由程序生成。")
+        for key in sorted(fields-{"context","line","count"}):
+            if key in entry:
+                bx.require(isinstance(entry[key],str),key+" 应为字符串。",location=location+"/"+key,expected="string",actual=entry[key])
+        for key in ("evidence_id","kind","subject"):
+            if complete or key in entry:
+                bx.require(isinstance(entry.get(key),str) and entry[key].strip(),"证据需要具体 "+key,location=location+"/"+key,expected="nonempty string",actual=entry.get(key))
+        if "kind" in entry: bx.require(entry["kind"] in kinds,"证据 kind 无效。",location=location+"/kind",expected=sorted(kinds),actual=entry["kind"])
+        if "context" in entry: bx.require(isinstance(entry["context"],dict),"证据 context 应为对象。",location=location+"/context",expected="object",actual=entry["context"])
+        for key in ("line","count"):
+            if key in entry: bx.require(type(entry[key]) is int and entry[key]>0,key+" 应为正整数。",location=location+"/"+key,expected="positive integer",actual=entry[key])
+
+
 def load_evidence(declarations, folder, context, *, root=None):
     """Observe source artifacts; caller-written verification flags are not inputs."""
-    bx.require(isinstance(declarations, list), "evidence 应为数组。")
+    evidence_shape(declarations)
     base = Path(folder).resolve()
     result = {}
-    for entry in declarations:
-        bx.require(isinstance(entry, dict) and set(entry) <= {"evidence_id", "kind", "subject", "text", "url", "path", "excerpt", "context", "checked_at", "message_ref", "source", "line", "count", "content_sha256"}, "证据字段无效；status/digest/origin 由程序生成。")
+    for index,entry in enumerate(declarations):
+        location=f"/evidence/{index}"
         key, kind = entry.get("evidence_id"), entry.get("kind")
-        bx.require(isinstance(key, str) and key and "#" not in key and not key.startswith("native:") and key not in result, "evidence_id 需要唯一普通标识，native: 留给计算结果。")
-        bx.require(kind in {"user_statement", "web", "artifact", "local_data"}, "证据 kind 为 user_statement/web/artifact/local_data。原生字段使用 native:candidate#/stats/Life 等引用。")
-        bx.require(kind == "local_data" or not set(entry) & {"source", "line", "count", "content_sha256"}, "source/line/count/content_sha256 仅用于 local_data。")
-        bx.require(isinstance(entry.get("subject"), str) and entry["subject"], "证据需要具体 subject。")
+        bx.require("#" not in key and not key.startswith("native:") and key not in result, "evidence_id 需要唯一普通标识，native: 留给计算结果。",location=location+"/evidence_id",expected="unique ordinary identifier without # or native: prefix",actual=key)
+        bx.require(kind == "local_data" or not set(entry) & {"source", "line", "count", "content_sha256"}, "source/line/count/content_sha256 仅用于 local_data。",location=location,expected="local_data for source fields",actual=kind)
         record = {"evidence_id": key, "kind": kind, "subject": entry["subject"], "context": entry.get("context", {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-        bx.require(isinstance(record["context"], dict), "证据 context 应为对象。")
         if entry.get("checked_at"):
             import engine
             engine.validate_checked_at(entry["checked_at"])
@@ -189,6 +206,7 @@ def load_evidence(declarations, folder, context, *, root=None):
             record["digest"] = bx.digest(text)
         except (OSError, ValueError) as exc:
             record.update(status="unresolved", reason=str(exc))
+            if hasattr(exc,"diagnostic"): record["diagnostic"]={**exc.diagnostic,"location":location+exc.diagnostic.get("location","")}
         result[key] = record
     return result
 

@@ -51,7 +51,7 @@ plan 使用 `--kind plan`。change.json 为 `{"set":{要更新的字段},"remove
 
 ## 错误与恢复
 
-失败返回 error 与 diagnostic；有 location 时按 expected/actual 修对应 JSON 路径，input_file 指出源文件。native_invalid_input 是当前原生规则明确拒绝的输入，action:edit_input 不表示接口不支持；inspect_capability 表示测量接口范围，其他引擎失败先查实际错误。不要盲目原样重试或解析英文报错猜字段。输入问题修源文件，能力缺口不能通过填理由消除。
+失败返回 error 与 diagnostic；有 location 时按 expected/actual 修对应 JSON 路径，input_file 指出源文件。证据对象与查询数组错误会定位到条目/字段；actual:null 表示字段缺失或值为空，不表示未提供诊断。edit 先检查证据字段/类型，不联网；错误不会覆盖已有源文件。native_invalid_input 是当前原生规则明确拒绝的输入，action:edit_input 不表示接口不支持；inspect_capability 表示测量接口范围，其他引擎失败先查实际错误。不要盲目原样重试或解析英文报错猜字段。输入问题修源文件，能力缺口不能通过填理由消除。
 
 大结果用现有 --out 保存到任务工作区，再用 view 按需读字段、字段名或文本缺口，具体示例见资料协议。delivery_brief 汇总全部缺口；next_actions 指向完整文件和具体路径，按实际错误、目标/依赖、最终复核处理，不因文件已导出而跳过。stage_summary 和 errors 不能因为摘要只显示部分 pending 而略过。
 
