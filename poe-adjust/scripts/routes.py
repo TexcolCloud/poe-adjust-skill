@@ -293,15 +293,11 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
         previous_nodes=actual
         stage["ascendancy_used"]=len(actual)
         stage["ascendancy_allocated_nodes"]=sorted(actual)
-    if not facts.has_claim(claims,"goal"): pending.append("goal_assessment")
     for key in ("allow_minions",):
         if key in route and not facts.has_claim(claims,"preference:"+key): pending.append("preference:"+key)
     assessment=route.get("assessment",{})
-    bx.require(isinstance(assessment,dict) and set(assessment)<={"goal_claim_ids","scope","unresolved","review"},"路线 assessment 使用 goal_claim_ids/scope/unresolved/review。")
-    for key in ("goal_claim_ids","unresolved"):
-        bx.require(isinstance(assessment.get(key,[]),list) and all(isinstance(v,str) and v for v in assessment.get(key,[])),"assessment."+key+" 需要字符串数组。")
-    goal_ids={c["claim_id"] for c in claims if c["status"]=="model_assessed" and "goal" in c["subjects"]}
-    if not assessment.get("scope") or not assessment.get("goal_claim_ids") or not set(assessment.get("goal_claim_ids",[]))<=goal_ids: pending.append("goal_assessment")
+    result["diagnostics"]=facts.goal_review_diagnostics(assessment,claims)
+    if result["diagnostics"]: pending.append("goal_assessment")
     pending += ["assessment:"+v for v in assessment.get("unresolved",[])]
     result["pending"]=list(dict.fromkeys(pending))
     result["claims"]=claims

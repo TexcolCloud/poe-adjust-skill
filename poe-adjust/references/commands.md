@@ -1,8 +1,10 @@
 # 入口与调用约定（schema_version 2）
 
-所有 JSON 为 UTF-8，使用实际数字、布尔值和数组。文件路径用 PowerShell 单引号，通过文件传 JSON。每次独立工具调用重新定义变量或直接使用绝对路径，Python 使用 TeleAgent 运行时。输入路径沿用用户提供的位置，结果路径沿用本次 CLI 返回；恢复先 status/next_actions，不从环境变量猜平台工作空间路径。
+所有 JSON 为 UTF-8，使用实际数字、布尔值和数组。通过文件工具或标准 JSON 序列化保存请求，路径可用正斜杠；命令只引用已保存文件，避免多层 shell/Python 拼接转义。PowerShell 路径用单引号，每次独立调用重新定义变量或使用绝对路径。输入路径沿用用户提供位置，结果路径沿用本次返回。
 
 ## 命令入口
+
+首次脚本位置来自技能加载的资源目录，Python 使用 TeleAgent 当次运行时。每次 CLI 返回 entrypoint 的 script/python/skill_version，分别是本次实际绝对路径与适配版本；大结果摘要仍保留入口。之后用该解释器和脚本调用，不复制机器用户名或旧安装位置。恢复先读任务已有 `.edit.json`、`run.json`、`.state.json` 的入口，再 status/next_actions。安装迁移后按当前加载位置重新 doctor；没有可靠入口时记录定位缺口，不向整个平台或用户目录扩大搜索。下列 python 示例由该实际解释器执行。
 
 ```powershell
 $entry = '<技能目录>/scripts/poe.py'
@@ -54,6 +56,8 @@ plan 使用 `--kind plan`。change.json 的四种操作共用一个入口：
 
 每次沿用返回 revision；源文件变化会拒绝陈旧修改，同一成功请求仅在源文件和引擎上下文一致时幂等重放。counts、actual_changes、invalidated_claims 和 facts_summary 是实际操作结果；大结果完整保存在 receipt_file，通过 view 分页读取。
 
+判断草案可以先只存 claim_id，随后用同一标识补 text/subjects/引用；保存草案不等于完成判断，完整评估仍要求正文及关联。
+
 artifacts 标注文件用途：source 是可编辑方案，persistent_state 是持久状态与重放凭证，temporary 是程序可清理的临时文件清单。`.edit.json` 属于 persistent_state，交付与恢复期间保留；程序自行处理内部临时文件。按 facts_summary 报告结果，直接使用 counts，不重新猜数量。
 
 保存采用完整文件原子替换；版本摘要是乐观检查，多个写入方仍须顺序修改同一源文件。凭证缺失、损坏或写入失败时，重新 view 源文件取得当前 revision，再用 edit 恢复；旧重放信息可能已经丢失，不能承诺原请求已被去重。
@@ -66,4 +70,4 @@ artifacts 标注文件用途：source 是可编辑方案，persistent_state 是�
 
 大结果用现有 --out 保存到任务工作区，再用 view 按需读字段、字段名或文本缺口，具体示例见资料协议。delivery_brief 汇总全部缺口；next_actions 指向完整文件和具体路径，按实际错误、目标/依赖、最终复核处理，不因文件已导出而跳过。stage_summary 和 errors 不能因为摘要只显示部分 pending 而略过。
 
-配装使用 `status --run`，读取 candidate_records 的完整性、待办及源 plan/review 文件路径，按 next_actions 继续。失败记录 last_operation，失败导出不保留成功交付身份。开荒使用 `status --route-state <输出名.state.json>`，失败记录 phase:failed、failure 和具体修复动作；检查输入/输出/引擎是否一致，变更后不把旧阶段算成本次完成。恢复重跑同一 route，有效计算缓存自动复用，资料与模型判断重新核对。
+配装使用 `status --run`，读取 candidate_records 的完整性、待办及源 plan/review 文件路径，按 next_actions 继续。last_operation 记录最新评估或导出；成功重试更新旧失败，重新评估使同候选旧交付凭证失效，原产物保留供追溯，须重新 export。失败导出不保留成功交付身份。开荒使用 `status --route-state <输出名.state.json>`，失败记录 phase:failed、failure 和具体修复动作；检查输入/输出/引擎是否一致，变更后不把旧阶段算成本次完成。恢复重跑同一 route，有效计算缓存自动复用，资料与模型判断重新核对。

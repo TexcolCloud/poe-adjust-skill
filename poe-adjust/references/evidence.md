@@ -8,7 +8,7 @@
 
 - user_statement：text 是实际表达，输出 user_declared。用户库存不是程序独立盘点。
 - web：url 与正文实际包含的 excerpt，由脚本读取公开官方/PoEDB 页面，输出 source_observed。其他公开来源可用 TeleAgent 联网工具读取，再使用 artifact。
-- artifact：path 指向本次任务目录内文本，excerpt 必须确实存在，记录内容摘要与采集 URL/时间。输出 artifact_observed，代表片段可追溯，不假装文件必定来自声称的网站。不能用此路径读取平台内部输出目录。
+- artifact：path 相对声明源 JSON 所在目录解释（intent 文件目录或 plan/route 文件目录），限该目录及子目录内不超过 2 MB 的文本。source_base 返回实际基准目录，越界诊断给出 /evidence/<位置>/path、允许目录与实际路径；需要的联网/探针记录先保存到该目录。excerpt 必须确实存在，记录摘要与采集 URL/时间。artifact_observed 只证明片段可追溯，不证明文件必定来自声称的网站或其中数字已被原生测量。不能用此路径读取平台内部输出目录。
 - local_data：使用 `data read` 的 evidence_template（source/line/count/content_sha256），补 evidence_id/subject。程序从本机重新读取，不接受替代 text/path/url。输出 local_data_observed 只证明原文及摘要，不证明含义与当前方案相关、当季可得或游戏内实测。
 - 原生引用直接写 `native:candidate#/stats/Life`、`native:baseline#/stats/Life` 等 JSON pointer，无需声明 evidence。只能访问本次已有字段，指针不执行代码。引用值与引擎/计算 XML 绑定；不要猜旧数组下标。
 
@@ -36,7 +36,7 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 常用 subject：`goal`、`progress:normal`、`progress:ascendancy`、`progress:secondary_ascendancy`、`condition:guard`、`condition:Flask 1`、`config:<字段>`、`skill:<skill_ref>`、`dependency:<skill_ref>`、`count:<组>:<宝石位置>`、`resource:Mana:leech`、`resource:EnergyShield:recharge`、`transformation:<槽位>`、`legality:item:<物品ID>`、`migration`、`template_source`。以实际 pending 为索引说明问题；permission、缺失原生量和 capability 缺口不能靠填理由转成程序通过。
 
-`assessment:{goal_claim_ids:["目标claimID"],scope:"实际核对范围",unresolved:[]}`。goal claim 引用用户目标与本次数值/来源，解释收益、代价、是否满足。不得以改变 scope 隐去用户已经明确要求的部分。
+`assessment:{goal_claim_ids:["总体claimID"],scope:"实际核对范围",unresolved:[]}`。所选每条判断须在 subjects 中关联 `goal`，并已针对当前证据评审；`objective:<id>` 的逐项目标关联另由 objective_coverage 检查，不能把只有该关联的 ID 当总体判断。goal_assessment 诊断给出具体数组位置、当前 subjects/status 与可用总体 ID；按实际用途选记录或补关联，不改输出状态。goal claim 引用用户目标与本次数值/来源，解释收益、代价、是否满足。scope 覆盖实际用户要求。
 
 简单频率/同一窗口用 usage，每行 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。skill_ref 来自本次 active_skills，对应 claim.subjects:`skill:<引用>`。频率为次/秒，窗口为秒，有限非负；未知省略。程序核对原生动作频率、单次支付和满速费用，只有费用符合单次支付乘频率时才线性投影。同一窗口可合并，不同窗口不会借用主技能窗口放行；混合动作使用下文 timeline。降频不沿用满速吸取，未重算的 DPS 仍为原生快照。资源缺口和启动前不足不能被 prose 消除。
 

@@ -22,7 +22,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.0"
+VERSION = "2.8.1"
 SCHEMA_VERSION = 2
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
@@ -42,6 +42,10 @@ METRICS = {
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def execution_entrypoint():
+    return {"script":str(Path(__file__).resolve()),"python":str(Path(sys.executable).resolve()),"skill_version":VERSION}
 
 
 def read_json(path):
@@ -159,6 +163,8 @@ def edit_document(args):
         try: old=read_json(receipt)
         except (ValueError,OSError): old={}
         if old.get("request_sha256")==request_hash and old.get("result_sha256")==stamp and old.get("engine_fingerprint")==engine.fingerprint(root):
+            if old.get("entrypoint")!=execution_entrypoint():
+                old["entrypoint"]=execution_entrypoint();write_json(receipt,old)
             return {**old,"replayed":True,"file":str(path),"status":"saved_draft"}
     bx.require(existing is None or getattr(args,"if_sha256",None)==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",location="/if_sha256",expected=stamp,actual=getattr(args,"if_sha256",None))
     document=read_json(path) if existing is not None else {"schema_version":SCHEMA_VERSION}
@@ -224,7 +230,7 @@ def edit_document(args):
     write_json(path,result)
     revision=bx.digest(path.read_bytes())
     handles={key:[{field:row.get(field) for field in fields} for row in result.get(key,[])] for key,fields in EDIT_COLLECTIONS.items() if key in result}
-    response={"kind":args.kind,"file":str(path),"receipt_file":str(receipt),"revision":revision,"request_sha256":request_hash,"result_sha256":revision,"engine_fingerprint":fingerprint,"handles":handles,"status":"saved_draft",
+    response={"kind":args.kind,"file":str(path),"receipt_file":str(receipt),"revision":revision,"request_sha256":request_hash,"result_sha256":revision,"engine_fingerprint":fingerprint,"entrypoint":execution_entrypoint(),"handles":handles,"status":"saved_draft",
               "counts":document_counts(result),"actual_changes":document_changes(document,result),"invalidated_claims":invalidated,
               "artifacts":{"source":[{"path":str(path),"role":"editable_plan"}],"persistent_state":[{"path":str(receipt),"role":"revision_and_retry_receipt"}],"temporary":[]},
               "next_actions":[{"action":"edit_or_calculate","file":str(path),"revision":revision,"reference":"references/leveling.md" if args.kind=="route" else "references/build.md"}],
@@ -317,7 +323,7 @@ def begin(args):
     run.mkdir(parents=True, exist_ok=True)
     original = bx.serialise(document)
     write_text(run / "original.xml", original)
-    state = {"schema_version": SCHEMA_VERSION, "skill_version": VERSION, "invoked": True, "created_at": now(), "phase": "clarifying",
+    state = {"schema_version": SCHEMA_VERSION, "skill_version": VERSION, "entrypoint":execution_entrypoint(), "invoked": True, "created_at": now(), "phase": "clarifying",
              "source_path": str(source), "input_sha256": bx.digest(source.read_bytes()), "original_sha256": bx.digest(original), **info}
     write_json(run / "run.json", state)
     inspection = bx.summary(document)
@@ -856,8 +862,10 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     """Expose work from observed errors and dependencies, without choosing game policy."""
     shared={"input_file":str(input_file),"details_file":str(details_file)}
     actions=[]
-    if outcome["errors"]:
-        actions.append({**shared,"action":"repair_input","pointer":details_pointer+"/errors","total":len(outcome["errors"]),
+    repairs=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="edit_input" and row.get("location")]
+    if outcome["errors"] or repairs:
+        actions.append({**shared,"action":"repair_input","pointer":details_pointer+("/errors" if outcome["errors"] else "/diagnostics"),
+                        "total":len(outcome["errors"]) if outcome["errors"] else len(repairs),"diagnostics":repairs,
                         "instruction":"按具体诊断修订原方案；保留用户目标所需功能，不能靠删除有效组件消除错误。"})
     unsupported=[value for value in outcome["pending"] if value.startswith(("capability:","native:"))]
     dependencies=[value for value in outcome["pending"] if not value.startswith(("final_review:","capability:","native:"))]
@@ -897,7 +905,7 @@ def record_command_failure(args, exc):
     if not state_path.is_file(): return
     _,state=read_run(run)
     record=failure_record(exc,input_file=getattr(args,"plan",None))
-    state.update(phase="failed",updated_at=now(),last_operation={"command":args.command,"candidate":args.name,"file_exported":False,**record})
+    state.update(phase="failed",updated_at=now(),entrypoint=execution_entrypoint(),last_operation={"command":args.command,"candidate":args.name,"file_exported":False,**record})
     write_json(state_path,state)
     if args.command=="export": write_json(run/"output"/args.name/"delivery.json",{"file_exported":False,"status":record["status"],"failure":record})
 
@@ -943,12 +951,8 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     for key in plan.get("scenario", {}):
         if key not in intent.get("scenario", {}) and not facts.has_claim(claims,"config:"+key): pending.append("config:"+key)
     assessment = plan.get("assessment", {})
-    bx.require(isinstance(assessment,dict) and set(assessment) <= {"goal_claim_ids","scope","unresolved","review"}, "assessment 接受 goal_claim_ids/scope/unresolved/review。")
-    for key in ("goal_claim_ids", "unresolved"):
-        bx.require(isinstance(assessment.get(key,[]),list) and all(isinstance(v,str) and v for v in assessment.get(key,[])), "assessment."+key+" 应为字符串数组。")
-    goal_ids = assessment.get("goal_claim_ids", [])
-    goal_claims = {c["claim_id"]:c for c in claims if "goal" in c["subjects"] and c["status"]=="model_assessed"}
-    if not goal_ids or any(key not in goal_claims for key in goal_ids) or not assessment.get("scope"): pending.append("goal_assessment")
+    goal_diagnostics=facts.goal_review_diagnostics(assessment,claims)
+    if goal_diagnostics: pending.append("goal_assessment")
     pending += ["assessment:"+v for v in assessment.get("unresolved", [])]
     version = facts.version_fact(intent.get("version_source"), intent.get("game_version"), intent["league"], evidence_folder / ".poe-evidence", result["engine_fingerprint"])
     if version["status"] != "source_observed": pending.append("version:target")
@@ -968,7 +972,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
          "pending": list(dict.fromkeys(pending)), "errors": errors}, assessment)
     pending += review_pending
     errors, pending = list(dict.fromkeys(errors)), list(dict.fromkeys(pending))
-    diagnostics=list(audit.get("diagnostics",[]))
+    diagnostics=list(audit.get("diagnostics",[]))+goal_diagnostics
     for claim in claims:
         diagnostics.extend({**row,"claim_id":claim["claim_id"],"category":"input","status":"unknown"} for row in claim["diagnostics"])
     for objective in coverage:
@@ -1052,10 +1056,14 @@ def evaluate(args):
              "evidence_folder":str(plan_path.parent),"baseline":baseline,"result":{k:v for k,v in result.items() if k!="xml"},
              "plan":plan,"crafted_items":crafted,"tree_diagnostics":tree_diagnostics,**assessment}
     outcome["next_actions"]=delivery_actions(outcome,plan_path,destination/"evaluation.json",destination/"review.json")
+    delivery=run/"output"/args.name/"delivery.json"
+    if delivery.is_file():
+        write_json(delivery,{"file_exported":False,"status":outcome["status"],"candidate":args.name,"reason":"superseded_by_evaluation"})
     write_json(destination/"evaluation.json",outcome)
     write_json(destination/"review.json",outcome["review_packet"])
     state.setdefault("candidates",{})[args.name]={"evaluation_sha256":bx.digest((destination/"evaluation.json").read_text(encoding="utf-8"))}
-    state.update(phase="evaluated",updated_at=now(),engine_fingerprint=result["engine_fingerprint"])
+    state.update(phase="evaluated",updated_at=now(),engine_fingerprint=result["engine_fingerprint"],entrypoint=execution_entrypoint(),
+                 last_operation={"command":"evaluate","candidate":args.name,"file_exported":False,"status":outcome["status"]})
     write_json(run/"run.json",state)
     return {"candidate":str(destination),"evaluation_file":str(destination/"evaluation.json"),"status":outcome["status"],"errors":outcome["errors"],"pending":outcome["pending"],"warnings":outcome["warnings"],
             "budget":outcome["budget"],"readiness":outcome["readiness"],"roundtrip_verified":True,"delivery_brief":outcome["delivery_brief"],
@@ -1231,7 +1239,8 @@ def export(args):
     run,state,outcome,xml,root=read_candidate(args)
     folder=run/"candidates"/args.name
     output=run/"output"/args.name
-    state.update(phase="exporting",selected_candidate=args.name,updated_at=now())
+    state.update(phase="exporting",selected_candidate=args.name,updated_at=now(),entrypoint=execution_entrypoint(),
+                 last_operation={"command":"export","candidate":args.name,"file_exported":False,"status":"preparing"})
     write_json(run/"run.json",state)
     write_json(output/"delivery.json",{"file_exported":False,"status":"preparing","candidate":args.name})
     verification=engine.calculate(root,xml,cache=False)
@@ -1254,14 +1263,14 @@ def export(args):
         for old_name in ("配装草案.xml","改进配装.xml"):
             (output/old_name).unlink(missing_ok=True)
         write_json(output/"delivery.json",{"file_exported":False,"status":"blocked","candidate":args.name})
-        state.update(phase="evaluated",updated_at=now()); write_json(run/"run.json",state)
+        state.update(phase="evaluated",updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":False,"status":"blocked"}); write_json(run/"run.json",state)
         return {"status":"blocked","file_exported":False,"delivery_brief":outcome["delivery_brief"],"files":[str(output/"配装说明.html")],"errors":outcome["errors"],"pending":outcome["pending"],"next_actions":outcome["next_actions"],"next":"已生成诊断说明；先解决已知矛盾并重新 evaluate。"}
     filename="配装草案.xml" if outcome["status"]=="draft" else "改进配装.xml"
     write_text(output/filename,xml)
     (output/("改进配装.xml" if filename=="配装草案.xml" else "配装草案.xml")).unlink(missing_ok=True)
     write_json(output/"delivery.json",{"file_exported":True,"status":outcome["status"],"candidate":args.name,
                "files":{name:bx.digest((output/name).read_bytes()) for name in (filename,"配装说明.html")},"review_token":outcome["review_packet"]["token"]})
-    state.update(phase="exported",selected_candidate=args.name,updated_at=now())
+    state.update(phase="exported",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":True,"status":outcome["status"]})
     write_json(run/"run.json",state)
     summary=outcome["publication"]["facts_summary"]+"\n\n"+scenario_summary(verification)+"\n已导出 XML，通过本机计算、保存回读与最终复算；以上是所列配置下的快照。"
     if outcome["comparison_notes"]: summary+="前后口径差异："+"；".join(outcome["comparison_notes"])
@@ -1461,7 +1470,7 @@ def route_command(args):
     bx.require(output.suffix.lower()==".html" and output!=path,"--out 需要独立 HTML 文件。",location="/out",actual=str(output))
     root=engine.resolve_root(args.pob)
     state_path=output.with_suffix(".state.json")
-    initial={"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"phase":"preparing","file_exported":False,"input":str(path),"output":str(output),
+    initial={"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"entrypoint":execution_entrypoint(),"phase":"preparing","file_exported":False,"input":str(path),"output":str(output),
              "input_sha256":bx.digest(path.read_bytes()) if path.is_file() else None,"engine_fingerprint":engine.fingerprint(root)}
     if state_path.is_file():
         try:
@@ -1601,7 +1610,7 @@ def calculate_route(args):
     claims=facts.assess_claims(route.get("claims",[]),registry,{**stage_native,"budget":{**budget,"engine_fingerprint":calculation["engine_fingerprint"],"origin":"program_assessment"}},specification=route,engine_fingerprint=calculation["engine_fingerprint"])
     final_checked,final_warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
     checked["pending"]=[p for p in checked["pending"] if p not in validation_pending]+final_checked["pending"]
-    checked["claims"]=claims;checked["objective_coverage"]=final_checked["objective_coverage"]
+    checked["claims"]=claims;checked["objective_coverage"]=final_checked["objective_coverage"];checked["diagnostics"]=final_checked["diagnostics"]
     for old,final in zip(checked["stages"],final_checked["stages"]): old["instance_transitions"]=final["instance_transitions"]
     checked["pending"] += ["claim_check:"+c["claim_id"] for c in claims if c["check_status"] in {"refuted","unknown"}]
     checked["pending"] += ["claim_revision:"+c["claim_id"] for c in claims if any(d["code"] in {"claim_binding_stale","claim_binding_missing"} for d in c["diagnostics"])]
@@ -1631,7 +1640,7 @@ def calculate_route(args):
     bx.require(bx.digest(path.read_bytes())==input_sha256,"核对期间源路线变化，请重跑 route。",location="/input",input_file=str(path))
     evidence_file=output.with_suffix(".evidence.json")
     review_file=output.with_suffix(".review.json")
-    actions=delivery_actions({"status":checked["delivery_status"],"errors":checked["errors"],"pending":checked["pending"]},path,evidence_file,review_file,"/checked_route")
+    actions=delivery_actions({"status":checked["delivery_status"],"errors":checked["errors"],"pending":checked["pending"],"diagnostics":checked["diagnostics"]},path,evidence_file,review_file,"/checked_route")
     write_json(review_file,review)
     write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings})
     write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))
@@ -1657,7 +1666,7 @@ def workflow_status(args):
         root=engine.resolve_root(args.pob)
         current=engine.fingerprint(root)==state.get("engine_fingerprint")
         ready=unchanged and intact and current and state.get("file_exported") is True
-        return {"phase":state["phase"],"status":state.get("status"),"failure":state.get("failure"),"delivery_brief":state.get("delivery_brief"),"file_exported":ready,"input_unchanged":unchanged,"files_intact":intact,"engine_unchanged":current,
+        return {"entrypoint":execution_entrypoint(),"phase":state["phase"],"status":state.get("status"),"failure":state.get("failure"),"delivery_brief":state.get("delivery_brief"),"file_exported":ready,"input_unchanged":unchanged,"files_intact":intact,"engine_unchanged":current,
                 "state_file":str(location),"completed_stages":[sid for sid,row in state.get("stages",{}).items() if unchanged and current and (row.get("native_calculated") or row.get("status")=="calculated")],
                 "stage_summary":state.get("stages",{}),
                 "next_actions":state.get("next_actions",[]) if state.get("next_actions") and (ready or state["phase"]=="failed") else [{"action":"resume_route" if not ready else "resolve_route" if state.get("status") in {"blocked","draft"} else "review_delivery","input":str(source),"output":state.get("output"),"reference":"references/leveling.md"}],
@@ -1683,7 +1692,7 @@ def workflow_status(args):
             candidate.update(valid=False,reason=str(exc))
             actions.append({"action":"reevaluate","candidate":name,"reason":str(exc),"reference":"references/build.md"})
         records.append(candidate)
-    return {"run":str(run),"phase":state["phase"],"last_operation":state.get("last_operation"),"pob_path":state["pob_path"],"skill_version":VERSION,"intent":state.get("intent"),
+    return {"entrypoint":execution_entrypoint(),"run":str(run),"phase":state["phase"],"last_operation":state.get("last_operation"),"pob_path":state["pob_path"],"skill_version":VERSION,"intent":state.get("intent"),
             "candidates":[r["name"] for r in records],"candidate_records":records,"next_actions":actions}
 
 
@@ -1855,6 +1864,7 @@ def main(argv=None):
             for field in ("facts_summary","next","reply_policy","scope"):
                 if field in result and isinstance(result[field],str): result[field]=result[field][:1800]
             result.update(details_file=str(details),output_scope="终端摘要；完整数值、条件和全部缺口已保存在 details_file，请按字段读取。")
+        result["entrypoint"]=execution_entrypoint()
         result["runtime"]={**engine.PERFORMANCE,"elapsed_seconds":round(time.perf_counter()-started,4)}
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, allow_nan=False))
         return 0
@@ -1866,7 +1876,7 @@ def main(argv=None):
         try: record_command_failure(args,exc)
         except (ValueError,OSError,KeyError) as state_error: diagnostic["state_save_error"]=str(state_error)
         if args.command=="route": diagnostic["state_file"]=str(Path(args.out).resolve().with_suffix(".state.json"))
-        print(json.dumps({"ok": False, "error": str(exc),"diagnostic":diagnostic}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"ok": False, "error": str(exc),"diagnostic":diagnostic,"entrypoint":execution_entrypoint()}, ensure_ascii=False), file=sys.stderr)
         return 2
 
 

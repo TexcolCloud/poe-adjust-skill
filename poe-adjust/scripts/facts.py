@@ -197,7 +197,10 @@ def load_evidence(declarations, folder, context, *, root=None):
                 record.update({k: v for k, v in receipt.items() if k != "evidence_template"}, status="local_data_observed", origin="program_local_read")
             else:
                 path = (base / entry.get("path", "")).resolve()
-                bx.require(path.is_relative_to(base) and path.is_file() and path.stat().st_size <= 2_000_000, "资料必须是本任务工作区内不超过 2 MB 的文本文件；不读取平台内部输出目录。")
+                record["source_base"]=str(base)
+                bx.require(path.is_relative_to(base) and path.is_file() and path.stat().st_size <= 2_000_000,
+                           "资料须在声明源 JSON 所在目录及子目录内，且为不超过 2 MB 的文本；按 source_base 保存所需记录。",
+                           location="/path",expected={"source_base":str(base),"maximum_bytes":2_000_000,"type":"text file"},actual=str(path))
                 text = path.read_text(encoding="utf-8-sig")
                 excerpt = entry.get("excerpt")
                 bx.require(isinstance(excerpt, str) and excerpt.strip() and excerpt in text, "artifact.excerpt 必须对应实际文件内容。")
@@ -284,7 +287,7 @@ def claim_shape(claims, *, complete=True):
 
 
 def claim_references(claim):
-    embedded=[ref for _,ref in re.findall(r"\{\{(value|fact):([^{}]+)\}\}",claim["text"])]
+    embedded=[ref for _,ref in re.findall(r"\{\{(value|fact):([^{}]+)\}\}",claim.get("text",""))]
     return list(dict.fromkeys(claim.get("evidence_refs",[])+embedded+[c["reference"] for c in claim.get("checks",[])]))
 
 
@@ -408,7 +411,8 @@ def assess_claims(claims, evidence, native=None, *, specification=None, engine_f
                 if observed["status"] == "unresolved":
                     missing.append(reference)
                     diagnostics.append({"code":"unresolved_source","location":f"/claims/{index}/evidence_refs","reference":reference,
-                                        "action":"repair_evidence","message":observed.get("reason","来源尚未观测。")})
+                                        "action":"repair_evidence","message":observed.get("reason","来源尚未观测。"),
+                                        "source_diagnostic":observed.get("diagnostic")})
             except ValueError as exc:
                 missing.append(str(exc))
                 diagnostics.append({"code":"missing_reference","location":f"/claims/{index}/evidence_refs","reference":reference,
@@ -480,6 +484,33 @@ def objective_coverage(objectives, evidence, claims):
                      "status":"model_assessed" if assessed else "unresolved","scope":"目标拆分与证据解释由模型负责，存在关联不证明目标已经达到。"})
         if not assessed: pending.append("objective:"+key)
     return rows,pending
+
+
+def goal_review_diagnostics(assessment, claims):
+    """Locate incomplete overall-review references; never choose the conclusion."""
+    indexed={c["claim_id"]:c for c in claims}
+    available=sorted(c["claim_id"] for c in claims if "goal" in c.get("subjects",[]) and c.get("status")=="model_assessed")
+    diagnostics=[]
+    def add(code, location, expected, actual, message):
+        diagnostics.append({"code":code,"category":"input","subject":"goal_assessment","status":"unknown",
+                            "action":"edit_input","location":location,"expected":expected,"actual":actual,
+                            "available_goal_claim_ids":available,"message":message})
+    ids=assessment.get("goal_claim_ids",[])
+    if not ids:
+        add("goal_claim_ids_missing","/assessment/goal_claim_ids","nonempty current goal claim ID array",ids,"选定当前总体判断；各项目标的关联另由 objective_coverage 核对。")
+    for index,key in enumerate(ids):
+        claim=indexed.get(key)
+        actual={k:claim.get(k) for k in ("claim_id","subjects","status")} if claim else {"claim_id":key}
+        expected={"subjects_include":"goal","status":"model_assessed"}
+        if claim is None:
+            add("goal_claim_missing",f"/assessment/goal_claim_ids/{index}",expected,actual,"未找到当前判断 ID；使用实际已有记录或补充总体判断。")
+        elif "goal" not in claim.get("subjects",[]):
+            add("goal_claim_subject_missing",f"/assessment/goal_claim_ids/{index}",expected,actual,"该判断未关联总体 goal；选定适用的总体判断，或核对其用途后修改 subjects。")
+        elif claim.get("status")!="model_assessed":
+            add("goal_claim_unresolved",f"/assessment/goal_claim_ids/{index}",expected,actual,"总体判断仍有未解决项；处理其当前诊断与证据，不直接填写输出状态。")
+    if not assessment.get("scope","").strip():
+        add("goal_scope_missing","/assessment/scope","nonempty actual review scope",assessment.get("scope"),"说明实际评审范围，覆盖已确认用户目标。")
+    return diagnostics
 
 
 def delivery_brief(status, errors, pending):

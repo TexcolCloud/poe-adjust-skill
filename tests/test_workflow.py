@@ -415,6 +415,26 @@ class RouteTests(unittest.TestCase):
     def check(self):
         return routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,equipment=self.equipment,evidence=self.evidence)
 
+    def test_goal_reference_diagnostics_distinguish_missing_subject_and_unreviewed_claims(self):
+        claims=[{"claim_id":"overall","status":"model_assessed","subjects":["goal"]},
+                {"claim_id":"detail","status":"model_assessed","subjects":["objective:direction"]},
+                {"claim_id":"unreviewed","status":"unresolved","subjects":["goal"]}]
+        self.route["assessment"]={"goal_claim_ids":["absent","detail","unreviewed"],"scope":"Current declared direction"}
+        def validate():
+            return routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,
+                                   equipment=self.equipment,evidence=self.evidence,claims=claims)[0]
+        checked=validate()
+        self.assertIn("goal_assessment",checked["pending"])
+        self.assertEqual([d["location"] for d in checked["diagnostics"]],
+                         ["/assessment/goal_claim_ids/0","/assessment/goal_claim_ids/1","/assessment/goal_claim_ids/2"])
+        self.assertEqual([d["code"] for d in checked["diagnostics"]],
+                         ["goal_claim_missing","goal_claim_subject_missing","goal_claim_unresolved"])
+        self.assertTrue(all(d["available_goal_claim_ids"]==["overall"] for d in checked["diagnostics"]))
+        self.route["assessment"]["goal_claim_ids"]=["overall"]
+        checked=validate();self.assertNotIn("goal_assessment",checked["pending"]);self.assertEqual(checked["diagnostics"],[])
+        self.route["assessment"]["scope"]="  "
+        self.assertEqual(validate()["diagnostics"][0]["location"],"/assessment/scope")
+
     def test_mapping_types_rejected_at_real_route_entry_before_queries(self):
         for value in ({"evidence_id":"user"},["user"],None,False,12):
             with self.subTest(value=value),tempfile.TemporaryDirectory() as folder:
@@ -822,6 +842,17 @@ class EvidenceTests(unittest.TestCase):
             registry=facts.load_evidence([declaration],folder,{})
             self.assertEqual(registry["price"]["status"],"artifact_observed")
             self.assertEqual(registry["price"]["origin"],"agent_supplied_artifact")
+            self.assertEqual(registry["price"]["source_base"],str(folder.resolve()))
+            nested=folder/"declarations";nested.mkdir()
+            rejected=facts.load_evidence([dict(declaration,path="../source.txt")],nested,{})
+            self.assertEqual(rejected["price"]["status"],"unresolved")
+            diagnostic=rejected["price"]["diagnostic"]
+            self.assertEqual(diagnostic["location"],"/evidence/0/path")
+            self.assertEqual(diagnostic["expected"]["source_base"],str(nested.resolve()))
+            self.assertEqual(diagnostic["actual"],str((folder/"source.txt").resolve()))
+            claim={"claim_id":"explanation","text":"Interpretation","subjects":["goal"],"evidence_refs":["price"]}
+            assessed=facts.assess_claims([claim],rejected)[0]
+            self.assertEqual(assessed["diagnostics"][0]["source_diagnostic"],diagnostic)
             with self.assertRaises(ValueError):facts.load_evidence([dict(declaration,status="verified")],folder,{})
             declaration["excerpt"]="invented price";self.assertEqual(facts.load_evidence([declaration],folder,{})["price"]["status"],"unresolved")
     def test_native_pointer_must_resolve_in_current_calculation(self):
@@ -1473,6 +1504,9 @@ class EditAndRecoveryTests(unittest.TestCase):
         self.assertTrue(result["capabilities"]["observed_native_feature"])
         self.assertEqual(result["capabilities"]["timeline"],resources.capabilities()["timeline"])
         self.assertEqual(result["delivery_statuses"],["blocked","draft","scoped_result"])
+        self.assertEqual(result["entrypoint"]["script"],str(Path(poe.__file__).resolve()))
+        self.assertEqual(result["entrypoint"]["python"],str(Path(sys.executable).resolve()))
+        self.assertEqual(result["entrypoint"]["skill_version"],poe.VERSION)
 
     def test_save_direction_then_increment_stage_with_generated_handles_and_retry(self):
         first=self.edit({"set":{"name":"Provisional direction","goal":"user direction"}})
@@ -1481,9 +1515,35 @@ class EditAndRecoveryTests(unittest.TestCase):
         second=self.edit(request,first["revision"]);saved=poe.read_json(self.source);gem=saved["stages"][0]["skill_groups"][0]["gems"][0]
         self.assertTrue(saved["stages"][0]["stage_id"]);self.assertTrue(gem["instance_id"])
         self.assertEqual(second["stage_instances"][0]["instances"][0]["instance_id"],gem["instance_id"])
-        self.assertTrue(self.edit(request,first["revision"])["replayed"])
+        receipt=poe.read_json(self.source.with_suffix(".edit.json"))
+        receipt["entrypoint"]={"script":"previous location","python":"previous runtime"}
+        poe.write_json(self.source.with_suffix(".edit.json"),receipt)
+        replay=self.edit(request,first["revision"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["entrypoint"]["script"],str(Path(poe.__file__).resolve()))
+        self.assertEqual(poe.read_json(self.source.with_suffix(".edit.json"))["entrypoint"],replay["entrypoint"])
         self.assertEqual(poe.read_json(self.source),saved)
         self.assertEqual(routes.gem_ids(saved),["FutureSkill"])
+
+    def test_partial_claim_can_be_saved_but_requires_completion_before_assessment(self):
+        for kind in ("route","plan"):
+            for body in ({"claim_id":"partial"},{"claim_id":"partial","subjects":["goal"]}):
+                with self.subTest(kind=kind,body=body),patch.object(engine,"calculate") as native:
+                    self.source=self.folder/(kind+("-subject" if "subjects" in body else "-id")+".json")
+                    first=self.edit({"set":{"claims":[body]}},kind=kind)
+                    document=poe.read_json(self.source)
+                    self.assertEqual(document["claims"][0]["claim_id"],"partial")
+                    self.assertNotIn("text",document["claims"][0])
+                    with self.assertRaises(bx.ContractError) as error:
+                        facts.assess_claims(document["claims"],{},specification=document,engine_fingerprint="fixture")
+                    self.assertEqual(error.exception.diagnostic["location"],"/claims/0/text")
+                    self.edit({"set":{"claims":[{"claim_id":"partial","text":"Current explanation","subjects":["goal"],"evidence_refs":["basis"]}],
+                                      "evidence":[{"evidence_id":"basis","kind":"user_statement","subject":"goal","text":"Actual user direction"}]}},
+                              first["revision"],kind=kind)
+                    completed=poe.read_json(self.source)
+                    rows=facts.assess_claims(completed["claims"],{"basis":{"status":"user_declared"}},
+                                             specification=completed,engine_fingerprint="fixture")
+                    self.assertEqual(rows[0]["status"],"model_assessed");native.assert_not_called()
 
     def test_record_patch_retains_other_stages_null_is_data_and_remove_is_explicit(self):
         first=self.edit({"set":{"stages":[{"stage_id":"early","name":"Early"},{"stage_id":"later","name":"Later"}],"allow_mule":False}})
@@ -1537,6 +1597,8 @@ class EditAndRecoveryTests(unittest.TestCase):
         self.assertEqual(state["failure"]["diagnostic"]["location"],"/stages/0/snapshot/operations/tree")
         status=poe.workflow_status(args(route_state=str(output.with_suffix(".state.json"))))
         self.assertEqual(status["next_actions"][0]["action"],"edit_input")
+        self.assertEqual(state["entrypoint"]["script"],str(Path(poe.__file__).resolve()))
+        self.assertEqual(status["entrypoint"],state["entrypoint"])
 
     def test_failed_resume_keeps_matching_progress_but_changed_input_invalidates_it(self):
         output=self.folder/"route.html";state_file=output.with_suffix(".state.json")
@@ -1579,6 +1641,7 @@ class EditAndRecoveryTests(unittest.TestCase):
         self.assertEqual(code,0);reply=json.loads(stdout.getvalue());self.assertLess(len(stdout.getvalue()),12000)
         saved=poe.read_json(reply["receipt_file"]);self.assertEqual(len(saved["stage_instances"]),200)
         self.assertEqual(reply["next_actions"][1]["pointer"],"/stage_instances")
+        self.assertEqual(reply["entrypoint"],saved["entrypoint"])
 
     def test_partial_array_replacement_is_rejected_without_mutation(self):
         first=self.edit({"set":{"stages":[{"stage_id":"a","skill_groups":[{"name":"first","gems":[]},{"name":"second","gems":[]}]}]}})
@@ -1763,13 +1826,22 @@ class RealEngineTests(unittest.TestCase):
         return poe.evaluate(args(run=str(self.run_dir), plan=str(path), name=name))
 
     def test_01_real_local_refine_export_and_source_preservation(self):
+        initial=poe.read_json(self.run_dir/"run.json")
+        self.assertEqual(initial["entrypoint"]["script"],str(Path(poe.__file__).resolve()))
+        initial["last_operation"]={"command":"evaluate","candidate":"refine","status":"blocked","reason":"Prior input failure"}
+        poe.write_json(self.run_dir/"run.json",initial)
         result = self.evaluate_plan(self.refine, "refine")
         self.assertEqual(result["status"], "draft", result["errors"])
         self.assertTrue(result["roundtrip_verified"])
         self.assertTrue(any("negative" in warning for warning in result["baseline_warnings"]))
         self.assertNotEqual(result["comparison"]["CombinedDPS"]["delta"], 0)
         self.assertIsNone(result["comparison"]["CombinedDPS"]["percent"])
+        operation=poe.read_json(self.run_dir/"run.json")["last_operation"]
+        self.assertEqual(operation["status"],result["status"]);self.assertNotIn("reason",operation)
         output = poe.export(args(run=str(self.run_dir), name="refine"))
+        operation=poe.read_json(self.run_dir/"run.json")["last_operation"]
+        self.assertEqual(operation["command"],"export");self.assertEqual(operation["status"],output["status"])
+        self.assertTrue(operation["file_exported"]);self.assertNotIn("reason",operation)
         for path in output["files"]: self.assertTrue(Path(path).is_file())
         final=poe.read_json(self.run_dir/"output/refine/final-assessment.json")
         self.assertTrue(final["comparison_notes"])
@@ -2586,6 +2658,41 @@ class RealEngineTests(unittest.TestCase):
         report=(self.run_dir/"output/publication/配装说明.html").read_text(encoding="utf-8")
         for measurement in exported["publication"]["measurements"]:
             self.assertIn(measurement["text"],report)
+
+    def test_43_goal_reference_repair_is_located_without_changing_the_build(self):
+        plan=copy.deepcopy(self.refine)
+        plan["claims"]=[{"claim_id":"overall","text":"Limited overall interpretation","subjects":["goal"],"evidence_refs":["native:candidate#/stats/Life"]},
+                        {"claim_id":"detail","text":"A detail interpretation","subjects":["objective:direction"],"evidence_refs":["native:candidate#/stats/Life"]}]
+        plan["assessment"]={"goal_claim_ids":["detail","overall"],"scope":"Fixture scope, not a player recommendation"}
+        source=Path(self.temp.name)/"goal-contract.json";request=Path(self.temp.name)/"goal-contract-changes.json"
+        poe.write_json(request,{"set":plan})
+        first=poe.edit_document(args(invoked=True,kind="plan",file=str(source),changes=str(request),if_sha256=None))
+        result=poe.evaluate(args(run=str(self.run_dir),plan=str(source),name="goal-contract"))
+        self.assertIn("goal_assessment",result["pending"])
+        repair=next(a for a in result["next_actions"] if a["action"]=="repair_input")
+        diagnostic=next(d for d in repair["diagnostics"] if d["code"]=="goal_claim_subject_missing")
+        self.assertEqual(diagnostic["location"],"/assessment/goal_claim_ids/0")
+        self.assertEqual(diagnostic["actual"]["claim_id"],"detail")
+        before=poe.read_json(self.run_dir/"candidates/goal-contract/evaluation.json")["result"]["stats"]
+        poe.write_json(request,{"replace":{"/assessment/goal_claim_ids":["overall"]}})
+        poe.edit_document(args(invoked=True,kind="plan",file=str(source),changes=str(request),if_sha256=first["revision"]))
+        revised=poe.evaluate(args(run=str(self.run_dir),plan=str(source),name="goal-contract"))
+        self.assertNotIn("goal_assessment",revised["pending"])
+        self.assertEqual(poe.read_json(self.run_dir/"candidates/goal-contract/evaluation.json")["result"]["stats"],before)
+
+    def test_44_reevaluation_invalidates_old_delivery_without_deleting_artifacts(self):
+        plan=copy.deepcopy(self.refine)
+        self.evaluate_plan(plan,"delivery-context")
+        exported=poe.export(args(run=str(self.run_dir),name="delivery-context"))
+        artifacts={path:Path(path).read_bytes() for path in exported["files"]}
+        plan["summary"]="A revised interpretation of the same build inputs."
+        self.evaluate_plan(plan,"delivery-context")
+        status=poe.workflow_status(args(run=str(self.run_dir)))
+        current=next(c for c in status["candidate_records"] if c["name"]=="delivery-context")
+        self.assertTrue(current["valid"]);self.assertFalse(current["file_exported"])
+        receipt=poe.read_json(self.run_dir/"output/delivery-context/delivery.json")
+        self.assertFalse(receipt["file_exported"])
+        self.assertTrue(all(Path(path).read_bytes()==content for path,content in artifacts.items()))
 
     def test_39_final_review_and_optional_url_survive_export_and_failed_render_is_not_success(self):
         plan=copy.deepcopy(self.refine)
