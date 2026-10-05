@@ -13,6 +13,8 @@ import zlib
 MAX_XML = 8 * 1024 * 1024
 GEM_FIELDS = {"skill_id": "skillId", "level": "level", "quality": "quality", "enabled": "enabled", "enable_global1": "enableGlobal1", "enable_global2": "enableGlobal2", "count": "count", "skill_part": "skillPart", "skill_stage_count": "skillStageCount", "skill_minion": "skillMinion"}
 GROUP_FIELDS = {"enabled": "enabled", "slot": "slot", "label": "label", "include_in_full_dps": "includeInFullDPS", "main_active_skill": "mainActiveSkill", "group_count": "groupCount"}
+PLAN_FIELDS={"schema_version", "name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "inventory", "assumptions", "migration_steps", "legality_notes", "scenario", "claims", "usage", "timeline", "assessment", "evidence"}
+OPERATION_FIELDS={"gems", "groups", "replace_skills", "items", "equip", "tree", "level", "main_group", "config", "weapon_set"}
 
 
 class ContractError(ValueError):
@@ -196,14 +198,29 @@ def update_group(group, values):
         group.set(GROUP_FIELDS[key],attr(value))
 
 
+def plan_shape(plan, *, complete=True):
+    require_keys(plan,PLAN_FIELDS,"/","计划包含未知字段。")
+    if complete or "mode" in plan: require(plan.get("mode") in {"refine","rebuild"},"mode 应为 refine 或 rebuild。",location="/mode",expected=["refine","rebuild"],actual=plan.get("mode"))
+    if complete: require(isinstance(plan.get("summary"),str) and plan["summary"].strip(),"请说明方案目的。",location="/summary",expected="nonempty string",actual=plan.get("summary"))
+    operations=plan.get("operations",{})
+    require_keys(operations,OPERATION_FIELDS,"/operations","operations 包含未知操作。")
+    for key in ("tree","config"):
+        if key in operations: require(isinstance(operations[key],dict),key+" 应为对象。",location="/operations/"+key,expected="object",actual=type(operations[key]).__name__)
+    for key in ("level","main_group","weapon_set"):
+        if key in operations: require(type(operations[key]) is int and operations[key]>0,key+" 应为正整数。",location="/operations/"+key,expected="positive integer",actual=operations[key])
+    for key in ("gems","groups","replace_skills","items","equip"):
+        if key in operations:
+            require(isinstance(operations[key],list),key+" 应为数组。",location="/operations/"+key,expected="array",actual=type(operations[key]).__name__)
+            for index,row in enumerate(operations[key]): require(isinstance(row,dict),"操作条目需要对象。",location=f"/operations/{key}/{index}",expected="object",actual=type(row).__name__)
+    for key in ("claims","usage","evidence","inventory","shopping"):
+        if key in plan: require(isinstance(plan[key],list),key+" 应为数组。",location="/"+key,expected="array",actual=type(plan[key]).__name__)
+    return plan
+
+
 def apply_plan(source, plan, native=None):
-    allowed = {"schema_version", "name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "inventory", "assumptions", "migration_steps", "legality_notes", "scenario", "claims", "usage", "assessment", "evidence"}
-    require_keys(plan,allowed,"/","计划包含未知字段。")
-    require(plan.get("mode") in {"refine", "rebuild"}, "mode 应为 refine 或 rebuild。")
-    require(isinstance(plan.get("summary"), str) and plan["summary"].strip(), "请说明方案目的。")
+    plan_shape(plan)
     root = copy.deepcopy(source)
     operations = plan.get("operations", {})
-    require_keys(operations,{"gems", "groups", "replace_skills", "items", "equip", "tree", "level", "main_group", "config", "weapon_set"},"/operations","operations 包含未知操作。")
     build = root.find("Build")
     if "level" in operations:
         require(type(operations["level"]) is int and operations["level"] > 0, "level 应为正整数。")

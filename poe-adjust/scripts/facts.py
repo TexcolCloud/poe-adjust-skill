@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from html.parser import HTMLParser
 import json
+import math
+import operator
 from pathlib import Path
 import re
 from urllib.parse import quote, urlsplit
@@ -194,23 +196,83 @@ def load_evidence(declarations, folder, context, *, root=None):
 def resolve_reference(reference, evidence, native=None):
     bx.require(isinstance(reference, str) and reference, "证据引用应为非空字符串。")
     if reference.startswith("native:"):
+        evidence.pop(reference,None)  # Missing current fields never reuse an older value.
         name, separator, locator = reference[len("native:"):].partition("#")
         bx.require(separator and locator and name in (native or {}), "原生引用须指定本次结果及字段，例如 native:candidate#/stats/Life。")
         calculation = native[name]
         value = pointer(calculation, locator)
         record = {"evidence_id": reference, "kind": "native", "subject": name, "locator": locator, "value": value,
-                  "status": "native_observed", "origin": "program_calculation", "digest": bx.digest(json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)),
-                  "context": {"engine_fingerprint": calculation.get("engine_fingerprint"), "xml_sha256": calculation.get("xml_sha256") or calculation.get("input_xml_sha256") or (bx.digest(calculation["xml"]) if calculation.get("xml") else None)}}
+                  "status": "native_observed", "origin": calculation.get("origin","program_calculation"), "digest": bx.digest(json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)),
+                  "context": {"engine_fingerprint": calculation.get("engine_fingerprint"), "xml_sha256": calculation.get("xml_sha256") or calculation.get("input_xml_sha256") or (bx.digest(calculation["xml"]) if calculation.get("xml") else None),
+                              "config_values":calculation.get("config_values",{}),"class_id":calculation.get("class_id"),"ascendancy_id":calculation.get("ascendancy_id"),"main_skill":calculation.get("main_skill")},
+                  "meaning":reference_meaning(calculation,locator)}
+        record["formatted_fact"]=format_observation(record)
         evidence[reference] = record
     bx.require(reference in evidence, "未找到证据引用：" + reference)
     return evidence[reference]
+
+
+def reference_meaning(calculation, locator):
+    """Keep current native labels, qualified identities and uncertainty together."""
+    tokens=locator.split("/")[1:]
+    metric=tokens[-1] if tokens else ""
+    metadata=calculation.get("stat_metadata",{})
+    meanings=metadata.get("Minion"+metric,metadata.get(metric,[])) if tokens and tokens[0]=="minion" else metadata.get(metric,[]) if tokens and tokens[0]=="stats" else []
+    units=[]
+    for entry in meanings:
+        fmt,label=entry.get("format") or "",entry.get("label") or ""
+        # Interpret the observed display contract, never the metric identifier.
+        unit=("%" if "%" in fmt else "s" if re.search(r"[dfs]s$",fmt) else "m" if fmt.endswith("fm") else
+              "/hit" if "per hit" in label.casefold() else "/s" if re.search(r"\b(rate|dps)\b|per second",label,re.I) else None)
+        if unit not in units: units.append(unit)
+    identity={}
+    for end in range(len(tokens),0,-1):
+        try: parent=pointer(calculation,"/"+"/".join(tokens[:end]))
+        except ValueError: continue
+        if isinstance(parent,dict) and any(key in parent for key in ("id","skill_id","skill_ref","stage_id")):
+            identity={key:parent[key] for key in ("id","skill_id","skill_ref","stage_id","name","qualified_name","owner_class_id","owner_class_name","ascendancy_internal_name","type","is_ascendancy_start","actor") if key in parent}
+            break
+    multipliers={e.get("display_multiplier",1) for e in meanings}
+    unambiguous=len(units)==1 and len(multipliers)==1
+    return {"label":" / ".join(dict.fromkeys(e.get("display_label",e.get("label",metric)) for e in meanings)) or metric or locator,
+            "unit":units[0] if unambiguous else None,"unit_status":"observed_display" if unambiguous and units[0] else "unknown",
+            "display_multiplier":next(iter(multipliers)) if unambiguous else 1,
+            "definitions":meanings,"object_identity":identity,
+            "actor":identity.get("actor") or (meanings[0].get("actor") if meanings else None),
+            "status":"native_display_observed" if meanings else "identity_observed" if identity else "unknown",
+            "scope":"标签和格式来自当前安装；未注明单位保持未知。显示定义不证明取得、效果覆盖或实战可行。"}
+
+
+def format_observation(record):
+    value=record.get("value")
+    meaning=record.get("meaning",{})
+    if type(value) in (int,float) and math.isfinite(value):
+        value=format(value*meaning.get("display_multiplier",1),".10g")
+    else: value=json.dumps(value,ensure_ascii=False,sort_keys=True,allow_nan=False)
+    identity=meaning.get("object_identity",{})
+    subject=identity.get("qualified_name") or identity.get("skill_ref") or {"candidate":"当前方案","baseline":"原方案","budget":"预算核验","resources":"资源核验"}.get(record.get("subject"),record.get("subject",""))
+    if meaning.get("actor"): subject+="（"+{"player":"玩家面板","minion":"召唤物面板","mirage":"幻影"}.get(meaning["actor"],meaning["actor"])+"）"
+    unit=meaning.get("unit")
+    suffix=unit if unit else "（显示单位未注明）" if type(record.get("value")) in (int,float) else ""
+    return f"{subject} · {meaning.get('label',record.get('locator',''))} = {value}{suffix}"
+
+
+def check_value(actual, op, expected):
+    """A three-valued scalar comparison shared by claims and stage checks."""
+    comparisons={"eq":operator.eq,"ge":operator.ge,"le":operator.le}
+    bx.require(op in comparisons,"op 使用 eq/ge/le。",expected=sorted(comparisons),actual=op)
+    bx.require(type(expected) in (int,float,bool,str) and (type(expected) is not float or math.isfinite(expected)),"检查目标为有限数值、布尔或字符串。",actual=expected)
+    numeric=type(actual) in (int,float) and type(expected) in (int,float)
+    comparable=type(actual) in (int,float,bool,str) and (type(actual) is not float or math.isfinite(actual)) and (numeric or op=="eq" and type(actual) is type(expected))
+    if not comparable: return "unknown"
+    return "supported" if comparisons[op](actual,expected) else "refuted"
 
 
 def assess_claims(claims, evidence, native=None):
     bx.require(isinstance(claims, list), "claims 应为数组。")
     result, seen = [], set()
     for index, entry in enumerate(claims):
-        bx.require(isinstance(entry, dict) and set(entry) <= {"claim_id", "text", "subjects", "evidence_refs", "conditions", "uncertainties"}, "claim 字段无效，判断状态由程序标注。")
+        bx.require_keys(entry,{"claim_id", "text", "subjects", "evidence_refs", "conditions", "uncertainties", "checks"},f"/claims/{index}","claim 字段无效，判断状态由程序标注。")
         key = entry.get("claim_id")
         bx.require(isinstance(key, str) and key and key not in seen, "claim_id 应唯一且非空。")
         seen.add(key)
@@ -221,8 +283,15 @@ def assess_claims(claims, evidence, native=None):
             bx.require(isinstance(row[field], list) and all(isinstance(v, str) and v.strip() for v in row[field]), field + " 应为非空字符串数组。")
         bx.require(row["subjects"], "claim 需要关联具体 subjects。")
         missing, diagnostics = [], []
-        embedded=re.findall(r"\{\{value:([^{}]+)\}\}",row["text"])
-        references=list(dict.fromkeys(row["evidence_refs"]+embedded))
+        checks=entry.get("checks",[])
+        bx.require(isinstance(checks,list),"checks 为引用到实际值的检查数组。",location=f"/claims/{index}/checks",expected="array",actual=type(checks).__name__)
+        for check_index,check in enumerate(checks):
+            bx.require_keys(check,{"reference","op","value"},f"/claims/{index}/checks/{check_index}")
+            bx.require(set(check)=={"reference","op","value"},"每项检查需要 reference/op/value。",location=f"/claims/{index}/checks/{check_index}",expected=["reference","op","value"],actual=sorted(check))
+            bx.require(isinstance(check["reference"],str) and check["reference"].startswith("native:"),"数值检查使用当前程序返回的 native 引用。",location=f"/claims/{index}/checks/{check_index}/reference",expected="native reference",actual=check["reference"])
+            check_value(None,check["op"],check["value"])
+        embedded=[ref for _,ref in re.findall(r"\{\{(value|fact):([^{}]+)\}\}",row["text"])]
+        references=list(dict.fromkeys(row["evidence_refs"]+embedded+[c["reference"] for c in checks]))
         row["evidence_refs"]=references
         for reference in references:
             try:
@@ -236,20 +305,29 @@ def assess_claims(claims, evidence, native=None):
                 diagnostics.append({"code":"missing_reference","location":f"/claims/{index}/evidence_refs","reference":reference,
                                     "action":"repair_evidence","message":str(exc)})
         def substitute(match):
-            ref=match.group(1)
+            mode,ref=match.group(1),match.group(2)
             observed=evidence.get(ref,{})
             value=observed.get("value")
+            if mode=="fact" and observed.get("status")=="native_observed": return observed["formatted_fact"]
             if type(value) not in (int,float,bool,str) or observed.get("status")=="unresolved":
                 missing.append("inline_value:"+ref)
                 return "[未取得实际值："+ref+"]"
             return format(value,".10g") if type(value) in (int,float) else json.dumps(value,ensure_ascii=False) if type(value) is bool else value
-        row["rendered_text"]=re.sub(r"\{\{value:([^{}]+)\}\}",substitute,row["text"])
-        row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] else "unresolved"
+        row["rendered_text"]=re.sub(r"\{\{(value|fact):([^{}]+)\}\}",substitute,row["text"])
+        checked=[]
+        for check_index,check in enumerate(checks):
+            observation=evidence.get(check["reference"],{})
+            verdict=check_value(observation.get("value"),check["op"],check["value"]) if observation.get("status")=="native_observed" else "unknown"
+            checked.append({**check,"actual":observation.get("value"),"status":verdict})
+            if verdict!="supported": diagnostics.append({"code":"claim_check_"+verdict,"location":f"/claims/{index}/checks/{check_index}","reference":check["reference"],"expected":check["value"],"actual":observation.get("value"),"action":"revise_conclusion","message":"此数值检查"+("与当前值矛盾。" if verdict=="refuted" else "尚无可比较实际值。")})
+        row["checks"]=checked
+        row["check_status"]="refuted" if any(c["status"]=="refuted" for c in checked) else "unknown" if any(c["status"]=="unknown" for c in checked) else "supported" if checked else "not_requested"
+        row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] and row["check_status"] in {"supported","not_requested"} else "unresolved"
         row["missing_evidence"] = missing
         row["diagnostics"] = diagnostics
-        row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
+        row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "meaning", "formatted_fact", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
                                for ref in row["evidence_refs"] if ref in evidence and evidence[ref].get("status") != "unresolved"]
-        row["scope"] = "model_assessed 表示有引用的模型判断，程序仅核对引用存在及状态；数值见 observations，文字蕴含关系与因果并未自动证明。最终复核另按当前 review token 绑定。"
+        row["scope"] = "checks 仅证明所声明数值命题；model_assessed 仍为模型判断。完整事实含本机标签、单位及上下文，自由文字蕴含关系与因果未自动证明。"
         result.append(row)
     return result
 
@@ -336,25 +414,20 @@ def final_review(specification, evidence, claims, observations, assessment):
 
 def entry_checks(checks, native, claims, subject):
     """Compare model-chosen thresholds with current measurements; no gameplay targets here."""
-    import math
-    import operator
     bx.require(isinstance(checks, list), "entry_checks 应为数组。")
-    comparisons = {"eq": operator.eq, "ge": operator.ge, "le": operator.le}
     rows, pending, seen = [], [], set()
     for check in checks:
         bx.require(isinstance(check, dict) and set(check) == {"check_id", "locator", "op", "value", "claim_id"}, "entry_checks 使用 check_id/locator/op/value/claim_id。")
         key = check["check_id"]
-        bx.require(isinstance(key, str) and key and key not in seen and check["op"] in comparisons, "check_id 应唯一；op 使用 eq/ge/le。")
+        bx.require(isinstance(key, str) and key and key not in seen, "check_id 应唯一。")
         seen.add(key)
         expected = check["value"]
-        bx.require(type(expected) in (int, float, bool, str) and (type(expected) is not float or math.isfinite(expected)), "检查目标需要有限数字、布尔值或字符串。")
+        check_value(None,check["op"],expected)
         row = dict(check, status="unknown", actual=None)
         try:
             value = pointer(native, check["locator"])
-            scalar = type(value) in (int, float, bool, str)
-            numeric = type(value) in (int, float) and type(expected) in (int, float)
-            bx.require(scalar and (type(value) is not float or math.isfinite(value)) and (numeric or check["op"] == "eq" and type(value) is type(expected)), "本次字段缺少同类型可比较值。")
-            row.update(actual=value, status="met" if comparisons[check["op"]](value, expected) else "unmet")
+            verdict=check_value(value,check["op"],expected)
+            row.update(actual=value,status={"supported":"met","refuted":"unmet","unknown":"unknown"}[verdict])
         except ValueError as exc: row["reason"] = str(exc)
         linked = next((c for c in claims if c["claim_id"] == check["claim_id"] and subject in c["subjects"] and c["status"] == "model_assessed"), None)
         row["basis_status"] = "model_assessed" if linked else "unresolved"

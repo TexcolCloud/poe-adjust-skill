@@ -36,6 +36,83 @@ def timing(rows):
     return (rows[0],False) if len(windows)==1 else ({},True)
 
 
+def timeline_assessment(result, timeline):
+    """Replay discrete payments on one clock using constant native net regen.
+
+    This bounded projection excludes leech, recharge and flask refills. Channels
+    and automatic effects that cannot be reduced to discrete payments stay unknown.
+    """
+    bx.require_keys(timeline,{"duration_seconds","events"},"/timeline")
+    duration=number(timeline,"duration_seconds")
+    bx.require(duration is not None and duration>0,"时间线需要有限正周期。",location="/timeline/duration_seconds",expected="positive seconds",actual=timeline.get("duration_seconds"))
+    events=timeline.get("events")
+    bx.require(isinstance(events,list) and len(events)<=1000,"events 为至多1000次动作的数组；分批表达更长计划。",location="/timeline/events",expected="array (engineering limit 1000)",actual=type(events).__name__)
+    skills={s["skill_ref"]:s for s in result.get("active_skills",[]) if s.get("skill_ref") and not s.get("disabled")}
+    rows=[]; diagnostics=[]; pending=[]; errors=[]; previous={}
+    for index,event in enumerate(events):
+        path=f"/timeline/events/{index}"
+        bx.require_keys(event,{"skill_ref","at"},path)
+        ref,at=event.get("skill_ref"),number(event,"at")
+        bx.require(ref in skills,"时间线动作使用当前原生 skill_ref。",location=path+"/skill_ref",expected=list(skills),actual=ref)
+        bx.require(at is not None and 0<=at<duration,"动作时间位于周期内。",location=path+"/at",expected={"minimum":0,"exclusive_maximum":duration},actual=event.get("at"))
+        rows.append({**event,"source_index":index})
+    rows.sort(key=lambda row:(row["at"],row["source_index"]))
+    for event in rows:
+        ref,at=event["skill_ref"],event["at"]
+        rate=native_rate(skills[ref])
+        if skills[ref].get("trigger"):
+            pending.append("capability:timeline:trigger:"+ref)
+        elif rate is None or rate<=0: pending.append("capability:timeline:frequency:"+ref)
+        elif ref in previous and at-previous[ref]<1/rate-1e-8:
+            message="时间线同技能动作间隔短于当前原生频率："+ref
+            errors.append(message);diagnostics.append({"code":"timeline_frequency_exceeded","location":f"/timeline/events/{event['source_index']}/at","expected":{"minimum_interval_seconds":1/rate},"actual":at-previous[ref],"message":message,"action":"edit_input"})
+        previous[ref]=at
+    # The wraparound interval is also part of a claimed repeating cycle.
+    for ref,last in previous.items():
+        first=next(e["at"] for e in rows if e["skill_ref"]==ref);rate=native_rate(skills[ref])
+        if rate and rate>0 and duration-last+first<1/rate-1e-8:
+            errors.append("时间线重复周期的同技能间隔不足："+ref)
+    eb=result.get("resource_rules",{}).get("energy_shield_protects_mana")
+    records=[]
+    for resource,cost_key in (("Mana","Mana"),("Life","Life"),("EnergyShield","ES")):
+        stats=result["stats"]
+        pool=number(stats,resource+"Unreserved")
+        if pool is None: pool=number(stats,resource)
+        if resource=="EnergyShield" and pool is not None and number(stats,"EnergyShieldRecoveryCap") is not None: pool=min(pool,stats["EnergyShieldRecoveryCap"])
+        regen=number(stats,"Net"+resource+"Regen")
+        if regen is None and number(stats,resource+"RegenRecovery") is not None and number(stats,resource+"Degen") is not None: regen=stats[resource+"RegenRecovery"]-stats[resource+"Degen"]
+        payments={ref:payment(s.get("costs",{}),cost_key,eb,s.get("no_cost") is True) for ref,s in skills.items()}
+        gaps=[]
+        for ref,skill in skills.items():
+            single=payments[ref];full=number(skill.get("costs",{}),cost_key+"PerSecondCost");rate=native_rate(skill)
+            if skill.get("no_cost") is True and full is None: full=0
+            if single is not None and single<0 or full is not None and full<0: gaps.append("negative_payment:"+ref)
+            if eb is None and resource in {"Mana","EnergyShield"} and (number(skill.get("costs",{}),"ManaCost") or 0)>0: gaps.append("payment_rule:"+ref)
+            if skill.get("trigger") and full!=0: gaps.append("automatic:"+ref)
+            if any(e["skill_ref"]==ref for e in rows) and (single is None or full is None or (single!=0 or full!=0) and (rate is None or not math.isclose(full,single*rate,rel_tol=1e-5,abs_tol=1e-5))): gaps.append("payment_projection:"+ref)
+            if single and not any(e["skill_ref"]==ref for e in rows) and not skill.get("trigger"): gaps.append("unscheduled:"+ref)
+        known=pool is not None and pool>=0 and regen is not None and not gaps
+        record={"resource_id":resource,"duration_seconds":duration,"initial":pool,"net_regeneration_per_second":regen,
+                "included_recovery":"native_net_regen_only","excluded_recovery":["leech","recharge","flask"],"status":"unknown","trace":[],"repeatable":None,"gaps":gaps}
+        if known:
+            balance=pool;last=0;failed=False
+            for event in rows:
+                balance=min(pool,balance+regen*(event["at"]-last));before=balance
+                cost=payments[event["skill_ref"]];balance-=cost;last=event["at"]
+                affordable=before>=cost and (balance>0 if resource=="Life" else balance>=0)
+                if not affordable: failed=True
+                record["trace"].append({"at":last,"skill_ref":event["skill_ref"],"before":before,"payment":cost,"after":balance,"affordable":affordable})
+            balance=min(pool,balance+regen*(duration-last))
+            if (resource=="Life" and balance<=0) or (resource!="Life" and balance<0): failed=True
+            record.update(final=balance,status="refuted" if failed else "supported",repeatable=not failed and balance>=pool-1e-8)
+            if failed: errors.append("共同时间线中存在无法支付或耗尽的资源："+resource)
+            elif not record["repeatable"]: pending.append("resource:"+resource+":timeline_repeat")
+        else: pending.append("capability:timeline:"+resource)
+        records.append(record)
+    return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"events":rows,"resources":records,"errors":errors,"pending":pending,"diagnostics":diagnostics,
+            "scope":"当前配置固定净回复下的离散费用时间线；不含命中吸取、充能、药剂补充、动作互斥或条件效果变化，也不改变原生 DPS。"}
+
+
 def assess(result, intent, plan, claims=None):
     """Report observed constraints and scoped usage, not a universal play style."""
     claims = claims or []
@@ -70,7 +147,8 @@ def assess(result, intent, plan, claims=None):
     usages = {}
     diagnostics=[]
     for index,row in enumerate(usage):
-        bx.require(isinstance(row,dict) and set(row) <= {"skill_ref","casts_per_second","active_seconds","recovery_seconds","continuous","claim_id"},"usage 字段无效。")
+        bx.require_keys(row,{"skill_ref","casts_per_second","active_seconds","recovery_seconds","continuous","claim_id"},f"/usage/{index}","usage 字段无效。")
+        if "timeline" in plan: bx.require(not set(row)&{"casts_per_second","active_seconds","recovery_seconds","continuous"},"共同时间线已定义频率/窗口；usage 只关联技能和判断。",location=f"/usage/{index}",expected=["skill_ref","claim_id"],actual=sorted(row))
         ref = row.get("skill_ref")
         bx.require(ref in by_ref and ref not in usages,"usage.skill_ref 需要本次原生返回的唯一技能引用。",location=f"/usage/{index}/skill_ref",expected=list(by_ref),actual=ref)
         for key in ("casts_per_second","active_seconds","recovery_seconds"):
@@ -139,7 +217,8 @@ def assess(result, intent, plan, claims=None):
         continuous_cost=sum(value or 0 for value,skill in zip(automatic_values,automatic) if usages.get(skill.get("skill_ref"),main_usage).get("continuous") is True)
         if main_projected and main_usage.get("continuous") is True: continuous_cost+=main_projected
         manual_cost=0
-        for ref,row in usages.items():
+        # A timeline already defines these payments; usage then only links claims.
+        for ref,row in (usages if "timeline" not in plan else {}).items():
             skill=by_ref[ref]
             if skill is main or skill in automatic: continue
             value=payment(skill.get("costs",{}),cost_key,eb,skill.get("no_cost") is True)
@@ -184,7 +263,7 @@ def assess(result, intent, plan, claims=None):
                 "native_leech_on_hit":native_leech,"leech_on_hit":leech,"recharge":recharge,"recharge_counted":recharge_counted,"net_cost":net,
                 "sustainable_while_hitting":net<=0.01 if net is not None else None,"projection":projection,"scope":"所列技能及条件下的支付账目；DPS 仍是原生快照，未按使用节奏重算的伤害不能当实际持续输出。"}
         if not known: pending.append("native:"+subject)
-        elif net>0.01:
+        elif net>0.01 and "timeline" not in plan:
             maximum=max(pool-(1 if resource=="Life" else 0),0)/net
             record["maximum_burst_seconds"]=maximum
             window,mixed=timing(contributors or [main_usage])
@@ -205,5 +284,14 @@ def assess(result, intent, plan, claims=None):
             warnings.append(f"{label}当前使用方式有净缺口 {net:g}/秒；不能据此声称无限持续。")
         if leech and leech>0: needs(subject+":leech")
         resources.append(record)
-    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,
+    timeline=None
+    if "timeline" in plan:
+        timeline=timeline_assessment(result,plan["timeline"])
+        errors+=timeline["errors"];pending+=timeline["pending"];diagnostics+=timeline["diagnostics"]
+        pending=[p for p in pending if not p.startswith("native:resource:") or next((r["status"] for r in timeline["resources"] if "native:resource:"+r["resource_id"]==p),"unknown")=="unknown"]
+        for row in timeline["resources"]:
+            if row["status"]!="unknown":
+                target=next(r for r in resources if r["resource_id"]==row["resource_id"])
+                target["timeline_status"]=row["status"];target["repeatable_at_native_regen_only"]=row["repeatable"]
+    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"timeline":timeline,
             "conditions":{"guard_active":guard,"active_flasks":flasks,"flask_facts":flask_facts,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。药剂局部数据不证明持续补充，无持续覆盖测量时保留 capability 缺口。"},"resources":resources,"additional_native_costs":extra_costs,"diagnostics":diagnostics}

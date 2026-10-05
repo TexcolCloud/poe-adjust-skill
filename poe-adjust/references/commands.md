@@ -34,10 +34,25 @@ start 返回原始 overview 与检查文件路径；`inspect --calculate` 返回
 
 不要预先读取所有参考文档。同一事实只维护一份；当前合法值用查询结果，不从例子复制版本、职业或上限。参数细节可运行 `python $entry <子命令> --help`。
 
+## 增量保存方案
+
+方向确认后先保存小草案，再补当前阶段或操作。edit 只维护输入与标识，不调用计算、代替模型选配装或确认游戏合法性。intent 仍使用 intent 命令，模型最终完整输入可直接 evaluate/route。
+
+```powershell
+python '<技能目录>/scripts/poe.py' edit --invoked --kind route --file '<工作区>/route.json' --changes '<工作区>/change.json'
+python '<技能目录>/scripts/poe.py' edit --invoked --kind route --file '<工作区>/route.json' --changes '<工作区>/change.json' --if-sha256 '<上次revision>'
+```
+
+plan 使用 `--kind plan`。change.json 为 `{"set":{要更新的字段},"remove":["/明确要删除的字段"]}`。对象逐字段合并，null 保留为未知值；普通数组整体替换。顶层 stages/claims/evidence/objectives 按各自 *_id 合并；operations 的 items/equip/groups/gems 按 id/slot/index/(group,index) 合并，适用于阶段 snapshot.operations。删除记录用明确 JSON pointer；先 view 核对本次位置。不是自定义表达式或脚本语言。
+
+新增顶层记录省略标识时程序生成，返回 handles；路线省略宝石 instance_id 时返回 stage_instances。跨阶段复用同一颗宝石必须沿用返回的实例 ID，同名多颗不会自行合并。已有记录使用该标识更新；省略标识的另一内容视为新增。required_items 宝石省略实例仅在同阶段唯一同 skill_id 时补入，有歧义则报位置错误。
+
+每次沿用返回 revision；源文件变化会拒绝陈旧修改，同一成功请求可幂等重试。receipt_file 保存完整标识，大结果通过 view 分页读取。保存采用完整文件原子替换；版本摘要是乐观检查，多个写入方仍应顺序修改同一源文件。若凭证落盘失败但源文件已更新，重新 view 源文件/核对摘要后恢复，不盲目覆盖。
+
 ## 错误与恢复
 
 失败返回 error 与 diagnostic；有 location 时按 expected/actual 修对应 JSON 路径，input_file 指出源文件。native_invalid_input 是当前原生规则明确拒绝的输入，action:edit_input 不表示接口不支持；inspect_capability 表示测量接口范围，其他引擎失败先查实际错误。不要盲目原样重试或解析英文报错猜字段。输入问题修源文件，能力缺口不能通过填理由消除。
 
 大结果用现有 --out 保存到任务工作区，再用 view 按需读字段、字段名或文本缺口，具体示例见资料协议。delivery_brief 汇总全部缺口；next_actions 指向完整文件和具体路径，按实际错误、目标/依赖、最终复核处理，不因文件已导出而跳过。stage_summary 和 errors 不能因为摘要只显示部分 pending 而略过。
 
-配装使用 `status --run`，读取 candidate_records 的完整性、待办及源 plan/review 文件路径，按 next_actions 继续。开荒使用 `status --route-state <输出名.state.json>`，检查输入/输出/引擎是否一致；恢复重跑同一 route，已有效阶段自动复用，资料与模型判断重新核对。
+配装使用 `status --run`，读取 candidate_records 的完整性、待办及源 plan/review 文件路径，按 next_actions 继续。失败记录 last_operation，失败导出不保留成功交付身份。开荒使用 `status --route-state <输出名.state.json>`，失败记录 phase:failed、failure 和具体修复动作；检查输入/输出/引擎是否一致，变更后不把旧阶段算成本次完成。恢复重跑同一 route，有效计算缓存自动复用，资料与模型判断重新核对。

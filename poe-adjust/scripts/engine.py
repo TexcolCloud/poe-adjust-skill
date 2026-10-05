@@ -449,6 +449,13 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
             if entry.get("name") in names:
                 entry["name_cn"] = names[entry["name"]]
                 entry["display_name"] = f"{entry['name_cn']}（{entry['name']}）"
+            if "owner_class_name" in entry or "ascendancy_internal_name" in entry:
+                owner=entry.get("owner_class_name") or "普通天赋"
+                entry["qualified_name"]=" / ".join(str(v) for v in (names.get(owner,owner), entry.get("ascendancy_internal_name") or entry.get("type"),
+                    entry.get("display_name",entry.get("name")), "起点" if entry.get("is_ascendancy_start") else None, "ID "+str(entry.get("id"))) if v)
+        for alternatives in calculation.get("stat_metadata",{}).values():
+            for meaning in alternatives:
+                meaning["display_label"]=names.get(meaning["label"],meaning["label"])
         for key in ("main_skill_name", "class", "ascendancy"):
             if calculation.get(key) in names:
                 calculation[key + "_cn"] = names[calculation[key]]

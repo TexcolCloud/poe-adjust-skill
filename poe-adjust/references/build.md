@@ -47,7 +47,7 @@
 
 ## plan.json：修改与决策
 
-最初计划可先只有 `schema_version:2, mode:"refine或rebuild", summary:"具体目的", operations:{...}`，evaluate 会返回草案缺口及本次技能引用。完整字段是：schema_version、name、mode、summary、template_xml、operations、scenario、sources、shopping、inventory、assumptions、migration_steps、legality_notes、evidence、claims、usage、assessment。sources/assumptions/legality_notes 是说明，不自动充当已验证证据；用 claims 关联实际来源。
+方向确认后用 [增量保存](commands.md#增量保存方案) 保存头部，再补操作和证据。最初可计算计划为 `schema_version:2, mode:"refine或rebuild", summary:"具体目的", operations:{...}`，evaluate 返回草案缺口及本次技能引用。完整字段是：schema_version、name、mode、summary、template_xml、operations、scenario、sources、shopping、inventory、assumptions、migration_steps、legality_notes、evidence、claims、usage、timeline、assessment。sources/assumptions/legality_notes 是说明，不自动充当已验证证据；用 claims 关联实际来源。
 
 | operations 字段 | 格式/作用 |
 |---|---|

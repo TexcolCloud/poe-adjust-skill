@@ -72,6 +72,29 @@ if output.Minion then
   result.stats.MinionCombinedDPS = output.Minion.CombinedDPS
   result.stats.MinionHitChance = output.Minion.HitChance
 end
+-- Read meaning from this installation's display definitions, not a seasonal
+-- metric whitelist. Keep alternatives: duplicate labels can be conditional.
+result.stat_metadata = setmetatable({}, {__jsontype = "object"})
+local function addMetricMeaning(key, label, fmt, source, actor, multiplier)
+  if type(key) ~= "string" or type(label) ~= "string" then return end
+  local variants = result.stat_metadata[key]
+  if not variants then variants = {}; result.stat_metadata[key] = variants end
+  local entry = {label = label, format = fmt, source = source, actor = actor,
+    display_multiplier = multiplier or 1, status = "native_display_observed"}
+  for _, old in ipairs(variants) do
+    if old.label == label and old.format == fmt and old.actor == actor and old.display_multiplier == entry.display_multiplier then return end
+  end
+  table.insert(variants, entry)
+end
+for _, list in ipairs({{build.displayStats, "player"}, {build.minionDisplayStats, "minion"}}) do
+  for index, entry in ipairs(list[1] or {}) do
+    if type(entry.stat) == "string" then
+      local key = list[2] == "minion" and "Minion" .. entry.stat or entry.stat
+      addMetricMeaning(key, entry.label, entry.fmt, "build." .. (list[2] == "minion" and "minionDisplayStats" or "displayStats") .. "/" .. index,
+        list[2], entry.pc and 100 or 1)
+    end
+  end
+end
 result.resource_rules = {energy_shield_protects_mana = build.calcsTab.mainEnv.modDB:Flag(nil, "EnergyShieldProtectsMana") or false}
 result.resource_cost_types = {}
 for id, rule in pairs(data.costs or {}) do
@@ -470,6 +493,15 @@ local function queryCatalog(kind, query, limit, offset)
           ascendancy_name = ascendancyName, ascendancy_internal_name = node.ascendancyName or "",
           no_tree_connection = ascendancyName ~= "" and not node.isAscendancyStart and #links == 0,
           is_ascendancy_start = node.isAscendancyStart or false}
+        if ascendancy then
+          for classId, class in pairs(build.spec.tree.classes) do
+            for _, candidate in pairs(class.classes) do
+              if candidate.name == ascendancyName then
+                entry.owner_class_id, entry.owner_class_name = classId, class.name
+              end
+            end
+          end
+        end
         if node.recipe then
           entry.anoint_recipe = setmetatable({}, {__jsontype = "array"})
           for _, ingredient in ipairs(node.recipe) do
@@ -499,6 +531,7 @@ local function queryCatalog(kind, query, limit, offset)
     for key, value in pairs(result.stats) do
       if type(value) == "number" and matches(key) then
         table.insert(entries, {id = key, value = value, source = "stats." .. key, actor = key:match("^Minion") and "minion" or "player",
+          meanings = result.stat_metadata[key] or {},
           scope = "Native output under this XML and resolved configuration; consult the native metric meaning before comparing"})
       end
     end

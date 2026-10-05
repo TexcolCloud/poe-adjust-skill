@@ -12,13 +12,17 @@
 - local_data：使用 `data read` 的 evidence_template（source/line/count/content_sha256），补 evidence_id/subject。程序从本机重新读取，不接受替代 text/path/url。输出 local_data_observed 只证明原文及摘要，不证明含义与当前方案相关、当季可得或游戏内实测。
 - 原生引用直接写 `native:candidate#/stats/Life`、`native:baseline#/stats/Life` 等 JSON pointer，无需声明 evidence。只能访问本次已有字段，指针不执行代码。引用值与引擎/计算 XML 绑定；不要猜旧数组下标。
 
-claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertainties`。subjects/evidence_refs/conditions/uncertainties 均为字符串数组；claim_id 唯一。缺引用、引用不存在、来源未解决或 uncertainties 非空，保持 unresolved。程序附上 observations 的真实值、对象上下文和摘要；不得手写这些输出字段。model_assessed 表示模型作了有引用的判断，**不表示程序证明语义充分**。最终 review 另行绑定，不能让旧文字自动得到新方案的复核身份。
+claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks`。subjects/evidence_refs/conditions/uncertainties 为字符串数组，checks 格式见下文；claim_id 唯一。缺引用、来源未解决、uncertainties 非空或 checks 未通过，保持 unresolved。程序附上 observations 的真实值、对象上下文和摘要；不得手写这些输出字段。model_assessed 表示模型作了有引用的判断，**不表示程序证明语义充分**。最终 review 另行绑定，不能让旧文字自动得到新方案的复核身份。
 
 用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项明确达到/未达到并解释当前对象、依据、条件、代价与未解决项。用户要求的技能、天赋、装备和操作必须在最终方案落实；旧计划文字或关联一个数值不能证明已实现。objective_coverage 只核对来源与关联，不证明目标完整或已经达到。整体 goal 判断说明总体取舍；修复改了组成后重新判断，不继承旧结论。
 
 关联写在 **claim.subjects**，不是 claim_id。例如 objective_id 为 `user-X`，解释该目标的 claim 可以用 claim_id:`explain-X`、subjects:`["objective:user-X","goal"]`。一个判断可以关联多个真实适用的对象，不必为每个字段写重复文字。objective_coverage.required_subject 和 diagnostics 给出缺少的关系；claims[].diagnostics 指向失败引用和实际来源原因。先修这些协议/引用遗漏，再决定哪些确实无法核实。
 
-数值判断优先使用原生占位引用，例如 `text:"生命 {{value:native:candidate#/stats/Life}}"`。程序生成 rendered_text，引用也自动纳入 evidence_refs；缺字段保持 unresolved，不能替换为零。HTML 使用同一 rendered_text，最终聊天沿用 export.facts/facts_summary；自由文字中的因果和替代方案排除仍需复核。
+事实优先使用完整占位引用，例如 `text:"{{fact:native:candidate#/stats/Life}}"`，程序生成 rendered_text 并将引用纳入 evidence_refs。meaning 含当次原生显示 label/format、可辨认的 unit/display_multiplier、actor 和限定归属 object_identity；context 含 XML/引擎摘要、职业、主技能和实际配置。相同名称不能替代限定对象。单位或显示比例不明/冲突时保持 unknown，不从字段名猜单位。`{{value:...}}` 保留原始标量用于已有输入，模型自行添加单位不受程序证明。完整事实可展示数组描述；value 只支持标量。缺字段保持 unresolved，不能替换为零。
+
+可比较命题用 `checks:[{"reference":"native:candidate#/stats/Life","op":"ge","value":3000}]`，阈值由本次用户目标/模型理由决定，示例不规定目标。op 为 eq/ge/le；数值按**原始值**比较，eq 也支持同类型布尔/字符串，布尔不当数字。budget 与 resources 是当前程序核验结果，可引用 `native:budget#/within_limit` 或 `native:resources#/timeline/status`。预算确认示例为 eq/true；缺值、null 或异类型为 unknown，矛盾为 refuted，带 expected/actual 的诊断不能由文字或自审 token 消除。checks 证明精确命题，不能证明任意自由文字、因果、来源可信度或整套实战可行。
+
+条件依据与最终验收分别记录：报价、库存、充能启动等前提引用实际来源/原生值；最终判断可引用 budget/resources。核验报告不能反过来充当生成它自己的前提，循环引用不会补齐该项依据。引用绑定规范化后的当前 XML，原生调用的运输格式差异不作为新方案身份。
 
 “测得某值”“机制导致某值”“实际覆盖该条件”“满足用户目标”分别需要对应依据。引用一个面板数值不证明自己的因果解释。与解释冲突时，先检查当前支付资源、主体、实际装备、配置和明细；必要时只改一个输入探测，再说明其影响范围。模型可以选择不同使用条件或接受代价，但须把条件落进对应候选/阶段，不用假想实战效果覆盖当前值，也不以无依据的“引擎问题”解释异常。
 
@@ -26,7 +30,11 @@ claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertaintie
 
 `assessment:{goal_claim_ids:["目标claimID"],scope:"实际核对范围",unresolved:[]}`。goal claim 引用用户目标与本次数值/来源，解释收益、代价、是否满足。不得以改变 scope 隐去用户已经明确要求的部分。
 
-usage 每行是 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。引用 evaluation.result.active_skills 本次真实 skill_ref；claim 关联 `skill:<同一引用>`。频率为次/秒，窗口与恢复为秒，有限非负；未知就省略，不能编数。每个手动技能分别填写实际频率，包括0次的场景也解释。原生 usage_rate 提供动作频率及来源；程序核对每个技能的频率、支付资源和原生满速费用。只有原生费用符合单次支付乘动作频率，才线性投影；按秒费用或其他不匹配情况保持 capability 缺口。各技能同一组使用/恢复窗口可以合并核算；不同窗口的时序暂未实现时保留 timing 缺口，不能借用主技能短窗口放行其他技能。声明 continuous 的技能独立检查无限使用所需资源；药剂仍需实际覆盖依据。程序核对单次支付、可核算的线性费用、使用窗口与恢复；不能可靠推导的时序留 capability 缺口。默认展示原生满速费用；不要求全部方案满速持续。净缺口没有使用窗口、充能启动前储量不足，不因 prose claim 存在而消除。降频不能沿用满速命中吸取来证明续航，未重算时保持 unknown；DPS 同样不能当节奏调整后的持续输出。
+简单频率/同一窗口用 usage，每行 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。skill_ref 来自本次 active_skills，对应 claim.subjects:`skill:<引用>`。频率为次/秒，窗口为秒，有限非负；未知省略。程序核对原生动作频率、单次支付和满速费用，只有费用符合单次支付乘频率时才线性投影。同一窗口可合并，不同窗口不会借用主技能窗口放行；混合动作使用下文 timeline。降频不沿用满速吸取，未重算的 DPS 仍为原生快照。资源缺口和启动前不足不能被 prose 消除。
+
+共同时间线为 `timeline:{duration_seconds:周期秒数,events:[{skill_ref:"当前引用",at:周期内秒数}]}`。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。模型选择有依据的节奏，程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，并核对同技能动作间隔及循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
+
+时间线检查范围只有离散费用和固定净回复：不计吸取、能盾充能、药剂补充、动作互斥或条件变化。非线性/按秒费用、带费用的自动触发、未安排的有费用技能、缺支付规则或回复量保持 unknown，不能填零。一次周期能支付且结束恢复到起始储量才支持重复；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
 
 原生 `equipped[].flask_local` 是单件药剂参数，`flask_scope` 明示不包括角色修正、当前充能、补充事件或实际覆盖。开启药剂的快照若声明 continuous，程序会保留 `capability:flask_coverage:<槽位>`；当前适配没有完整覆盖时序测量。可以研究具体有限窗口与缺口，但不能只写“有药剂”就宣称无限续航。
 
@@ -40,7 +48,7 @@ requirements 从实际 XML 差异产生，包含仍装备的禁用/备用宝石�
 
 报价另含 low/high/currency：low/high 是**该整条 quantity 的总价**。来源 context 需对应 realm:"cn"、league、currency、quantity、low、high，装备还需 spec_sha256，并有实际 checked_at。`quote:<物资引用>` claim 必须引用同一价格记录，解释规格与语义匹配。只写 URL 或 verified_cn 会被拒绝。国际服报价不计成国服已核实价格；无汇率依据不自动换算。
 
-程序区分 unknown、uncertain_range、quote_assessed、user_declared、no_additional_cost、over_budget。已知必需下界超过限额才确定超预算；估计超过或缺项不假称肯定超预算/预算满足。totals_complete=false 时金额仅为已列部分。quote_assessed 仍有交易时效条件，非成交保证。
+程序区分 unknown、uncertain_range、quote_assessed、user_declared、no_additional_cost、over_budget。within_limit 为三值：已核对完整来源且上界不超过限额为 true，已知必需下界超过为 false，其余为 null；模型估算不提升为 true。totals_complete=false 时金额仅为已列部分。quote_assessed 仍有交易时效条件，非成交保证。
 
 ## 结果、完整性与交付
 
@@ -60,7 +68,9 @@ token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源
 
 probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。返回各变体原生快照、差异与未评审依赖；不继承旧宝石的使用结论，最终选择仍写完整 plan/evaluate。批量大小为进程资源保护，自动分批比较。
 
-export 再复算并重核来源和复核 token。blocked 只输出诊断 HTML；draft 输出明确命名的配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json、review.json、delivery.json。只有 XML 与 HTML 均落盘后 delivery.file_exported 才为 true，清除同候选旧状态的另一 XML 文件；失败中断时保持 preparing/会话 exporting，处理错误后重试 export。无 URL 的本地证据仍正常展示。最后交付两份用户文件，以 facts_summary 为事实基础解释取舍；“已回读”不代表全部机制、预算和实战已证实。
+export 再复算并重核来源和复核 token。blocked 只输出诊断 HTML；draft 输出配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json、review.json、delivery.json。只有 XML 与 HTML 均落盘后 delivery.file_exported 才为 true，清除同候选旧状态的另一 XML 文件；可捕获失败记录 failed/last_operation，并取消本次交付成功身份。进程被强制终止仍可能留下 preparing/exporting，由 status 核对后恢复。无 URL 的本地证据仍正常展示。
+
+publication 是 HTML、最终核验与 facts_summary 的共同事实来源，包含全部缺口类别、实际数值和预算/时间线的三值结论。聊天先沿用它的状态与事实，再解释模型取舍；预算 null 不承诺预算内买齐，时间线 unknown 不承诺无限续航。原生值带具体主体和配置，不能混用不同候选、阶段或早期基线。checks 与自审仍不证明全部机制或实战安全。
 
 直接交付返回路径，避免另做未经绑定的复制/改名/说明。draft 不改名为改进配装；聊天先说明 delivery_brief 的真实状态与全部剩余类别，再说明已有收益、代价和用户下一步。原生能力缺口可以保留为条件规划；已知非法输入、可修复字段遗漏和来源404不能靠填写复核 token 变成成品。
 

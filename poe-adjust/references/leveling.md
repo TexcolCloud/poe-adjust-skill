@@ -20,7 +20,7 @@
 
 每颗宝石有稳定 instance_id。同一 ID 的两颗宝石需两个实例；同一颗跨阶段升级沿用实例，不能换 skill_id 后仍称同一颗。自动等级 `auto` 仅在明确请求时选择当前数据可练且角色等级可用的最大值，不代表最优、已练到或已取得。升品质、特殊等级或降级处理说明加工路径和代价，必要时另记物资。
 
-顶层 gems 只复用目录 ID；取得依据绑定首次使用阶段的 required_items 与实例，不能用一个全局“已拥有”解释两颗同时使用。跨阶段同一实例不重复采购；提前练级/储备可列为实际已安排的位置或未装备组，并说明取得与成长条件。库存声明要匹配规格、数量；用户不必提供游戏截图来证明普通持有，报告注明按用户声明。
+顶层 gems 是可选目录备注，程序从阶段自动收集 ID，省去重复维护清单。required_items 记录首次取得规格与物理实例，取得可早于首次使用。程序区分 acquired、previous_use 与 used：等级上升、品质不变且当前数据可自然训练时，要求 `training:<stage_id>:<instance_id>` 判断；其他规格变化要求 transformation 判断。判断说明训练经验/加工方式、时点和进入前条件，不能将可练等级当作已练到。不同 skill_id 必须另一实例；缺取得依据保持 acquisition_unknown。每个物理宝石实例 quantity 为1，同名两颗需两个 ID。跨阶段沿用不重复采购，提前储备与练级按实际位置和条件安排。
 
 每阶段 bases 映射当前原生槽位到具体基底，程序核对 valid_slots 与最大孔数。基底最大容量不证明实物已经有该连数、孔色或特殊效果；实际物品需在进入条件中落实，精确影响用角色 XML 实算。没有具体基底则容量未知，不猜同类武器都一样。weapon_setup 可写自由描述，不再用五种固定布局裁决玩法。
 
@@ -100,7 +100,7 @@ assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[
 
 ## 关键阶段内部 XML
 
-模型依据本次目标识别依赖变化明显的阶段（技能/装备/资源切换等），标注 `key_transition: true`。关键阶段缺少 `snapshot` 会保留待办。阶段数量、进入等级和选择何时切换仍由模型决定，不用固定剧情模板。
+方向确认后通过 [增量保存](commands.md#增量保存方案) 先保存头部，再补本阶段和证据；不必等待整条路线编好才留下可恢复输入。模型依据本次目标识别依赖变化明显的阶段（技能/装备/资源切换等），标注 `key_transition: true`。关键阶段缺少 `snapshot` 会保留待办。阶段数量、进入等级和选择何时切换仍由模型决定，不用固定剧情模板。
 
 `snapshot` 字段：
 
@@ -109,7 +109,7 @@ assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[
 
   例如 snapshot.operations.groups 使用 `{index:1,main_active_skill:1}`，组启用写 stage.skill_groups[].enabled；等级写 stage.level。职业/升华由路线和本阶段分配推导，不需要在快照重复填写。
 - `assumptions` 为 claim_id 数组，对应 claim.subjects 含 `snapshot:<stage_id>`。说明实际假设的装备词缀/孔连、天赋、操作和何时取得；资料只证明某物品存在时，不能说用户已经拥有。
-- `usage` 与配装协议相同，引用阶段实际 skill_ref；需要时先运行 route，读取该阶段 calculation.active_skills 后补全。
+- `usage` / `timeline` 采用共同证据协议，引用阶段实际 skill_ref；需要时先运行 route，读取该阶段 calculation.active_skills 后补全。同阶段使用一组时间条件。
 - `metrics` 可选指标名数组。只取实际原生输出，不在当前结果中的指标保持未知。
 
 同一次 route 会生成阶段 XML、回读并绑定摘要，然后解析 `native:stage:<stage_id>#/stats/Life` 等实际引用。因此 stage/snapshot/resource 等相关判断可同时引用该阶段原生结果；与资源有关的 claim 还需标明 `stage:<stage_id>` 或 `snapshot:<stage_id>`，避免把另一个阶段的使用说明混入。
