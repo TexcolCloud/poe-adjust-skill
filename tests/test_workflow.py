@@ -818,7 +818,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
         stage={'stage_id':'dynamic','level':12,'ascendancy_allocated_nodes':[],'skill_groups':[],
                'snapshot':{'operations':{}}}
         route={'class_id':1,'stages':[stage]}
-        native={'xml':SAMPLE,'classes':[{'id':1,'ascendancies':[]}]}
+        native={'xml':SAMPLE,'engine_fingerprint':'fixture','classes':[{'id':1,'ascendancies':[]}]}
         cases=[({'code':'native_invalid_input','action':'edit_input','location':'/operations/items/7/craft/affixes/2','expected':20,'actual':1},'blocked'),
                ({'code':'native_capability_unavailable','action':'inspect_capability'},'unsupported'),
                (None,'failed')]
