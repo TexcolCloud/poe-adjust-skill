@@ -220,9 +220,9 @@ def apply_plan(source, plan, native=None):
             require_keys(data,set(GROUP_FIELDS)|{"gems"},path,"技能组包含未知字段。")
             group = ET.SubElement(parent, "Skill", {"enabled": "true", "includeInFullDPS": "false", "mainActiveSkill": "1"})
             update_group(group,data)
-            require(data.get("gems"), "每个新技能组都需要 gems。")
+            require(isinstance(data.get("gems"),list), "技能组的 gems 应为数组；空组使用 []。",location=path+"/gems",expected="array")
             for gem_index,values in enumerate(data["gems"]):
-                require(values.get("skill_id"), "新宝石需要 skill_id。")
+                require(isinstance(values,dict) and values.get("skill_id"), "新宝石需要 skill_id。",location=path+f"/gems/{gem_index}/skill_id")
                 gem = ET.SubElement(group, "Gem", {"level": "1", "quality": "0", "enabled": "true", "enableGlobal1": "true", "enableGlobal2": "false"})
                 update_gem(gem, values,location=path+f"/gems/{gem_index}")
     for group_index,data in enumerate(operations.get("groups", [])):

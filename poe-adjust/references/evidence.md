@@ -14,7 +14,7 @@
 
 claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertainties`。subjects/evidence_refs/conditions/uncertainties 均为字符串数组；claim_id 唯一。缺引用、引用不存在、来源未解决或 uncertainties 非空，保持 unresolved。程序附上 observations 的真实值、对象上下文和摘要；不得手写这些输出字段。model_assessed 表示模型作了有引用的判断，**不表示程序证明语义充分**。最终 review 另行绑定，不能让旧文字自动得到新方案的复核身份。
 
-用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项解释实现、依据、条件、代价与未解决项。`objective_coverage` 只核对用户来源及关联，不独立证明目标拆分完整或已经达到。整体 goal 判断仍说明总体取舍。
+用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项明确达到/未达到并解释当前对象、依据、条件、代价与未解决项。用户要求的技能、天赋、装备和操作必须在最终方案落实；旧计划文字或关联一个数值不能证明已实现。objective_coverage 只核对来源与关联，不证明目标完整或已经达到。整体 goal 判断说明总体取舍；修复改了组成后重新判断，不继承旧结论。
 
 关联写在 **claim.subjects**，不是 claim_id。例如 objective_id 为 `user-X`，解释该目标的 claim 可以用 claim_id:`explain-X`、subjects:`["objective:user-X","goal"]`。一个判断可以关联多个真实适用的对象，不必为每个字段写重复文字。objective_coverage.required_subject 和 diagnostics 给出缺少的关系；claims[].diagnostics 指向失败引用和实际来源原因。先修这些协议/引用遗漏，再决定哪些确实无法核实。
 
@@ -46,7 +46,7 @@ requirements 从实际 XML 差异产生，包含仍装备的禁用/备用宝石�
 
 evaluate 保存 candidate.xml、requested.xml、plan.json、evaluation.json、review.json。读取 result 的实际技能、装备、配置、统计与伤害分项，readiness 的资源、errors/pending、budget、claims/evidence 和逐类 validation。diagnostics 带 code/category/subject/evidence_refs/affects/message/status；未知能力不改写成游戏非法。默认值等价性按本机 ConfigTab.GetDefaultState/Save 语义检查，同时核对统计；没有一律丢弃 false。config_values 记录最终保存文件的实际输入，config_saved_values 是省略原生默认值后的保存语义。
 
-delivery_brief 从全部 errors/pending 生成状态与缺口类别，终端只显示部分 pending 时仍包含全部类别；按 details_file 查看受影响对象。actual_changes/equipment_changes 来自当前原生对象和 XML 规格，普通/主升华/次级升华点数分别计数。解释装备和点数改动时沿用这些结果，不从“新增节点总数”再次加算升华。
+delivery_brief 从全部 errors/pending 生成状态和缺口类别；next_actions 指向实际输入与完整详情，先修错误、评审目标/依赖，再复核当次结果。终端只显示部分 pending 时仍含全部类别，不能漏项或用删功能让缺口消失。actual_changes/equipment_changes 来自当前对象和 XML 规格，普通/主升华/次级升华点数分别计数，不把“新增节点总数”再次加算升华。
 
 最终复核使用现有 TeleAgent 模型，不增加另一模型服务。先完成方案/claims 修订并 evaluate，再阅读 review.json 的 facts/claims：核对数字与技能/主体/阶段、因果证据、替代方案排除理由、切换进入条件以及 summary/迁移说明/最终回答的范围。发现问题就修改并重新 evaluate，直到可以如实记录本轮复核。填写源 plan 的 `assessment.review`，再 evaluate：
 

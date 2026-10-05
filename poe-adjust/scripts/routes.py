@@ -244,7 +244,7 @@ def render(route,warnings,engine_version,tree_version,*,evidence_file=None):
         return claim.get("rendered_text",claim.get("text",key))+" ["+claim.get("status","未找到判断")+"]"
     brief=route.get("delivery_brief") or facts.delivery_brief(route.get("delivery_status","draft"),route.get("errors",[]),route["pending"])
     labels={"blocked":"存在已知错误，不能按本快照执行","draft":"条件草案，依赖仍待核实","calculated":"原生计算完成，是否可执行仍看条件与评审",
-            "unsupported":"未完成原生计算","not_calculated":"未提供完整阶段快照，不报告精确效果"}
+            "unsupported":"当前接口不支持本次测量","failed":"本次原生计算失败","not_calculated":"未提供完整阶段快照，不报告精确效果"}
     sections=[]
     for stage in route["stages"]:
         calculation=stage.get("calculation",{})

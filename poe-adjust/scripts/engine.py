@@ -34,7 +34,9 @@ PROTECTED_ROOTS = set()
 
 
 class EngineError(ValueError):
-    pass
+    def __init__(self, message, *, diagnostic=None):
+        super().__init__(message)
+        self.diagnostic = {"code":"engine_failure","message":str(message),"action":"inspect_error","retryable":False,**(diagnostic or {})}
 
 
 def validate_checked_at(value):
@@ -399,13 +401,21 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     finally:
         PERFORMANCE["worker_seconds"] += time.perf_counter() - worker_started
     if process.returncode:
-        detail = process.stderr.decode("utf-8", errors="replace")[-5000:]
+        raw = process.stderr.decode("utf-8", errors="replace")
+        diagnostic = None
+        try:
+            failure = json.loads(raw)
+            detail = failure["error"]
+            diagnostic = failure.get("diagnostic")
+            if not isinstance(detail,str) or diagnostic is not None and not isinstance(diagnostic,dict): raise ValueError("invalid worker error")
+        except (ValueError,KeyError,TypeError): detail,diagnostic = raw,None
+        detail = detail[-5000:]
         # The headless worker may include desktop hotkey instructions in errors.
         # They are irrelevant to this failed calculation, not UI recovery steps.
         detail = detail.split("Press Enter/Escape to dismiss", 1)[0].rstrip()
         if xml and (catalog or queries):
             detail += "\n目录查询若只查宝石/职业/升华节点 ID 与原文，可去掉 --input 直接重试；所有职业数据都在本机，无需手写最小 XML 或下载模板。若需要角色实际连接路径，请提供能在 PoECharm 打开的真实 XML。"
-        raise EngineError("PoB 计算未完成：" + detail)
+        raise EngineError("PoB 计算未完成：" + detail,diagnostic=diagnostic)
     try:
         result = json.loads(process.stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -522,7 +532,11 @@ def worker(request: dict) -> dict:
     def execute(source: str, name: bytes) -> None:
         data = source.encode("utf-8")
         if lua.luaL_loadbuffer(state, data, len(data), name) or lua.lua_pcall(state, 0, 0, 0):
-            raise EngineError(read(-1))
+            message=read(-1)
+            lua.lua_getfield(state,-10002,b"_DIAGNOSTIC_JSON")
+            try: diagnostic=json.loads(read(-1))
+            except (ValueError,TypeError): diagnostic=None
+            raise EngineError(message,diagnostic=diagnostic if isinstance(diagnostic,dict) else None)
 
     try:
         lua.luaL_openlibs(state)
@@ -543,5 +557,5 @@ if __name__ == "__main__":
         request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         sys.stdout.buffer.write(json.dumps(worker(request), ensure_ascii=False, allow_nan=False).encode("utf-8"))
     except Exception as exc:
-        sys.stderr.buffer.write(str(exc).encode("utf-8"))
+        sys.stderr.buffer.write(json.dumps({"error":str(exc),"diagnostic":getattr(exc,"diagnostic",None)},ensure_ascii=False,allow_nan=False).encode("utf-8"))
         raise SystemExit(1)

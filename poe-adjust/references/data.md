@@ -28,7 +28,7 @@ python $entry research --trials --out '<工作区>/trial-facts.json'
 批量文件：`{"queries":[{"kind":"gems","query":"id:Fireball","limit":2,"offset":0}]}`。支持上述原生 kind，translations 单查。单页 limit=1–100，按返回 next_offset 继续；程序自动分批，不限制整体候选/路线数量。长结果使用 --out 后选择相关字段读取，不把整份大 JSON 打到工具输出。多次分批前后指纹须一致。
 
 - classes 返回当前职业与其主升华 ID；rules 含副升华目录、slots、规则来源及 `meaning/status`。observed 不一律表示游戏上限：engine_state 是本次状态，native_fact 是原生事实，engine_constraint 是接口约束，unsupported 是没读到可靠规则。不能把建议/默认值当合法上限。
-- bases 返回当前基底 `sockets/valid_slots/affix_limits/requirements`；这是基底原生容量，实际物品可能有独特改变，完整角色需实算。affixes 返回当前物品词缀池、互斥组及物品等级要求。
+- bases 返回当前基底 `sockets/valid_slots/affix_limits/requirements`；这是基底原生容量，实际物品可能有独特改变，完整角色需实算。socket_limits 只汇总类别容量，不推荐任一基底；实际选择核对当前属性/等级要求与取得。affixes 返回当前物品词缀池、互斥组及物品等级要求。
 - gems 的 `natural_max_level`、`level_requirements[].naturally_trainable` 与有效数据级别分开。可计算不证明对应裸宝石可获得。quality 不设复制的统一上限，取得方式仍须依据。`base_resources` 是该等级基础费用/保留/辅助倍率，不能代替完整连线续航。
 - links 接受有序宝石 ID，可以多个主动及重复 ID。relations 用 `active_index/support_index/applied` 区分输入位置；valid 仅表示类型查询成功，incompatible 是未起作用的辅助，不证明物理安装、触发、费用或冷却正确。
 - config 返回原生类型、枚举 options[].val、标签及可读取默认值；用 val 写入，不能用显示 label 替代。最终实际条件在计算结果 config_values。
@@ -45,9 +45,13 @@ research 同时给出真实原文模板：宝石在 choices[].evidence_templates
 python $entry view --file '<工作区>/catalog.json' --pointer '/entries' --fields 'skill_id,display_name,min_level,tags' --limit 8
 python $entry view --file '<工作区>/route.evidence.json' --pointer '/checked_route/stages/0/calculation' --fields 'status,errors,pending,stats,active_skills'
 python $entry view --file '<工作区>/gem-facts.json' --pointer '/gems/<实际ID>/choices' --limit 3
+python $entry view --file '<工作区>/evaluation.json' --pointer '/result/stats' --keys --query '<机制关键词>' --limit 30
+python $entry view --file '<工作区>/evaluation.json' --pointer '/pending' --query 'objective:' --limit 20
 ```
 
-view 复用证据的 JSON pointer，数组按 offset/limit 翻页；fields 选择当前对象的直接字段，缺字段列在 missing_fields，零与false保持原值。不重新启动引擎或刷新网页，不改文件。先看目录概要、错误/缺口和所需来源模板，再进入某个实际对象或等级；无需另写 Python 读取片段。所选内容仍太大时继续缩小字段、行数或指针。只读获准任务工作区的普通结果文件，不能用于平台内部目录；PoECharm 原文使用 data。
+view 复用证据的 JSON pointer，数组按 offset/limit 翻页；fields 选直接字段，缺字段列在 missing_fields，零与false保持原值。keys 列出当前对象所有字段名，不与 fields 同用；query 只筛选字段名或文本数组，不执行表达式。计算复核摘要中的 available_stat_keys 来自当次完整 stats，不是固定机制清单；用实际键再读值或查原生公式。view 不启动引擎、刷新网页或改文件。先看概要和待办，再读具体对象；过大时缩小字段、行数或指针，无需另写读取脚本。只读获准工作区结果，不能用于平台内部目录；PoECharm 原文用 data。
+
+网页缓存按 URL 与实际查询上下文分别保存，核对正文摘要和观察时间，一天内复用；内容损坏、上下文变化或过期重新取源。它只保存观察，不延长行情有效期，也不替模型评审同一来源在当前目标下的含义。
 
 doctor/start 的指纹覆盖计算代码、数据、适配器和译名；data_version_basis 说明本机规则版本依据。version_source_hint 只是未核实的历史公告搜索线索，不证明当前赛季或用户区服；research --version 实际读取正文后才返回 version_evidence。软件版本相同但内容变化仍使旧结果失效。接口不兼容明确报告，不自动修改 PoECharm。操作只要求自己需要的能力，不以守护接口缺失否定职业目录。
 

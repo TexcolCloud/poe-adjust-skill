@@ -36,7 +36,7 @@ python '<技能目录>/scripts/poe.py' route --invoked --file '<工作区>/route
 
 route 自动分批读取当前宝石、连线、基底和完整升华目录，并核对证据。输出 HTML 及同名 `.evidence.json`。按照 pending 修订；最终 status 是 draft/scoped_result 或预算已知矛盾的 blocked。阶段是否实算以 calculation 及对应 XML/证据记录为准，路线状态不代替实算范围。用 TeleAgent 文件工具交付 HTML，简要说明范围和缺口；可解释已引用 claims，不另造一套收益数字。
 
-先读取返回的 errors、stage_summary 和 delivery_brief。阶段 `native_calculated:true` 仅证明计算完成，最终 `status:blocked` 仍有已知机械错误；先修到 errors 消失再把 XML 作为路线配装交付。unsupported 的 diagnostic.location/expected/actual 给具体字段；不要逐次猜协议。HTML 直接显示阶段校验、已知错误、原生数值及进入条件，完整资料留 evidence.json，按需读字段。
+先读 errors、stage_summary、delivery_brief 和 next_actions。native_calculated:true 仅证明计算完成，status:blocked 仍有错误；修正后再交配装 XML。原生输入错误给 diagnostic.location/expected/actual；unsupported 是接口范围，failed 是本次计算失败，not_calculated 是未提供可计算输入。修复时保留计划功能；若改变技能/天赋/装备，按最终阶段重新评审用户目标、进入条件和资源，不能将删成单宝石的诊断文件当完整路线。HTML 显示实际校验和条件，完整资料留 evidence.json，按需读字段。
 
 顶层字段：
 

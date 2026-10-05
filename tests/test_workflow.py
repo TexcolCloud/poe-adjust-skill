@@ -520,7 +520,8 @@ class FactTests(unittest.TestCase):
             url = "https://poedb.tw/us/Example"
             text = "source"
             record = {"url": url, "html": text, "sha256": hashlib.sha256(text.encode()).hexdigest(), "checked_at": datetime.now(timezone.utc).isoformat(), "context": "old"}
-            path = Path(temp) / (hashlib.sha256(url.encode()).hexdigest() + ".json")
+            key=json.dumps({"url":url,"context":"old"},sort_keys=True,ensure_ascii=False,allow_nan=False)
+            path = Path(temp) / (hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json")
             poe.write_json(path, record)
             with patch.object(facts, "urlopen", side_effect=TimeoutError("offline")) as fetch:
                 self.assertEqual(facts.fetch(url, temp, "old"), record)
@@ -813,6 +814,88 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_route_native_diagnostics_distinguish_input_capability_and_failure(self):
+        stage={'stage_id':'dynamic','level':12,'ascendancy_allocated_nodes':[],'skill_groups':[],
+               'snapshot':{'operations':{}}}
+        route={'class_id':1,'stages':[stage]}
+        native={'xml':SAMPLE,'classes':[{'id':1,'ascendancies':[]}]}
+        cases=[({'code':'native_invalid_input','action':'edit_input','location':'/operations/items/7/craft/affixes/2','expected':20,'actual':1},'blocked'),
+               ({'code':'native_capability_unavailable','action':'inspect_capability'},'unsupported'),
+               (None,'failed')]
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder)/'route.html'
+            poe.write_json(output.with_suffix('.state.json'),{})
+            for diagnostic,status in cases:
+                with self.subTest(status=status),patch.object(poe,'materialize_items',side_effect=engine.EngineError('observed failure',diagnostic=diagnostic)):
+                    result=poe.route_snapshots(route,native,Path(folder),Path(folder),output)['dynamic']
+                    self.assertEqual(result['status'],status)
+                    self.assertNotIn('stats',result)
+                    if status=='blocked':
+                        self.assertEqual(result['diagnostic']['location'],'/stages/0/snapshot/operations/items/7/craft/affixes/2')
+                        self.assertEqual(result['diagnostic']['expected'],20)
+
+    def test_delivery_actions_prioritize_actual_dependencies_over_review(self):
+        outcome={'status':'blocked','errors':['specific input conflict'],'pending':['objective:custom','stage:any:material:item:9','final_review:missing']}
+        actions=poe.delivery_actions(outcome,'source.json','result.json','review.json','/checked_route')
+        self.assertEqual([row['action'] for row in actions],['repair_input','assess_dependencies','review_current_result'])
+        self.assertEqual(actions[1]['categories'],{'material':1,'objective':1})
+        self.assertEqual(actions[1]['pointer'],'/checked_route/pending')
+        self.assertEqual(poe.delivery_actions({'status':'scoped_result','errors':[],'pending':[]},'a','b','c'),[])
+
+    def test_calculation_facts_exposes_current_keys_without_inventing_values(self):
+        result={'stats':{'SeasonSpecificObservation':0,'SeasonSpecificFlag':False,'Life':1}}
+        observed=poe.calculation_facts(result)
+        self.assertEqual(observed['available_stat_keys'],sorted(result['stats']))
+        self.assertNotIn('SeasonSpecificObservation',observed['stats'])
+        referenced=poe.calculation_facts(result,[{'evidence_refs':['native:candidate#/stats/SeasonSpecificObservation','native:candidate#/stats/SeasonSpecificFlag']}])
+        self.assertEqual(referenced['stats'],result['stats'])
+
+    def test_view_discovers_current_metric_keys_and_filters_without_recalculation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'current.json'
+            poe.write_json(path,{'stats':{'NewSeasonMechanic':0,'NewSeasonEnabled':False,'OtherMetric':4},'pending':['objective:custom','capability:new']})
+            before=bx.digest(path.read_bytes())
+            with patch.object(engine,'calculate',side_effect=AssertionError('no recalculation')):
+                for pointer,options,expected in [('/stats',['--keys','--query','newseason'],['NewSeasonEnabled','NewSeasonMechanic']),('/pending',['--query','objective:'],['objective:custom'])]:
+                    stdout=io.StringIO()
+                    with redirect_stdout(stdout):code=poe.main(['view','--file',str(path),'--pointer',pointer,*options])
+                    self.assertEqual(code,0);self.assertEqual(json.loads(stdout.getvalue())['value'],expected)
+            self.assertEqual(bx.digest(path.read_bytes()),before)
+
+    def test_native_recipe_error_is_structured_and_remapped_to_source_item(self):
+        diagnostic={'code':'native_invalid_input','action':'edit_input','location':'/crafts/0/affixes/0','expected':{'minimum_item_level':20},'actual':{'item_level':1}}
+        error=engine.EngineError('native rule failed',diagnostic=diagnostic)
+        plan={'operations':{'items':[{'id':1,'text':'unchanged'},{'id':2,'craft':{'base':'current base','ilvl':1,'sockets':'R','affixes':[{'id':'current-id'}]}}]}}
+        with patch.object(engine,'calculate',side_effect=error),self.assertRaises(engine.EngineError) as caught:
+            poe.materialize_items(plan,Path('unused'))
+        self.assertEqual(caught.exception.diagnostic['location'],'/operations/items/1/craft/affixes/0')
+        self.assertEqual(caught.exception.diagnostic['expected'],diagnostic['expected'])
+
+    def test_empty_skill_group_is_valid_array_and_missing_gems_has_location(self):
+        plan={'mode':'refine','summary':'interface placeholder','operations':{'replace_skills':[{'slot':'Boots','gems':[{'skill_id':'ShieldCrush'}]},{'enabled':False,'slot':'','gems':[]}]}}
+        changed=bx.apply_plan(bx.parse(SAMPLE),plan)
+        self.assertEqual(len(bx.groups(changed)),2);self.assertFalse(bx.groups(changed)[1].findall('Gem'))
+        del plan['operations']['replace_skills'][1]['gems']
+        with self.assertRaises(bx.ContractError) as caught:bx.apply_plan(bx.parse(SAMPLE),plan)
+        self.assertEqual(caught.exception.diagnostic['location'],'/operations/replace_skills/1/gems')
+
+    def test_web_cache_namespaces_contexts_and_preserves_previous_observation(self):
+        from email.message import Message
+        class Response:
+            url='https://poedb.tw/us/fixture'
+            headers=Message()
+            def __init__(self,body):self.body=body
+            def read(self,size):return self.body[:size]
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+        with tempfile.TemporaryDirectory() as folder,patch.object(facts,'urlopen',side_effect=[Response(b'<p>first source</p>'),Response(b'<p>other context</p>')]) as network:
+            a=facts.fetch(Response.url,folder,{'engine':'current','league':'user'})
+            facts.fetch(Response.url,folder,'current')
+            again=facts.fetch(Response.url,folder,{'league':'user','engine':'current'})
+            self.assertEqual(network.call_count,2)
+            self.assertEqual(a,again)
+            self.assertEqual(len(list(Path(folder).glob('*.json'))),2)
+
     def test_view_large_saved_json_reads_only_requested_rows_fields_without_engine(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'catalog.json'
@@ -1507,8 +1590,14 @@ class RealEngineTests(unittest.TestCase):
             poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
         bad = copy.deepcopy(recipe)
         bad["ilvl"] = 70
-        with self.assertRaisesRegex(ValueError, "level is too low"):
+        with self.assertRaisesRegex(engine.EngineError, "level is too low") as failure:
             poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
+        diagnostic=failure.exception.diagnostic
+        self.assertEqual(diagnostic["code"],"native_invalid_input")
+        self.assertEqual(diagnostic["action"],"edit_input")
+        self.assertTrue(diagnostic["location"].startswith("/operations/items/0/craft/affixes/"))
+        self.assertGreater(diagnostic["expected"]["minimum_item_level"],bad["ilvl"])
+        self.assertEqual(diagnostic["actual"]["item_level"],bad["ilvl"])
         bad = copy.deepcopy(recipe)
         bad["sockets"] = "W-W-W-W-W"
         with self.assertRaisesRegex(ValueError, "Socket count"):
@@ -1520,6 +1609,22 @@ class RealEngineTests(unittest.TestCase):
         bad["affixes"] = [{"id": mod} for mod in list(unique_prefixes.values())[:4]]
         with self.assertRaisesRegex(ValueError, "Too many Prefix"):
             poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
+
+    def test_40_empty_recipe_and_empty_group_roundtrip_follow_native_format(self):
+        plan={'mode':'refine','summary':'native interface verification only','operations':{
+            'items':[{'id':201,'craft':{'base':'Iron Greaves','ilvl':1,'sockets':'W','affixes':[]}}],
+            'equip':[{'slot':'Boots','item_id':201}],
+            'replace_skills':[{'slot':'Boots','gems':[{'skill_id':'ShieldCrush','level':1}]},{'slot':'','enabled':False,'gems':[]}],
+            'main_group':1}}
+        resolved,audit=poe.materialize_items(plan,self.pob)
+        self.assertEqual(audit[0]['rarity'],'NORMAL')
+        self.assertTrue(audit[0]['text'].startswith('Rarity: NORMAL\nIron Greaves\n'))
+        self.assertEqual(audit[0]['affixes'],[])
+        self.assertNotIn('Prefix: None',audit[0]['text'])
+        document=bx.apply_plan(self.original,resolved,native=self.native)
+        calculated=engine.calculate(self.pob,bx.serialise(document))
+        saved=poe.roundtrip(self.pob,calculated,document)
+        self.assertFalse(bx.groups(bx.parse(saved))[1].findall('Gem'))
 
     def test_16_missing_equipment_is_rejected_even_without_socketed_skills(self):
         plan = copy.deepcopy(self.refine)
@@ -1782,7 +1887,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(first["calculation"]["stats"]["Life"],checked["evidence"]["native:stage:a#/stats/Life"]["value"])
         self.assertEqual(checked["evidence"]["native:stage:a#/stats/Life"]["context"]["xml_sha256"],first["calculation"]["xml_sha256"])
         self.assertTrue(Path(first["calculation"]["xml_path"]).exists())
-        self.assertNotIn("stats",second["calculation"]);self.assertEqual(second["calculation"]["status"],"unsupported")
+        self.assertNotIn("stats",second["calculation"]);self.assertEqual(second["calculation"]["status"],"not_calculated")
         self.assertIn("native:snapshot:b",response["pending"])
         self.assertEqual(checked["budget_assessment"]["status"],"user_declared")
         self.assertEqual(checked["budget_assessment"]["materials"][0]["quantity"],1)

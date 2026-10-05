@@ -73,7 +73,7 @@ def fetch(url, folder, context):
     folder = Path(folder)
     import engine
     engine.check_output_path(folder / "source.json")
-    key = hashlib.sha256(url.encode()).hexdigest()
+    key = hashlib.sha256(json.dumps({"url":url,"context":context},sort_keys=True,ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
     path = folder / (key + ".json")
     stamp = datetime.now(timezone.utc)
     if path.is_file():

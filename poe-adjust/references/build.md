@@ -53,7 +53,7 @@
 |---|---|
 | gems | `[{group:1,index:2,skill_id:"本机ID",level:1,quality:0,...}]`；只改指定宝石 |
 | groups | `[{index:1,enabled:true,slot:"本机槽位",label:"用途",include_in_full_dps:true,main_active_skill:1,group_count:1}]`，按需写字段 |
-| replace_skills | 完整替换当前技能集：`[{slot:"...",gems:[{skill_id:"...",level:1,quality:0}],...组字段}]` |
+| replace_skills | 完整替换当前技能集：`[{slot:"...",gems:[{skill_id:"...",level:1,quality:0}],...组字段}]`；原生占位空组使用 gems:[]，缺字段/非数组报错 |
 | main_group | 当前主技能组的1起索引 |
 | items | `[{id:正整数,text:"原生完整物品文本"}]` 或下述 craft；不改其他物品/非活动套装 |
 | equip | `[{slot:"本机槽位",item_id:物品ID,active:false}]`；0 表示移除；天赋珠宝使用 `Jewel <节点ID>` |
@@ -66,7 +66,7 @@
 
 tree.masteries/masteries_add 使用节点 ID 字符串到效果 ID 的映射；nodes 全量不能混用增量，masteries 全量不能混用局部；保留其他专精。模板路径相对 plan 所在目录，仍须核对实际来源与迁移步骤。
 
-普通稀有配方使用 `items:[{id:100,craft:{base:"当前完整基底名",ilvl:正整数,quality:非负整数,sockets:"R-R G-G",affixes:[{id:"目录词缀ID",roll:0.5}]}}]`。roll 是范围位置0–1，默认0.5；默认品质0。词缀数量、互斥、适用和孔数由本机物品对象核对，不强加3前3后。此助手配方只覆盖原生普通词缀路径；特殊机制用实际物品文本与当前依据，不能假称所有制作都已模拟。
+普通装备配方使用 `items:[{id:100,craft:{base:"当前完整基底名",ilvl:正整数,quality:非负整数,sockets:"R-R G-G",affixes:[{id:"目录词缀ID",roll:0.5}]}}]`。affixes:[] 生成无显性词缀的普通基底，非空生成稀有目标，不添虚构词缀。roll 是范围位置0–1，默认0.5；默认品质0。词缀数量、互斥、适用和孔数由本机物品对象核对，不强加3前3后。配方只覆盖原生普通词缀路径；特殊机制用实际物品文本与当前依据，不假称已模拟全部制作。
 
 ## 按需明细、变体与效率
 

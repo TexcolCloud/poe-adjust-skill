@@ -22,7 +22,15 @@ print = function() end
 -- @LOAD_HEADLESS@
 local json = require("dkjson")
 local request = assert(json.decode(_REQUEST_JSON))
+local function inputRule(condition, message, location, expected, actual, capability)
+  if condition then return end
+  _DIAGNOSTIC_JSON = json.encode({code = capability and "native_capability_unavailable" or "native_invalid_input",
+    message = message, location = location, expected = expected, actual = actual,
+    action = capability and "inspect_capability" or "edit_input", retryable = false})
+  error(message)
+end
 local function calculateRequest(request)
+_DIAGNOSTIC_JSON = nil
 if launch.promptMsg then error(launch.promptMsg) end
 if request.xml ~= "" then loadBuildFromXML(request.xml, "POE Adjust") end
 if launch.promptMsg then error(launch.promptMsg) end
@@ -136,17 +144,16 @@ local function socketCategory(base)
   return "unknown:" .. tostring(base.type)
 end
 result.socket_limits = {}
-for name, base in pairs(data.itemBases) do
+for _, base in pairs(data.itemBases) do
   if type(base.socketLimit) == "number" then
     local category = socketCategory(base)
     local limits = result.socket_limits[category]
     if not limits then
-      limits = {min = base.socketLimit, max = base.socketLimit, example_base = name}
+      limits = {min = base.socketLimit, max = base.socketLimit, scope = "Aggregate capacity only; choose a base using its current requirements and acquisition evidence"}
       result.socket_limits[category] = limits
     end
     limits.min = math.min(limits.min, base.socketLimit)
     limits.max = math.max(limits.max, base.socketLimit)
-    if name < limits.example_base then limits.example_base = name end
   end
 end
 result.main_group = build.mainSocketGroup
@@ -297,44 +304,53 @@ for name, slot in pairs(build.itemsTab.slots) do
   end
 end
 table.sort(result.equipped, function(a, b) return a.slot < b.slot end)
-local function ordinaryRare(baseName)
-  local base = assert(data.itemBases[baseName], "Unknown base; query catalog bases first: " .. tostring(baseName))
-  assert(base.type ~= "Jewel" and base.type ~= "Flask" and base.type ~= "Graft" and base.type ~= "Tincture", "Recipe supports ordinary rare equipment only")
+local function ordinaryRare(baseName, location)
+  local base = data.itemBases[baseName]
+  inputRule(base, "Unknown base; query catalog bases first: " .. tostring(baseName), location or "/query", "current catalog base name", baseName)
+  inputRule(base.type ~= "Jewel" and base.type ~= "Flask" and base.type ~= "Graft" and base.type ~= "Tincture",
+    "Recipe supports ordinary equipment only; use actual item text for this type", location or "/query", "ordinary equipment recipe", base.type, true)
   return new("Item", "Rarity: RARE\nPOE Target\n" .. baseName .. "\nCrafted: true")
 end
 if request.crafts then
   result.crafted_items = {}
-  for _, spec in ipairs(request.crafts) do
-    local item = ordinaryRare(spec.base)
+  for craftIndex, spec in ipairs(request.crafts) do
+    local location = "/crafts/" .. (craftIndex - 1)
+    local item = ordinaryRare(spec.base, location .. "/base")
     item.itemLevel = spec.ilvl
     item.quality = spec.quality or 0
-    local header = {"Rarity: RARE", "POE Target", spec.base, "Crafted: true", "Item Level: " .. spec.ilvl, "Quality: " .. item.quality}
+    local rare = #spec.affixes > 0
+    local header = rare and {"Rarity: RARE", "POE Target", spec.base, "Crafted: true"} or {"Rarity: NORMAL", spec.base}
+    table.insert(header, "Item Level: " .. spec.ilvl)
+    table.insert(header, "Quality: " .. item.quality)
+    local affixLimits = {total = item.affixLimit, prefix = item.prefixes.limit or item.affixLimit / 2, suffix = item.suffixes.limit or item.affixLimit / 2}
     for _, defence in ipairs({"Armour", "Evasion", "EnergyShield", "Ward"}) do
       if item.base.armour and item.base.armour[defence .. "BaseMin"] then table.insert(header, defence .. "BasePercentile: 0.5") end
     end
     if item.base.socketLimit then
-      assert(spec.sockets and #spec.sockets > 0, "Recipe requires explicit sockets for this base")
+      inputRule(spec.sockets and #spec.sockets > 0, "Recipe requires explicit sockets for this base", location .. "/sockets", {maximum = item.base.socketLimit}, spec.sockets or "")
       local count = 0
       for _ in spec.sockets:gmatch("[RGBW]") do count = count + 1 end
-      assert(count <= item.base.socketLimit, "Socket count exceeds base limit")
+      inputRule(count <= item.base.socketLimit, "Socket count exceeds base limit", location .. "/sockets", {maximum = item.base.socketLimit}, {count = count})
       table.insert(header, "Sockets: " .. spec.sockets)
     else
-      assert(not spec.sockets or spec.sockets == "", "This ordinary base has no gem sockets")
+      inputRule(not spec.sockets or spec.sockets == "", "This ordinary base has no gem sockets", location .. "/sockets", "", spec.sockets)
     end
     local seen, counts, audit = {}, {Prefix = 0, Suffix = 0}, {}
-    for _, affix in ipairs(spec.affixes) do
-      local mod = assert(data.itemMods.Explicit[affix.id], "Not an ordinary explicit modifier: " .. affix.id)
-      assert(mod.type == "Prefix" or mod.type == "Suffix", "Recipe accepts prefixes and suffixes only")
-      assert(item:GetModSpawnWeight(mod) > 0, "Modifier cannot naturally roll on base: " .. affix.id)
-      assert(mod.level <= spec.ilvl, "Item level is too low for modifier: " .. affix.id)
-      assert(not seen[mod.group], "Conflicting modifier group: " .. mod.group)
+    for affixIndex, affix in ipairs(spec.affixes) do
+      local affixPath = location .. "/affixes/" .. (affixIndex - 1)
+      local mod = data.itemMods.Explicit[affix.id]
+      inputRule(mod, "Not an ordinary explicit modifier: " .. affix.id, affixPath .. "/id", "current ordinary modifier ID", affix.id)
+      inputRule(mod.type == "Prefix" or mod.type == "Suffix", "Recipe accepts prefixes and suffixes only", affixPath .. "/id", {"Prefix", "Suffix"}, mod.type)
+      inputRule(item:GetModSpawnWeight(mod) > 0, "Modifier cannot naturally roll on base: " .. affix.id, affixPath .. "/id", {positive_spawn_weight = true, base = spec.base}, {spawn_weight = item:GetModSpawnWeight(mod)})
+      inputRule(mod.level <= spec.ilvl, "Item level is too low for modifier: " .. affix.id, affixPath, {minimum_item_level = mod.level}, {item_level = spec.ilvl})
+      inputRule(not seen[mod.group], "Conflicting modifier group: " .. mod.group, affixPath .. "/id", {unique_group = mod.group}, affix.id)
       seen[mod.group] = true
       counts[mod.type] = counts[mod.type] + 1
       local nativeLimit
       if mod.type == "Prefix" then nativeLimit = item.prefixes.limit else nativeLimit = item.suffixes.limit end
       nativeLimit = nativeLimit or item.affixLimit and item.affixLimit / 2
-      assert(type(nativeLimit) == "number", "Native affix limit is unavailable")
-      assert(counts[mod.type] <= nativeLimit, "Too many " .. mod.type .. " modifiers for current native item")
+      inputRule(type(nativeLimit) == "number", "Native affix limit is unavailable", affixPath, "native item affix limit", nil, true)
+      inputRule(counts[mod.type] <= nativeLimit, "Too many " .. mod.type .. " modifiers for current native item", affixPath, {type = mod.type, maximum = nativeLimit}, {count = counts[mod.type]})
       local roll = affix.roll or 0.5
       table.insert(header, mod.type .. ": {range:" .. roll .. "}" .. affix.id)
       table.insert(audit, {id = affix.id, type = mod.type, group = mod.group, required_item_level = mod.level, roll = roll})
@@ -344,9 +360,9 @@ if request.crafts then
     table.insert(header, "Implicits: " .. #implicits)
     for _, line in ipairs(implicits) do table.insert(header, line) end
     item = new("Item", table.concat(header, "\n"))
-    item:Craft()
+    if rare then item:Craft() end
     table.insert(result.crafted_items, {id = spec.id, text = item:BuildRaw(), base = spec.base, affixes = audit,
-      affix_limits = {total = item.affixLimit, prefix = item.prefixes.limit or item.affixLimit / 2, suffix = item.suffixes.limit or item.affixLimit / 2},
+      rarity = item.rarity, affix_limits = affixLimits,
       scope = "Ordinary native modifier pool, modifier item-level requirements, exclusive groups and native item affix limits. Base availability, quality attainability, crafting process and prices require evidence."})
   end
 end
