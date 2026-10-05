@@ -3,10 +3,10 @@ from __future__ import annotations
 import copy
 import html
 import json
-import math
 import buildxml as bx
 import engine
 import facts
+import resources
 
 ATTRIBUTES = {"strength":"力量", "dexterity":"敏捷", "intelligence":"智慧"}
 ROUTE_FIELDS={"schema_version","name","confirmed","goal","objectives","league","game_version","class_id","ascendancy","trade_mode","budget","version_source","scope","gems","stages","risks","notes","allow_minions","allow_mule","constraint_sources","evidence","claims","assessment","inventory","shopping"}
@@ -23,7 +23,16 @@ def preflight(route, *, complete=True):
     bx.require(route.get("schema_version")==2,"路线使用 schema_version=2。",location="/schema_version",expected=2,actual=route.get("schema_version"))
     for field in ("evidence","claims","inventory","shopping","objectives","stages"):
         if field in route: bx.require(isinstance(route[field],list),field+" 应为数组。",location="/"+field,expected="array",actual=type(route[field]).__name__)
-    facts.evidence_shape(route.get("evidence",[]),complete=complete)
+    facts.model_shape(route,complete=complete)
+    for field in ("confirmed","allow_minions","allow_mule"):
+        if field in route: bx.require(type(route[field]) is bool,field+" 应为布尔值。",location="/"+field,expected="boolean",actual=route[field])
+    if route.get("trade_mode") is not None:
+        bx.require(isinstance(route["trade_mode"],str) and route["trade_mode"] in {"ssf","trade"},"trade_mode 使用 ssf/trade 或暂不填写。",location="/trade_mode",expected=["ssf","trade",None],actual=route["trade_mode"])
+    if "class_id" in route: bx.require(type(route["class_id"]) is int and route["class_id"]>=0,"class_id 使用本机职业整数 ID。",location="/class_id",expected="nonnegative integer",actual=route["class_id"])
+    for field in ("name","goal","league","scope"):
+        if field in route: bx.require(isinstance(route[field],str),field+" 应为文字。",location="/"+field,expected="string",actual=route[field])
+    for field in ("ascendancy","game_version"):
+        if field in route: bx.require(route[field] is None or isinstance(route[field],str),field+" 应为文字或 null。",location="/"+field,expected="string or null",actual=route[field])
     stages=route.get("stages",[])
     if complete:
         bx.require(route.get("confirmed") is True,"先确认路线方向。",location="/confirmed",expected=True,actual=route.get("confirmed"))
@@ -51,6 +60,10 @@ def preflight(route, *, complete=True):
         if "snapshot" in stage:
             snap=stage["snapshot"]
             bx.require_keys(snap,SNAPSHOT_FIELDS,path+"/snapshot")
+            try: resources.input_shape(snap,complete=complete)
+            except bx.ContractError as exc:
+                exc.diagnostic["location"]=path+"/snapshot"+exc.diagnostic.get("location","")
+                raise
             if "operations" in snap:
                 bx.require_keys(snap["operations"],SNAPSHOT_OPERATION_FIELDS,path+"/snapshot/operations","阶段等级和基础技能列表来自 stage；snapshot.operations 不能另设 level/replace_skills。")
                 try: bx.plan_shape({"operations":snap["operations"]},complete=False)
@@ -148,12 +161,6 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     bx.require(selected,"class_id 应来自当前 catalog classes。",location="/class_id",expected=[c["id"] for c in classes or []],actual=route.get("class_id"))
     asc=next((a for a in selected["ascendancies"] if a["name"]==route.get("ascendancy")),None)
     bx.require(not route.get("ascendancy") or asc,"升华不属于所选本机职业。",location="/ascendancy",expected=[a["name"] for a in selected["ascendancies"]],actual=route.get("ascendancy"))
-    if route.get("trade_mode") is not None: bx.require(route["trade_mode"] in {"ssf","trade"},"trade_mode 使用 ssf/trade 或暂不填写。")
-    for flag in ("allow_minions","allow_mule"):
-        if flag in route: bx.require(type(route[flag]) is bool,flag+" 应为用户明确表达的布尔值。")
-    if route.get("budget") is not None:
-        budget=route["budget"]
-        bx.require(isinstance(budget,dict) and set(budget)=={"amount","currency"} and type(budget["amount"]) in (int,float) and math.isfinite(budget["amount"]) and budget["amount"]>=0 and isinstance(budget["currency"],str) and budget["currency"],"路线 budget 需要有限非负 amount 与 currency。")
     evidence,claims=evidence or {},claims or []
     source_map=route.get("constraint_sources",{})
     bx.require(isinstance(source_map,dict),"constraint_sources 应为字段路径映射。")

@@ -211,6 +211,105 @@ def load_evidence(declarations, folder, context, *, root=None):
     return result
 
 
+def model_shape(document, *, complete=True):
+    """Validate shared model inputs before writes, native queries or source fetches."""
+    import resources
+    resources.input_shape(document,complete=complete)
+    budget=document.get("budget")
+    if budget is not None:
+        bx.require_keys(budget,{"amount","currency"},"/budget")
+        bx.require(set(budget)=={"amount","currency"},"budget 需要 amount/currency；未确定时为 null。",location="/budget",expected=["amount","currency"],actual=sorted(budget))
+        bx.require(type(budget["amount"]) in (int,float) and math.isfinite(budget["amount"]) and budget["amount"]>=0,"预算金额应为有限非负数。",location="/budget/amount",expected="finite nonnegative number",actual=budget["amount"])
+        bx.require(isinstance(budget["currency"],str) and budget["currency"].strip(),"预算需要通货单位。",location="/budget/currency",expected="nonempty string",actual=budget["currency"])
+    evidence_shape(document.get("evidence",[]),complete=complete)
+    sources=document.get("constraint_sources",{})
+    bx.require(isinstance(sources,dict),"constraint_sources 为字段路径到 evidence_id 的映射。",location="/constraint_sources",expected="object",actual=type(sources).__name__)
+    for key,value in sources.items():
+        location="/constraint_sources/"+key.replace("~","~0").replace("/","~1")
+        bx.require(key.startswith("/") and isinstance(value,str) and value.strip(),"约束映射的键为字段路径，值为单个 evidence_id。",location=location,expected="nonempty evidence_id string",actual=value)
+    objectives=document.get("objectives",[])
+    bx.require(isinstance(objectives,list),"objectives 应为数组。",location="/objectives",expected="array",actual=type(objectives).__name__)
+    for index,entry in enumerate(objectives):
+        location=f"/objectives/{index}"
+        bx.require_keys(entry,{"objective_id","text","evidence_refs"},location)
+        for field in ("objective_id","text"):
+            if complete or field in entry: bx.require(isinstance(entry.get(field),str) and entry[field].strip(),field+" 应为非空文字。",location=location+"/"+field,expected="nonempty string",actual=entry.get(field))
+        if complete or "evidence_refs" in entry:
+            refs=entry.get("evidence_refs")
+            bx.require(isinstance(refs,list) and all(isinstance(ref,str) and ref for ref in refs),"目标依据为 evidence_id 数组。",location=location+"/evidence_refs",expected="string array",actual=refs)
+    claim_shape(document.get("claims",[]),complete=complete)
+    assessment=document.get("assessment",{})
+    bx.require_keys(assessment,{"goal_claim_ids","scope","unresolved","review"},"/assessment")
+    for field in ("goal_claim_ids","unresolved"):
+        if field in assessment: bx.require(isinstance(assessment[field],list) and all(isinstance(v,str) and v.strip() for v in assessment[field]),field+" 应为文字数组。",location="/assessment/"+field,expected="string array",actual=assessment[field])
+    if "scope" in assessment: bx.require(isinstance(assessment["scope"],str),"scope 应为文字。",location="/assessment/scope",expected="string",actual=assessment["scope"])
+    if "review" in assessment:
+        review=assessment["review"]
+        bx.require_keys(review,{"token","findings","unresolved"},"/assessment/review")
+        for field in ("token","findings"):
+            if complete or field in review: bx.require(isinstance(review.get(field),str) and review[field].strip(),field+" 应为非空文字。",location="/assessment/review/"+field,expected="nonempty string",actual=review.get(field))
+        if "unresolved" in review: bx.require(isinstance(review["unresolved"],list) and all(isinstance(v,str) and v.strip() for v in review["unresolved"]),"review.unresolved 应为文字数组。",location="/assessment/review/unresolved",expected="string array",actual=review["unresolved"])
+
+
+def claim_shape(claims, *, complete=True):
+    bx.require(isinstance(claims,list),"claims 应为数组。",location="/claims",expected="array",actual=type(claims).__name__)
+    seen=set()
+    for index,entry in enumerate(claims):
+        path=f"/claims/{index}"
+        bx.require_keys(entry,{"claim_id","claim_type","text","subjects","evidence_refs","conditions","uncertainties","checks","bindings"},path,"claim 字段无效，状态由程序生成。")
+        for field in ("claim_id","text"):
+            if complete or field in entry: bx.require(isinstance(entry.get(field),str) and entry[field].strip(),field+" 应为非空文字。",location=path+"/"+field,expected="nonempty string",actual=entry.get(field))
+        key=entry.get("claim_id")
+        bx.require(key is None or key not in seen,"claim_id 不能重复。",location=path+"/claim_id",expected="unique identifier",actual=key);seen.add(key)
+        for field in ("subjects","evidence_refs","conditions","uncertainties"):
+            if field in entry or complete and field=="subjects":
+                values=entry.get(field)
+                bx.require(isinstance(values,list) and all(isinstance(v,str) and v.strip() for v in values) and (field!="subjects" or values),field+" 使用非空文字的数组。",location=path+"/"+field,expected="string array",actual=values)
+        kind=entry.get("claim_type","judgment")
+        bx.require(isinstance(kind,str) and kind in {"judgment","comparison"},"claim_type 使用 judgment 或 comparison。",location=path+"/claim_type",expected=["judgment","comparison"],actual=kind)
+        checks=entry.get("checks",[])
+        bx.require(isinstance(checks,list) and (kind!="comparison" or checks),"comparison 必须提供 checks；judgment 不证明可比较命题成立。",location=path+"/checks",expected="nonempty checks array" if kind=="comparison" else "array",actual=checks)
+        for ci,check in enumerate(checks):
+            cp=path+f"/checks/{ci}"
+            bx.require_keys(check,{"reference","op","value"},cp)
+            bx.require(set(check)=={"reference","op","value"},"检查使用 reference/op/value。",location=cp,expected=["reference","op","value"],actual=sorted(check))
+            bx.require(isinstance(check["reference"],str) and check["reference"].startswith("native:"),"检查使用当前 native 引用。",location=cp+"/reference",expected="native reference",actual=check["reference"])
+            try: check_value(None,check["op"],check["value"])
+            except bx.ContractError as exc:
+                exc.diagnostic["location"]=cp
+                raise
+        if "bindings" in entry:
+            values=entry["bindings"]
+            bx.require(isinstance(values,dict) and all(isinstance(k,str) and isinstance(v,str) and (k=="engine" or re.fullmatch(r"[0-9a-f]{64}",v)) for k,v in values.items()),"bindings 使用 edit 返回的依赖摘要。",location=path+"/bindings",expected="digest mapping",actual=values)
+
+
+def claim_references(claim):
+    embedded=[ref for _,ref in re.findall(r"\{\{(value|fact):([^{}]+)\}\}",claim["text"])]
+    return list(dict.fromkeys(claim.get("evidence_refs",[])+embedded+[c["reference"] for c in claim.get("checks",[])]))
+
+
+def claim_bindings(document, claim, engine_fingerprint):
+    """Bind a judgment to its declared source objects, not to other judgments."""
+    def digest(value): return bx.digest(json.dumps(value,ensure_ascii=False,sort_keys=True,allow_nan=False))
+    omitted={"stages","claims","evidence","objectives","assessment"}
+    result={"document":digest({k:v for k,v in document.items() if k not in omitted}),"engine":engine_fingerprint}
+    stages={s["stage_id"]:s for s in document.get("stages",[])}
+    objectives={o["objective_id"]:o for o in document.get("objectives",[])}
+    for subject in claim.get("subjects",[]):
+        kind,_,identifier=subject.partition(":")
+        if kind=="configuration" and identifier.startswith("stage:"): result[identifier]=digest(stages.get(identifier[len("stage:"):]))
+        elif kind in {"stage","snapshot"}: result["stage:"+identifier]=digest(stages.get(identifier))
+        elif kind=="objective": result[subject]=digest(objectives.get(identifier))
+        elif stages: result["stages"]=digest(document["stages"])
+    declared={e["evidence_id"]:e for e in document.get("evidence",[])}
+    for reference in claim_references(claim):
+        if reference.startswith("native:stage:"):
+            name=reference[len("native:"):].partition("#")[0]
+            result[name]=digest(stages.get(name[len("stage:"):]))
+        elif not reference.startswith("native:"): result["evidence:"+reference]=digest(declared.get(reference))
+    return result
+
+
 def resolve_reference(reference, evidence, native=None):
     bx.require(isinstance(reference, str) and reference, "证据引用应为非空字符串。")
     if reference.startswith("native:"):
@@ -278,7 +377,7 @@ def format_observation(record):
 def check_value(actual, op, expected):
     """A three-valued scalar comparison shared by claims and stage checks."""
     comparisons={"eq":operator.eq,"ge":operator.ge,"le":operator.le}
-    bx.require(op in comparisons,"op 使用 eq/ge/le。",expected=sorted(comparisons),actual=op)
+    bx.require(isinstance(op,str) and op in comparisons,"op 使用 eq/ge/le。",expected=sorted(comparisons),actual=op)
     bx.require(type(expected) in (int,float,bool,str) and (type(expected) is not float or math.isfinite(expected)),"检查目标为有限数值、布尔或字符串。",actual=expected)
     numeric=type(actual) in (int,float) and type(expected) in (int,float)
     comparable=type(actual) in (int,float,bool,str) and (type(actual) is not float or math.isfinite(actual)) and (numeric or op=="eq" and type(actual) is type(expected))
@@ -286,30 +385,22 @@ def check_value(actual, op, expected):
     return "supported" if comparisons[op](actual,expected) else "refuted"
 
 
-def assess_claims(claims, evidence, native=None):
-    bx.require(isinstance(claims, list), "claims 应为数组。")
-    result, seen = [], set()
+def assess_claims(claims, evidence, native=None, *, specification=None, engine_fingerprint=None):
+    claim_shape(claims)
+    result = []
     for index, entry in enumerate(claims):
-        bx.require_keys(entry,{"claim_id", "text", "subjects", "evidence_refs", "conditions", "uncertainties", "checks"},f"/claims/{index}","claim 字段无效，判断状态由程序标注。")
         key = entry.get("claim_id")
-        bx.require(isinstance(key, str) and key and key not in seen, "claim_id 应唯一且非空。")
-        seen.add(key)
-        bx.require(isinstance(entry.get("text"), str) and entry["text"].strip(), "claim 需要具体 text。")
         row = dict(entry)
         for field in ("subjects", "evidence_refs", "conditions", "uncertainties"):
             row[field] = entry.get(field, [])
-            bx.require(isinstance(row[field], list) and all(isinstance(v, str) and v.strip() for v in row[field]), field + " 应为非空字符串数组。")
-        bx.require(row["subjects"], "claim 需要关联具体 subjects。")
         missing, diagnostics = [], []
+        if specification is not None:
+            expected=claim_bindings(specification,entry,engine_fingerprint)
+            if entry.get("bindings")!=expected:
+                missing.append("claim_revision:"+key)
+                diagnostics.append({"code":"claim_binding_stale" if entry.get("bindings") else "claim_binding_missing","location":f"/claims/{index}/bindings","action":"review_claims","claim_id":key,"message":"核对当前对象后用 edit 的 review_claims 提交此判断的重新评审；摘要由程序写入。"})
         checks=entry.get("checks",[])
-        bx.require(isinstance(checks,list),"checks 为引用到实际值的检查数组。",location=f"/claims/{index}/checks",expected="array",actual=type(checks).__name__)
-        for check_index,check in enumerate(checks):
-            bx.require_keys(check,{"reference","op","value"},f"/claims/{index}/checks/{check_index}")
-            bx.require(set(check)=={"reference","op","value"},"每项检查需要 reference/op/value。",location=f"/claims/{index}/checks/{check_index}",expected=["reference","op","value"],actual=sorted(check))
-            bx.require(isinstance(check["reference"],str) and check["reference"].startswith("native:"),"数值检查使用当前程序返回的 native 引用。",location=f"/claims/{index}/checks/{check_index}/reference",expected="native reference",actual=check["reference"])
-            check_value(None,check["op"],check["value"])
-        embedded=[ref for _,ref in re.findall(r"\{\{(value|fact):([^{}]+)\}\}",row["text"])]
-        references=list(dict.fromkeys(row["evidence_refs"]+embedded+[c["reference"] for c in checks]))
+        references=claim_references(entry)
         row["evidence_refs"]=references
         for reference in references:
             try:
@@ -340,6 +431,8 @@ def assess_claims(claims, evidence, native=None):
             if verdict!="supported": diagnostics.append({"code":"claim_check_"+verdict,"location":f"/claims/{index}/checks/{check_index}","reference":check["reference"],"expected":check["value"],"actual":observation.get("value"),"action":"revise_conclusion","message":"此数值检查"+("与当前值矛盾。" if verdict=="refuted" else "尚无可比较实际值。")})
         row["checks"]=checked
         row["check_status"]="refuted" if any(c["status"]=="refuted" for c in checked) else "unknown" if any(c["status"]=="unknown" for c in checked) else "supported" if checked else "not_requested"
+        row["claim_type"]=entry.get("claim_type","comparison" if checks else "judgment")
+        row["verification_scope"]="仅所列可比较检查" if checks else "模型解释；未验证可比较命题"
         row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] and row["check_status"] in {"supported","not_requested"} else "unresolved"
         row["missing_evidence"] = missing
         row["diagnostics"] = diagnostics
@@ -352,6 +445,12 @@ def assess_claims(claims, evidence, native=None):
 
 def has_claim(claims, subject):
     return any(row["status"] == "model_assessed" and subject in row["subjects"] for row in claims)
+
+
+def configuration_reviewed(claims, calculation_name):
+    reference="native:"+calculation_name+"#/config_values"
+    return any(c["status"]=="model_assessed" and "configuration:"+calculation_name in c["subjects"] and
+               any(ref==reference or ref.startswith(reference+"/") for ref in c["evidence_refs"]) for c in claims)
 
 
 def objective_coverage(objectives, evidence, claims):
@@ -375,7 +474,9 @@ def objective_coverage(objectives, evidence, claims):
         if not basis: diagnostics.append({"code":"objective_basis_missing","location":path+"/evidence_refs","action":"record_user_basis","message":"关联实际 user_statement；模型建议不冒充用户要求。"})
         if not linked: diagnostics.append({"code":"objective_subject_missing","location":"/claims","action":"link_claim","required_subject":"objective:"+key,
                                           "message":"在说明本目标的 claim.subjects 中加入 objective:"+key+"；claim_id 只是标识，不能代替 subjects。"})
-        rows.append({**entry,"required_subject":"objective:"+key,"diagnostics":diagnostics,"basis_status":"user_declared" if basis else "unresolved","claim_ids":[c["claim_id"] for c in linked],
+        checked=[check for claim in linked for check in claim.get("checks",[])]
+        measured="refuted" if any(c["status"]=="refuted" for c in checked) else "unknown" if any(c["status"]=="unknown" for c in checked) else "supported" if checked else "not_requested"
+        rows.append({**entry,"required_subject":"objective:"+key,"diagnostics":diagnostics,"basis_status":"user_declared" if basis else "unresolved","claim_ids":[c["claim_id"] for c in linked],"declared_checks_status":measured,
                      "status":"model_assessed" if assessed else "unresolved","scope":"目标拆分与证据解释由模型负责，存在关联不证明目标已经达到。"})
         if not assessed: pending.append("objective:"+key)
     return rows,pending
@@ -400,7 +501,7 @@ def delivery_brief(status, errors, pending):
     message=labels[status]+"。"
     if errors: message+=f"已知错误 {len(errors)} 项。"
     if categories: message+="未解决："+"、".join(names.get(k,k)+f"（{v}项）" for k,v in categories.items())+"。"
-    return {"status":status,"label":labels[status],"errors_total":len(errors),"pending_total":len(set(pending)),
+    return {"status":status,"label":labels[status],"valid_statuses":list(labels),"errors_total":len(errors),"pending_total":len(set(pending)),
             "unresolved_categories":categories,"message":message,
             "scope":"仅汇总实际校验状态；计算/回读成功与方案合法、可取得、可执行、满足目标分别判断。"}
 

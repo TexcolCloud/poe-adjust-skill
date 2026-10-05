@@ -414,6 +414,44 @@ class RouteTests(unittest.TestCase):
         self.equipment={stage["stage_id"]:{"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Iron Gauntlets","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}} for stage in self.route["stages"]}
     def check(self):
         return routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,equipment=self.equipment,evidence=self.evidence)
+
+    def test_mapping_types_rejected_at_real_route_entry_before_queries(self):
+        for value in ({"evidence_id":"user"},["user"],None,False,12):
+            with self.subTest(value=value),tempfile.TemporaryDirectory() as folder:
+                route=copy.deepcopy(self.route);route["constraint_sources"]["/goal"]=value
+                source=Path(folder)/"route.json";poe.write_json(source,route);before=source.read_bytes()
+                with patch.object(poe,"native_queries") as native,self.assertRaises(bx.ContractError) as error:
+                    poe.calculate_route(args(invoked=True,file=str(source),out=str(Path(folder)/"route.html")))
+                native.assert_not_called();self.assertEqual(source.read_bytes(),before)
+                self.assertEqual(error.exception.diagnostic["location"],"/constraint_sources/~1goal")
+
+    def test_invalid_scalar_and_schedule_shapes_fail_before_route_queries(self):
+        cases=[({"trade_mode":{}},"/trade_mode"),({"allow_mule":0},"/allow_mule"),
+               ({"class_id":False},"/class_id"),({"budget":{"amount":True,"currency":"currency"}},"/budget/amount"),
+               ({"budget":{"amount":1,"currency":[]}},"/budget/currency")]
+        for change,location in cases:
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as folder:
+                route={**copy.deepcopy(self.route),**change}
+                source=Path(folder)/"route.json";poe.write_json(source,route)
+                with patch.object(poe,"native_queries") as native,self.assertRaises(bx.ContractError) as error:
+                    poe.calculate_route(args(invoked=True,file=str(source),out=str(Path(folder)/"route.html")))
+                native.assert_not_called();self.assertEqual(error.exception.diagnostic["location"],location)
+        for field,value,location in [("usage",[{"skill_ref":[]}],"/usage/0/skill_ref"),
+                                      ("timeline",{"duration_seconds":2,"events":[{"skill_ref":"observed","at":2}]},"/timeline/events/0/at")]:
+            with self.subTest(field=field),tempfile.TemporaryDirectory() as folder:
+                route=copy.deepcopy(self.route);route["stages"][0]["snapshot"]={field:value}
+                source=Path(folder)/"route.json";poe.write_json(source,route)
+                with patch.object(poe,"native_queries") as native,self.assertRaises(bx.ContractError) as error:
+                    poe.calculate_route(args(invoked=True,file=str(source),out=str(Path(folder)/"route.html")))
+                native.assert_not_called();self.assertEqual(error.exception.diagnostic["location"],"/stages/0/snapshot"+location)
+
+    def test_unknown_version_and_unascended_state_remain_valid_shapes(self):
+        route={**copy.deepcopy(self.route),"game_version":None,"ascendancy":None}
+        self.assertIs(routes.preflight(route),route)
+        for field in ("game_version","ascendancy"):
+            with self.subTest(field=field),self.assertRaises(bx.ContractError) as error:
+                routes.preflight({**route,field:{}})
+            self.assertEqual(error.exception.diagnostic["location"],"/"+field)
     def test_same_level_and_current_character_start(self):
         self.route["stages"]=self.route["stages"][1:];self.route["stages"][1]["level"]=12
         checked,_=self.check();self.assertEqual([s["level"] for s in checked["stages"]],[12,12])
@@ -1427,6 +1465,15 @@ class EditAndRecoveryTests(unittest.TestCase):
         poe.write_json(self.request,change)
         return poe.edit_document(args(kind=kind,file=str(self.source),changes=str(self.request),if_sha256=revision,invoked=True))
 
+    def test_doctor_preserves_native_capabilities_and_exposes_adapter_boundaries(self):
+        stdout=io.StringIO()
+        with patch.object(engine,"health",return_value={"capabilities":{"observed_native_feature":True},"health_probe":{"roundtrip":True}}),redirect_stdout(stdout):
+            code=poe.main(["doctor"])
+        self.assertEqual(code,0);result=json.loads(stdout.getvalue())
+        self.assertTrue(result["capabilities"]["observed_native_feature"])
+        self.assertEqual(result["capabilities"]["timeline"],resources.capabilities()["timeline"])
+        self.assertEqual(result["delivery_statuses"],["blocked","draft","scoped_result"])
+
     def test_save_direction_then_increment_stage_with_generated_handles_and_retry(self):
         first=self.edit({"set":{"name":"Provisional direction","goal":"user direction"}})
         self.assertEqual(first["status"],"saved_draft");self.assertNotIn("stages",poe.read_json(self.source))
@@ -1532,6 +1579,125 @@ class EditAndRecoveryTests(unittest.TestCase):
         self.assertEqual(code,0);reply=json.loads(stdout.getvalue());self.assertLess(len(stdout.getvalue()),12000)
         saved=poe.read_json(reply["receipt_file"]);self.assertEqual(len(saved["stage_instances"]),200)
         self.assertEqual(reply["next_actions"][1]["pointer"],"/stage_instances")
+
+    def test_partial_array_replacement_is_rejected_without_mutation(self):
+        first=self.edit({"set":{"stages":[{"stage_id":"a","skill_groups":[{"name":"first","gems":[]},{"name":"second","gems":[]}]}]}})
+        before=self.source.read_bytes()
+        with self.assertRaises(bx.ContractError) as error:
+            self.edit({"set":{"stages":[{"stage_id":"a","skill_groups":[{"name":"first","gems":[]}]}]}},first["revision"])
+        self.assertEqual(error.exception.diagnostic["code"],"explicit_replacement_required")
+        self.assertEqual(self.source.read_bytes(),before)
+
+    def test_pointer_replacement_preserves_every_other_field_and_counts_are_actual(self):
+        first=self.edit({"set":{"stages":[{"stage_id":"a","skill_groups":[{"name":"first","use":"old","gems":[{"skill_id":"Future","level":1}]},{"name":"second","gems":[]}]}]}})
+        expected=poe.read_json(self.source);expected["stages"][0]["skill_groups"][0]["use"]="new"
+        result=self.edit({"replace":{"/stages/0/skill_groups/0/use":"new"}},first["revision"])
+        self.assertEqual(poe.read_json(self.source),expected)
+        self.assertEqual(result["counts"]["skill_groups"],2)
+        self.assertEqual(result["counts"]["gems"],1)
+        self.assertEqual(result["actual_changes"],[{"pointer":"/stages/0/skill_groups/0/use","before":"old","after":"new"}])
+        self.assertEqual(result["artifacts"]["temporary"],[])
+        self.assertEqual(result["artifacts"]["persistent_state"][0]["path"],str(self.source.with_suffix(".edit.json")))
+
+    def test_nested_mapping_type_fails_before_native_query_or_save(self):
+        first=self.edit({"set":{"name":"original"}});before=self.source.read_bytes()
+        with patch.object(poe,"native_queries") as query,self.assertRaises(bx.ContractError) as error:
+            self.edit({"set":{"constraint_sources":{"/goal":{"evidence_id":"u"}}}},first["revision"])
+        query.assert_not_called();self.assertEqual(self.source.read_bytes(),before)
+        self.assertEqual(error.exception.diagnostic["location"],"/constraint_sources/~1goal")
+
+    def test_unrelated_stage_change_preserves_binding_and_related_change_invalidates(self):
+        first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first"},{"stage_id":"b","name":"second"}],"evidence":[{"evidence_id":"u","kind":"user_statement","subject":"goal","text":"actual user request"}],"claims":[{"claim_id":"c","text":"stage explanation","subjects":["stage:a"],"evidence_refs":["u"]}]}})
+        second=self.edit({"set":{"stages":[{"stage_id":"b","name":"unrelated change"}]}},first["revision"])
+        self.assertEqual(second["invalidated_claims"],[])
+        third=self.edit({"set":{"stages":[{"stage_id":"a","name":"related change"}]}},second["revision"])
+        self.assertEqual(third["invalidated_claims"],["c"])
+        spec=poe.read_json(self.source)
+        checked=facts.assess_claims(spec["claims"],{"u":{"status":"user_declared"}},specification=spec,engine_fingerprint="fixture")
+        self.assertEqual(checked[0]["status"],"unresolved")
+        refreshed=self.edit({"review_claims":["c"]},third["revision"])
+        self.assertEqual(refreshed["invalidated_claims"],[])
+
+    def test_review_submission_cannot_mix_input_changes(self):
+        first=self.edit({"set":{"assessment":{"unresolved":[]}}});before=self.source.read_bytes()
+        with self.assertRaises(bx.ContractError) as error:
+            self.edit({"set":{"assessment":{"unresolved":["new"],"review":{"token":"old","findings":"reviewed"}}}},first["revision"])
+        self.assertEqual(error.exception.diagnostic["code"],"review_transaction_mixed")
+        self.assertEqual(self.source.read_bytes(),before)
+
+    def test_comparison_declaration_requires_checks_before_save(self):
+        first=self.edit({"set":{"name":"draft"}});before=self.source.read_bytes()
+        with self.assertRaises(bx.ContractError) as error:
+            self.edit({"set":{"claims":[{"claim_id":"c","claim_type":"comparison","text":"target met","subjects":["goal"],"evidence_refs":["native:candidate#/stats/NewMetric"]}]}},first["revision"])
+        self.assertEqual(error.exception.diagnostic["location"],"/claims/0/checks")
+        self.assertEqual(self.source.read_bytes(),before)
+
+    def test_current_comparison_is_refuted_and_report_exposes_measurement_scope(self):
+        ref="native:candidate#/stats/NewMetric"
+        first=self.edit({"set":{"claims":[{"claim_id":"c","claim_type":"comparison","text":"target met","subjects":["goal"],"checks":[{"reference":ref,"op":"ge","value":4}]}]}})
+        document=poe.read_json(self.source)
+        rows=facts.assess_claims(document["claims"],{}, {"candidate":{"stats":{"NewMetric":3}}},specification=document,engine_fingerprint="fixture")
+        self.assertEqual(rows[0]["status"],"unresolved");self.assertEqual(rows[0]["check_status"],"refuted")
+        published=poe.publication("draft",[],["claim_check:c"],{"status":"unknown"},{},claims=rows)
+        self.assertEqual(published["declared_checks"][0]["actual"],3)
+        self.assertEqual(published["declared_checks"][0]["status"],"refuted")
+        self.assertIn("flask",published["capabilities"]["timeline"]["excluded_recovery"])
+
+    def test_corrupt_receipt_recovers_from_current_source_revision(self):
+        first=self.edit({"set":{"name":"before"}})
+        self.source.with_suffix(".edit.json").write_text("incomplete JSON",encoding="utf-8")
+        result=self.edit({"set":{"name":"after"}},first["revision"])
+        self.assertEqual(poe.read_json(self.source)["name"],"after")
+        self.assertEqual(poe.read_json(self.source.with_suffix(".edit.json"))["revision"],result["revision"])
+
+    def test_configuration_review_uses_actual_reference_and_current_judgment(self):
+        ref="native:stage:a#/config_values"
+        claims=[{"claim_id":"c","status":"model_assessed","subjects":["configuration:stage:a"],"evidence_refs":[ref]}]
+        self.assertTrue(facts.configuration_reviewed(claims,"stage:a"))
+        self.assertFalse(facts.configuration_reviewed(claims,"stage:b"))
+        claims[0]["status"]="unresolved"
+        self.assertFalse(facts.configuration_reviewed(claims,"stage:a"))
+
+    def test_related_evidence_and_engine_changes_invalidate_judgment(self):
+        first=self.edit({"set":{"evidence":[{"evidence_id":"a","kind":"user_statement","subject":"goal","text":"first"},{"evidence_id":"b","kind":"user_statement","subject":"goal","text":"second"}],"claims":[{"claim_id":"c","text":"explanation","subjects":["goal"],"evidence_refs":["a"]}]}})
+        second=self.edit({"set":{"evidence":[{"evidence_id":"b","text":"unrelated"}]}},first["revision"])
+        self.assertEqual(second["invalidated_claims"],[])
+        third=self.edit({"set":{"evidence":[{"evidence_id":"a","text":"related"}]}},second["revision"])
+        self.assertEqual(third["invalidated_claims"],["c"])
+        fourth=self.edit({"review_claims":["c"]},third["revision"])
+        with patch.object(engine,"fingerprint",return_value="changed-native"):
+            self.assertEqual(self.edit({"set":{}},fourth["revision"])["invalidated_claims"],["c"])
+
+    def test_idempotent_reply_cannot_reuse_older_engine_context(self):
+        request={"set":{"name":"first"}}
+        first=self.edit(request)
+        with patch.object(engine,"fingerprint",return_value="changed-native"),self.assertRaises(bx.ContractError):
+            self.edit(request,"older revision")
+        self.assertEqual(poe.read_json(self.source)["name"],"first")
+
+    def test_bool_to_number_edit_is_reported_and_array_change_requires_replace(self):
+        first=self.edit({"set":{"operations":{"config":{"observed":False}}}},kind="plan")
+        result=self.edit({"set":{"operations":{"config":{"observed":0}}}},first["revision"],kind="plan")
+        self.assertEqual(result["actual_changes"],[{"pointer":"/operations/config/observed","before":False,"after":0}])
+        with self.assertRaises(bx.ContractError): poe.merge_edit({"notes":[{"value":False}]},{"notes":[{"value":0}]})
+        with self.assertRaises(bx.ContractError) as error:
+            self.edit({"set":{"operations":{"config":{"observed":False}},"assessment":{"review":{"token":"stale","findings":"reviewed"}}}},result["revision"],kind="plan")
+        self.assertEqual(error.exception.diagnostic["code"],"review_transaction_mixed")
+
+    def test_claim_target_type_change_rebinds_current_stage(self):
+        first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first"}],"claims":[{"claim_id":"c","subjects":["stage:a"],"text":"interpretation","checks":[{"reference":"native:stage:a#/stats/Observed","op":"eq","value":False}]}]}})
+        second=self.edit({"set":{"stages":[{"stage_id":"a","name":"changed"}]}},first["revision"])
+        self.assertEqual(second["invalidated_claims"],["c"])
+        third=self.edit({"replace":{"/claims/0/checks/0/value":0}},second["revision"])
+        self.assertEqual(third["invalidated_claims"],[])
+
+    def test_bad_usage_shape_preserves_source_and_receipt(self):
+        first=self.edit({"set":{"name":"draft"}},kind="plan")
+        before=self.source.read_bytes();receipt=self.source.with_suffix(".edit.json").read_bytes()
+        with self.assertRaises(bx.ContractError) as error:
+            self.edit({"set":{"usage":[{"skill_ref":"observed","casts_per_second":True}]}},first["revision"],kind="plan")
+        self.assertEqual(error.exception.diagnostic["location"],"/usage/0/casts_per_second")
+        self.assertEqual(self.source.read_bytes(),before);self.assertEqual(self.source.with_suffix(".edit.json").read_bytes(),receipt)
 
 
 class RealEngineTests(unittest.TestCase):

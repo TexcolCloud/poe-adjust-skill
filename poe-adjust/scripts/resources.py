@@ -9,6 +9,39 @@ def number(data, key):
     return value if type(value) in (int,float) and math.isfinite(value) else None
 
 
+def input_shape(document, *, complete=True):
+    """Check declared schedules without querying the native engine."""
+    usage=document.get("usage",[])
+    bx.require(isinstance(usage,list),"usage 应为数组。",location="/usage",expected="array",actual=type(usage).__name__)
+    seen=set()
+    for index,row in enumerate(usage):
+        path=f"/usage/{index}"
+        bx.require_keys(row,{"skill_ref","casts_per_second","active_seconds","recovery_seconds","continuous","claim_id"},path,"usage 字段无效。")
+        for key in ("skill_ref","claim_id"):
+            if key in row or complete and key=="skill_ref": bx.require(isinstance(row.get(key),str) and row[key].strip(),key+" 应为非空引用。",location=path+"/"+key,expected="nonempty string",actual=row.get(key))
+        ref=row.get("skill_ref")
+        bx.require(ref is None or ref not in seen,"usage.skill_ref 不能重复。",location=path+"/skill_ref",expected="unique reference",actual=ref);seen.add(ref)
+        for key in ("casts_per_second","active_seconds","recovery_seconds"):
+            if key in row: bx.require(number(row,key) is not None and row[key]>=0,key+" 需要有限非负数。",location=path+"/"+key,expected="finite nonnegative number",actual=row[key])
+        if "continuous" in row: bx.require(type(row["continuous"]) is bool,"usage.continuous 应为布尔值。",location=path+"/continuous",expected="boolean",actual=row["continuous"])
+        if "timeline" in document: bx.require(not set(row)&{"casts_per_second","active_seconds","recovery_seconds","continuous"},"共同时间线已定义频率/窗口；usage 只关联技能和判断。",location=path,expected=["skill_ref","claim_id"],actual=sorted(row))
+    if "timeline" not in document: return
+    timeline=document["timeline"]
+    bx.require_keys(timeline,{"duration_seconds","events"},"/timeline")
+    duration=number(timeline,"duration_seconds")
+    if complete or "duration_seconds" in timeline: bx.require(duration is not None and duration>0,"时间线需要有限正周期。",location="/timeline/duration_seconds",expected="positive seconds",actual=timeline.get("duration_seconds"))
+    if complete or "events" in timeline:
+        events=timeline.get("events")
+        bx.require(isinstance(events,list) and len(events)<=1000,"events 为至多1000次动作的数组。",location="/timeline/events",expected="array (engineering limit 1000)",actual=type(events).__name__)
+        for index,event in enumerate(events):
+            path=f"/timeline/events/{index}"
+            bx.require_keys(event,{"skill_ref","at"},path)
+            if complete or "skill_ref" in event: bx.require(isinstance(event.get("skill_ref"),str) and event["skill_ref"].strip(),"时间线动作需要非空 skill_ref。",location=path+"/skill_ref",expected="nonempty string",actual=event.get("skill_ref"))
+            if complete or "at" in event:
+                at=number(event,"at")
+                bx.require(at is not None and at>=0 and (duration is None or at<duration),"动作时间位于周期内。",location=path+"/at",expected={"minimum":0,"exclusive_maximum":duration},actual=event.get("at"))
+
+
 def payment(data, cost_key, shield_covers_mana, no_cost=False):
     value=number(data,cost_key+"Cost")
     if no_cost and value is None: value=0
@@ -36,25 +69,30 @@ def timing(rows):
     return (rows[0],False) if len(windows)==1 else ({},True)
 
 
+def capabilities():
+    """Describe the projection this adapter actually implements."""
+    return {"timeline":{"supported":["discrete_native_skill_payments","constant_native_net_regeneration"],
+            "excluded_recovery":["leech","recharge","flask"],
+            "unsupported":["action_exclusion","changing_conditions","non_discrete_payments","automatic_cost_schedules"],
+            "event_reference":"current active_skills[].skill_ref",
+            "scope":"当前配置固定净回复下的离散费用时间线；不含命中吸取、充能、药剂补充、动作互斥或条件效果变化，也不改变原生 DPS。"}}
+
+
 def timeline_assessment(result, timeline):
     """Replay discrete payments on one clock using constant native net regen.
 
     This bounded projection excludes leech, recharge and flask refills. Channels
     and automatic effects that cannot be reduced to discrete payments stay unknown.
     """
-    bx.require_keys(timeline,{"duration_seconds","events"},"/timeline")
+    input_shape({"timeline":timeline})
     duration=number(timeline,"duration_seconds")
-    bx.require(duration is not None and duration>0,"时间线需要有限正周期。",location="/timeline/duration_seconds",expected="positive seconds",actual=timeline.get("duration_seconds"))
     events=timeline.get("events")
-    bx.require(isinstance(events,list) and len(events)<=1000,"events 为至多1000次动作的数组；分批表达更长计划。",location="/timeline/events",expected="array (engineering limit 1000)",actual=type(events).__name__)
     skills={s["skill_ref"]:s for s in result.get("active_skills",[]) if s.get("skill_ref") and not s.get("disabled")}
     rows=[]; diagnostics=[]; pending=[]; errors=[]; previous={}
     for index,event in enumerate(events):
         path=f"/timeline/events/{index}"
-        bx.require_keys(event,{"skill_ref","at"},path)
         ref,at=event.get("skill_ref"),number(event,"at")
         bx.require(ref in skills,"时间线动作使用当前原生 skill_ref。",location=path+"/skill_ref",expected=list(skills),actual=ref)
-        bx.require(at is not None and 0<=at<duration,"动作时间位于周期内。",location=path+"/at",expected={"minimum":0,"exclusive_maximum":duration},actual=event.get("at"))
         rows.append({**event,"source_index":index})
     rows.sort(key=lambda row:(row["at"],row["source_index"]))
     for event in rows:
@@ -93,7 +131,7 @@ def timeline_assessment(result, timeline):
             if single and not any(e["skill_ref"]==ref for e in rows) and not skill.get("trigger"): gaps.append("unscheduled:"+ref)
         known=pool is not None and pool>=0 and regen is not None and not gaps
         record={"resource_id":resource,"duration_seconds":duration,"initial":pool,"net_regeneration_per_second":regen,
-                "included_recovery":"native_net_regen_only","excluded_recovery":["leech","recharge","flask"],"status":"unknown","trace":[],"repeatable":None,"gaps":gaps}
+                "included_recovery":"native_net_regen_only","excluded_recovery":capabilities()["timeline"]["excluded_recovery"],"status":"unknown","trace":[],"repeatable":None,"gaps":gaps}
         if known:
             balance=pool;last=0;failed=False
             for event in rows:
@@ -110,11 +148,12 @@ def timeline_assessment(result, timeline):
         else: pending.append("capability:timeline:"+resource)
         records.append(record)
     return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"events":rows,"resources":records,"errors":errors,"pending":pending,"diagnostics":diagnostics,
-            "scope":"当前配置固定净回复下的离散费用时间线；不含命中吸取、充能、药剂补充、动作互斥或条件效果变化，也不改变原生 DPS。"}
+            "scope":capabilities()["timeline"]["scope"]}
 
 
 def assess(result, intent, plan, claims=None):
     """Report observed constraints and scoped usage, not a universal play style."""
+    input_shape(plan)
     claims = claims or []
     errors, warnings, pending, resources = [], [], [], []
     stats = result["stats"]
@@ -142,18 +181,12 @@ def assess(result, intent, plan, claims=None):
                 pending.append("capability:resource_cost:"+str(subject)+":"+key)
     automatic = [skill for skill in active if not skill.get("is_main") and skill.get("trigger") and (number(skill.get("costs",{}),"SkillTriggerRate") or 0) > 0]
     usage = plan.get("usage",[])
-    bx.require(isinstance(usage,list),"usage 应为数组。")
     by_ref = {skill.get("skill_ref"):skill for skill in active if skill.get("skill_ref")}
     usages = {}
     diagnostics=[]
     for index,row in enumerate(usage):
-        bx.require_keys(row,{"skill_ref","casts_per_second","active_seconds","recovery_seconds","continuous","claim_id"},f"/usage/{index}","usage 字段无效。")
-        if "timeline" in plan: bx.require(not set(row)&{"casts_per_second","active_seconds","recovery_seconds","continuous"},"共同时间线已定义频率/窗口；usage 只关联技能和判断。",location=f"/usage/{index}",expected=["skill_ref","claim_id"],actual=sorted(row))
         ref = row.get("skill_ref")
         bx.require(ref in by_ref and ref not in usages,"usage.skill_ref 需要本次原生返回的唯一技能引用。",location=f"/usage/{index}/skill_ref",expected=list(by_ref),actual=ref)
-        for key in ("casts_per_second","active_seconds","recovery_seconds"):
-            if key in row: bx.require(number(row,key) is not None and row[key]>=0, key + " 需要有限非负数，单位为次/秒或秒。")
-        if "continuous" in row: bx.require(type(row["continuous"]) is bool,"usage.continuous 应为布尔值。")
         usages[ref] = row
         rate=row.get("casts_per_second")
         limit=native_rate(by_ref[ref])

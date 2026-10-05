@@ -43,15 +43,26 @@ python '<技能目录>/scripts/poe.py' edit --invoked --kind route --file '<工�
 python '<技能目录>/scripts/poe.py' edit --invoked --kind route --file '<工作区>/route.json' --changes '<工作区>/change.json' --if-sha256 '<上次revision>'
 ```
 
-plan 使用 `--kind plan`。change.json 为 `{"set":{要更新的字段},"remove":["/明确要删除的字段"]}`。对象逐字段合并，null 保留为未知值；普通数组整体替换。顶层 stages/claims/evidence/objectives 按各自 *_id 合并；operations 的 items/equip/groups/gems 按 id/slot/index/(group,index) 合并，适用于阶段 snapshot.operations。删除记录用明确 JSON pointer；先 view 核对本次位置。不是自定义表达式或脚本语言。
+plan 使用 `--kind plan`。change.json 的四种操作共用一个入口：
+
+- `set`：对象逐字段合并，null 保留为未知值。stages/claims/evidence/objectives 按 *_id 合并；operations 的 items/equip/groups/gems 按 id/slot/index/(group,index) 合并，适用于 snapshot.operations。新字段可直接写入数组。
+- `replace`：现有 JSON pointer 到新值的映射，用于精确字段修改或明确替换整数组。例如 `{"replace":{"/stages/1/skill_groups/0/use":"遇到危险时使用"}}`。先用 view 核对实际位置并取得 revision。改变已有非空普通数组必须使用 replace，避免把局部内容当整数组保存。
+- `remove`：明确删除的 JSON pointer 数组；路径必须存在。
+- `review_claims`：核对当前对象后的 claim_id 数组，如 `{"review_claims":["explain-stage"]}`。程序刷新这些判断的依赖摘要；新增或实质修改判断也会绑定当次对象。
 
 新增顶层记录省略标识时程序生成，返回 handles；路线省略宝石 instance_id 时返回 stage_instances。跨阶段复用同一颗宝石必须沿用返回的实例 ID，同名多颗不会自行合并。已有记录使用该标识更新；省略标识的另一内容视为新增。required_items 宝石省略实例仅在同阶段唯一同 skill_id 时补入，有歧义则报位置错误。
 
-每次沿用返回 revision；源文件变化会拒绝陈旧修改，同一成功请求可幂等重试。receipt_file 保存完整标识，大结果通过 view 分页读取。保存采用完整文件原子替换；版本摘要是乐观检查，多个写入方仍应顺序修改同一源文件。若凭证落盘失败但源文件已更新，重新 view 源文件/核对摘要后恢复，不盲目覆盖。
+每次沿用返回 revision；源文件变化会拒绝陈旧修改，同一成功请求仅在源文件和引擎上下文一致时幂等重放。counts、actual_changes、invalidated_claims 和 facts_summary 是实际操作结果；大结果完整保存在 receipt_file，通过 view 分页读取。
+
+artifacts 标注文件用途：source 是可编辑方案，persistent_state 是持久状态与重放凭证，temporary 是程序可清理的临时文件清单。`.edit.json` 属于 persistent_state，交付与恢复期间保留；程序自行处理内部临时文件。按 facts_summary 报告结果，直接使用 counts，不重新猜数量。
+
+保存采用完整文件原子替换；版本摘要是乐观检查，多个写入方仍须顺序修改同一源文件。凭证缺失、损坏或写入失败时，重新 view 源文件取得当前 revision，再用 edit 恢复；旧重放信息可能已经丢失，不能承诺原请求已被去重。
 
 ## 错误与恢复
 
-失败返回 error 与 diagnostic；有 location 时按 expected/actual 修对应 JSON 路径，input_file 指出源文件。证据对象与查询数组错误会定位到条目/字段；actual:null 表示字段缺失或值为空，不表示未提供诊断。edit 先检查证据字段/类型，不联网；错误不会覆盖已有源文件。native_invalid_input 是当前原生规则明确拒绝的输入，action:edit_input 不表示接口不支持；inspect_capability 表示测量接口范围，其他引擎失败先查实际错误。不要盲目原样重试或解析英文报错猜字段。输入问题修源文件，能力缺口不能通过填理由消除。
+失败返回 error 与 diagnostic；有 location 时按 expected/actual 修对应 JSON 路径，input_file 指出源文件。共用的证据、判断、目标、约束映射和评审结构在写入/原生查询前检查；约束映射值是单个 evidence_id 字符串。actual:null 表示字段缺失或值为空。输入错误修源文件；inspect_capability 的能力缺口先核对 doctor/publication 的 capabilities，再由模型选择方案或保留条件。
+
+最终复核单独提交：完成方案与未解决项修改，重算取得当前 review.json，再仅写 assessment.review。同一请求同时改方案和提交复核会被拒绝，避免旧 token 混入新输入。review_claims 是对象判断的重新评审，assessment.review 是完整结果的最终复核，两者用途不同。
 
 大结果用现有 --out 保存到任务工作区，再用 view 按需读字段、字段名或文本缺口，具体示例见资料协议。delivery_brief 汇总全部缺口；next_actions 指向完整文件和具体路径，按实际错误、目标/依赖、最终复核处理，不因文件已导出而跳过。stage_summary 和 errors 不能因为摘要只显示部分 pending 而略过。
 

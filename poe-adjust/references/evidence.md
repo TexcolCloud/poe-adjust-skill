@@ -12,9 +12,17 @@
 - local_data：使用 `data read` 的 evidence_template（source/line/count/content_sha256），补 evidence_id/subject。程序从本机重新读取，不接受替代 text/path/url。输出 local_data_observed 只证明原文及摘要，不证明含义与当前方案相关、当季可得或游戏内实测。
 - 原生引用直接写 `native:candidate#/stats/Life`、`native:baseline#/stats/Life` 等 JSON pointer，无需声明 evidence。只能访问本次已有字段，指针不执行代码。引用值与引擎/计算 XML 绑定；不要猜旧数组下标。
 
-claim 的字段为 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks`。subjects/evidence_refs/conditions/uncertainties 为字符串数组，checks 格式见下文；claim_id 唯一。缺引用、来源未解决、uncertainties 非空或 checks 未通过，保持 unresolved。程序附上 observations 的真实值、对象上下文和摘要；不得手写这些输出字段。model_assessed 表示模型作了有引用的判断，**不表示程序证明语义充分**。最终 review 另行绑定，不能让旧文字自动得到新方案的复核身份。
+claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks`，可声明 `claim_type`。字符串数组与 checks 格式见下文。可比较命题使用 `claim_type:"comparison"`，checks 必须非空；门槛、指标和取舍由模型选择。默认 judgment 只表示模型解释，不证明数值达标。程序不从自由文字猜测阈值。
+
+通过 edit 新增或修改判断时，程序生成 bindings，绑定所声明对象、来源和当次引擎；保留原判断时，其摘要也保留。对象/来源变化会报告 invalidated_claims，计算时旧判断保持 unresolved。阅读当前事实并重新核对后，用 edit 的 review_claims 提交选定 claim_id，程序刷新摘要。bindings、observations 和状态均由程序生成；直接写入的旧 JSON 可作为草案读取，缺绑定时仍须经 edit 重新评审。摘要绑定不能证明模型解释正确，也不自动解析自由条件的全部语义依赖。
+
+缺引用、来源未解决、过期绑定、uncertainties 非空或 checks 未通过，保持 unresolved。model_assessed 表示模型作了有引用的判断；check_status/verification_scope 才说明所列可比较命题的测量范围。objective_coverage.declared_checks_status 与 publication.declared_checks 展示实际比较，不能把 judgment 当作数值证明。
 
 用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项明确达到/未达到并解释当前对象、依据、条件、代价与未解决项。用户要求的技能、天赋、装备和操作必须在最终方案落实；旧计划文字或关联一个数值不能证明已实现。objective_coverage 只核对来源与关联，不证明目标完整或已经达到。整体 goal 判断说明总体取舍；修复改了组成后重新判断，不继承旧结论。
+
+计算场景也关联当前事实：配装判断使用 subjects:`["configuration:candidate"]`，阶段使用 `["configuration:stage:<stage_id>"]`，引用对应 `native:<计算名>#/config_values` 或其中的具体字段。核对当前本机配置原文、进度与实际解析值，决定显式覆盖或明示假设。缺少当前场景评审会保留 config:scenario；存在引用不自动证明场景选择正确。
+
+决定性排除理由区分使用门槛、属性不足、取得渠道与效果适配；优先用当前原文或最小变体对照核验。局部限制能否通过装备、等级或条件解决，由模型结合实际数据判断，程序不添加职业/宝石专用禁令。
 
 关联写在 **claim.subjects**，不是 claim_id。例如 objective_id 为 `user-X`，解释该目标的 claim 可以用 claim_id:`explain-X`、subjects:`["objective:user-X","goal"]`。一个判断可以关联多个真实适用的对象，不必为每个字段写重复文字。objective_coverage.required_subject 和 diagnostics 给出缺少的关系；claims[].diagnostics 指向失败引用和实际来源原因。先修这些协议/引用遗漏，再决定哪些确实无法核实。
 
@@ -70,7 +78,7 @@ probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。�
 
 export 再复算并重核来源和复核 token。blocked 只输出诊断 HTML；draft 输出配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json、review.json、delivery.json。只有 XML 与 HTML 均落盘后 delivery.file_exported 才为 true，清除同候选旧状态的另一 XML 文件；可捕获失败记录 failed/last_operation，并取消本次交付成功身份。进程被强制终止仍可能留下 preparing/exporting，由 status 核对后恢复。无 URL 的本地证据仍正常展示。
 
-publication 是 HTML、最终核验与 facts_summary 的共同事实来源，包含全部缺口类别、实际数值和预算/时间线的三值结论。聊天先沿用它的状态与事实，再解释模型取舍；预算 null 不承诺预算内买齐，时间线 unknown 不承诺无限续航。原生值带具体主体和配置，不能混用不同候选、阶段或早期基线。checks 与自审仍不证明全部机制或实战安全。
+publication 是 HTML、最终核验与 facts_summary 的共同事实来源，包含全部缺口类别、实际数值、所列比较和预算/时间线的三值结论，以及当前 capabilities。delivery_brief.valid_statuses 列出真实交付状态；next_actions 区分可修复依赖与接口能力缺口。聊天先沿用它的状态与事实，再解释模型取舍；预算 null、时间线 unknown 保持对应条件。尚未支持的测量不能靠补输入或填写 token 变成已支持，未来取得/进度也不必伪装成已经发生。checks 与自审仍不证明全部机制或实战效果。
 
 直接交付返回路径，避免另做未经绑定的复制/改名/说明。draft 不改名为改进配装；聊天先说明 delivery_brief 的真实状态与全部剩余类别，再说明已有收益、代价和用户下一步。原生能力缺口可以保留为条件规划；已知非法输入、可修复字段遗漏和来源404不能靠填写复核 token 变成成品。
 
