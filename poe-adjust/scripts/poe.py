@@ -661,6 +661,20 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     return actions
 
 
+def failure_record(exc,location_prefix="",input_file=None):
+    """Preserve native/contract diagnostics at each caller's actual input location."""
+    diagnostic=getattr(exc,"diagnostic",None)
+    status="blocked" if diagnostic and diagnostic.get("action")=="edit_input" else "unsupported" if diagnostic and diagnostic.get("action")=="inspect_capability" else "failed"
+    record={"status":status,"reason":str(exc)}
+    if diagnostic:
+        diagnostic=dict(diagnostic)
+        location=diagnostic.get("location","")
+        if location=="/operations" or location.startswith("/operations/"): diagnostic["location"]=location_prefix+location
+        if input_file: diagnostic["input_file"]=str(Path(input_file).resolve())
+        record["diagnostic"]=diagnostic
+    return record
+
+
 def assess_candidate(original, document, baseline, result, intent, plan, evidence_folder, intent_evidence_folder=None, *, root=None):
     """One assessment path for evaluation and final export; scopes stay explicit."""
     context = {"engine_fingerprint": result["engine_fingerprint"], "league": intent["league"], "game_version": intent.get("game_version")}
@@ -934,14 +948,14 @@ def probe(args):
     rows=[]
     for offset in range(0,len(variants),12):
         prepared_variants=[]
-        for variant in variants[offset:offset+12]:
+        for variant_index,variant in enumerate(variants[offset:offset+12],offset):
             try:
                 plan={"mode":outcome["plan"]["mode"],"summary":"候选局部或组合比较","operations":variant["operations"]}
                 resolved,crafts=materialize_items(plan,root)
                 document=bx.apply_plan(source,resolved,native=baseline)
-                prepared_variants.append((variant,document,plan,crafts))
+                prepared_variants.append((variant,document,plan,crafts,variant_index))
             except (ValueError,KeyError,TypeError,IndexError) as exc:
-                rows.append({"id":variant["id"],"status":"blocked","errors":[str(exc)]})
+                rows.append({"id":variant["id"],"errors":[str(exc)],**failure_record(exc,f"/variants/{variant_index}",getattr(args,"variants",None))})
         if not prepared_variants: continue
         inputs=[bx.serialise(v[1]) for v in prepared_variants]
         try:
@@ -951,10 +965,11 @@ def probe(args):
             calculations=[]
             for text in inputs:
                 try: calculations.append(engine.calculate(root,text))
-                except engine.EngineError as exc: calculations.append({"failure":str(exc)})
-        for (variant,document,plan,crafts),result in zip(prepared_variants,calculations):
+                except engine.EngineError as exc: calculations.append({"failure":str(exc),"diagnostic":exc.diagnostic})
+        for (variant,document,plan,crafts,variant_index),result in zip(prepared_variants,calculations):
             if "failure" in result:
-                rows.append({"id":variant["id"],"status":"blocked","errors":[result["failure"]]}); continue
+                failure=engine.EngineError(result["failure"],diagnostic=result.get("diagnostic"))
+                rows.append({"id":variant["id"],"errors":[str(failure)],**failure_record(failure,f"/variants/{variant_index}",getattr(args,"variants",None))}); continue
             bx.require(result["engine_fingerprint"]==outcome["engine_fingerprint"],"比较期间引擎变化，请重算。")
             errors,warnings,pending=mechanical_issues(document,result,state["intent"])
             ce,cp=check_constraints(original,document,outcome["baseline"],result,state["intent"],plan)
@@ -1161,14 +1176,7 @@ def route_snapshots(route,native,root,folder,output):
             record.update(status="calculated",xml_path=str(directory/"snapshot.xml"),xml_sha256=bx.digest(saved),engine_fingerprint=calculated["engine_fingerprint"],
                           result=calculated,document=document,directory=directory,crafted_items=crafts)
         except (ValueError,KeyError,TypeError,IndexError,OSError) as exc:
-            diagnostic=getattr(exc,"diagnostic",None)
-            status="blocked" if diagnostic and diagnostic.get("action")=="edit_input" else "unsupported" if diagnostic and diagnostic.get("action")=="inspect_capability" else "failed"
-            record.update(status=status,reason=str(exc))
-            if diagnostic:
-                diagnostic=dict(diagnostic)
-                location=diagnostic.get("location","")
-                if location.startswith("/operations/"): diagnostic["location"]=f"/stages/{stage_index}/snapshot"+location
-                record["diagnostic"]=diagnostic
+            record.update(failure_record(exc,f"/stages/{stage_index}/snapshot"))
         finally:
             progress=read_json(output.with_suffix(".state.json"))
             write_json(output.with_suffix(".state.json"),{**progress,"phase":"calculating","file_exported":False,"output":str(output),

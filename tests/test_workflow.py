@@ -814,6 +814,21 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_probe_preserves_native_diagnostic_and_maps_variant_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);poe.write_text(run/'original.xml',SAMPLE)
+            variant_file=run/'variants.json';poe.write_json(variant_file,{'variants':[{'id':'custom','operations':{}}]})
+            record=(run,{'intent':{}},{'plan':{'mode':'refine'}},SAMPLE,run)
+            cases=[('edit_input','blocked'),('inspect_capability','unsupported'),('inspect_error','failed')]
+            for action,status in cases:
+                diagnostic={'code':'native_observation','action':action,'location':'/operations/items/7/craft/affixes/2','expected':20,'actual':1}
+                with self.subTest(status=status),patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',return_value={'active_skills':[]}),patch.object(poe,'materialize_items',side_effect=engine.EngineError('observed failure',diagnostic=diagnostic)):
+                    result=poe.probe(args(run=str(run),name='fixture',variants=str(variant_file)))['alternatives'][0]
+                    self.assertEqual(result['diagnostic']['location'],'/variants/0/operations/items/7/craft/affixes/2')
+                    self.assertEqual(result['diagnostic']['expected'],20)
+                    self.assertEqual(result['diagnostic']['input_file'],str(variant_file.resolve()))
+                    self.assertEqual(result['status'],status)
+
     def test_route_native_diagnostics_distinguish_input_capability_and_failure(self):
         stage={'stage_id':'dynamic','level':12,'ascendancy_allocated_nodes':[],'skill_groups':[],
                'snapshot':{'operations':{}}}
@@ -1797,6 +1812,7 @@ class RealEngineTests(unittest.TestCase):
             engine.calculate(self.pob, invalid, catalog="nodes", query="Chieftain")
         self.assertIn("去掉 --input", str(failure.exception))
         self.assertNotIn("Press Enter/Escape", str(failure.exception))
+        self.assertNotIn("Press Enter/Escape", failure.exception.diagnostic["message"])
         recovered = engine.calculate(self.pob, catalog="nodes", query="Chieftain", limit=40)
         nodes = recovered["catalog"]
         self.assertTrue(any(node["is_ascendancy_start"] for node in nodes))

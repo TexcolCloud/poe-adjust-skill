@@ -415,7 +415,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         detail = detail.split("Press Enter/Escape to dismiss", 1)[0].rstrip()
         if xml and (catalog or queries):
             detail += "\n目录查询若只查宝石/职业/升华节点 ID 与原文，可去掉 --input 直接重试；所有职业数据都在本机，无需手写最小 XML 或下载模板。若需要角色实际连接路径，请提供能在 PoECharm 打开的真实 XML。"
-        raise EngineError("PoB 计算未完成：" + detail,diagnostic=diagnostic)
+        raise EngineError("PoB 计算未完成：" + detail,diagnostic={**(diagnostic or {}),"message":detail})
     try:
         result = json.loads(process.stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
