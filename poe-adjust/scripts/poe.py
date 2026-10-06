@@ -22,7 +22,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.5"
+VERSION = "2.8.6"
 SCHEMA_VERSION = 2
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
@@ -819,7 +819,7 @@ def calculation_facts(result, claims=()):
             if "#/stats/" in ref: referenced.add(ref.split("#/stats/", 1)[1])
     return {"xml_sha256": result.get("xml_sha256") or result.get("input_xml_sha256"), "engine_fingerprint": result.get("engine_fingerprint"),
             "level": result.get("level"), "class": result.get("class"), "class_id":result.get("class_id"), "ascendancy": result.get("ascendancy"),"ascendancy_id":result.get("ascendancy_id"),
-            "points":result.get("points"),"ascendancy_points":result.get("ascendancy_points"),"secondary_ascendancy_points":result.get("secondary_ascendancy_points"),
+            "points":result.get("points"),"nodes":result.get("nodes"),"ascendancy_points":result.get("ascendancy_points"),"secondary_ascendancy_points":result.get("secondary_ascendancy_points"),
             "main_skill": result.get("main_skill"), "main_skill_name": result.get("main_skill_name"),
             "config_values": result.get("config_values", {}), "config_labels": result.get("config_labels", {}),
             "stats": {k: v for k, v in result.get("stats", {}).items() if k in set(METRICS) | referenced},
@@ -852,6 +852,11 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         statements.append({"kind":"declared_checks","status":"refuted" if totals["refuted"] else "unknown" if totals["unknown"] else "supported" if verified else "not_requested",
                            "text":f"所列可比较检查：满足 {totals['supported']} 项、不满足 {totals['refuted']} 项、未测得 {totals['unknown']} 项。其余模型解释不构成可比较命题的证明。"})
     for name,calculation in calculations.items():
+        fields={key:calculation.get(key) for key in ("level","points","ascendancy_points")}
+        if any(value is not None for value in fields.values()):
+            values={key:str(value) if value is not None else "未知" for key,value in fields.items()}
+            statements.append({"kind":"native_build","subject":name,"status":"observed","values":fields,
+                               "text":f"{name} · 实际角色等级 {values['level']}；普通天赋已分配 {values['points']} 点；升华已分配 {values['ascendancy_points']} 点。文字规划不计入此 XML 的实际分配。"})
         main=next((skill for skill in calculation.get("active_skills",[]) if skill.get("is_main")),None)
         if main:
             statements.append({"kind":"damage_subject","subject":name,"skill_ref":main.get("skill_ref"),"actor":main.get("actor"),"status":"observed",
@@ -889,7 +894,7 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     actions=[]
     claim_reviews=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="review_claims" and row.get("claim_id")]
     ids=list(dict.fromkeys(row["claim_id"] for row in claim_reviews))
-    repairs=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="edit_input" and row.get("location")
+    repairs=[row for row in outcome.get("diagnostics",[]) if row.get("action") in {"edit_input","link_claim","record_user_basis","revise_conclusion"} and row.get("location")
              and not (row.get("code")=="goal_claim_unresolved" and isinstance(row.get("actual"),dict) and row["actual"].get("claim_id") in ids)]
     if outcome["errors"] or repairs:
         actions.append({**shared,"action":"repair_input","pointer":details_pointer+("/errors" if outcome["errors"] else "/diagnostics"),
@@ -918,6 +923,24 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
         actions.append({**shared,"action":"review_current_result","review_file":str(review_file),
                         "instruction":"先处理前面的问题并重算，读取新复核包后审查实际对象、目标与未解决条件，再填写源 assessment.review。不得自动回填 token。"})
     return actions
+
+
+def native_tree_diagnostics(root,document,result,location="/operations/tree"):
+    """Observe dropped requested nodes and native paths in this exact build; never allocate."""
+    requested={int(value) for value in bx.active_spec(document).get("nodes","").split(",") if value}
+    missing=sorted(requested-set(result["nodes"]))
+    if not missing: return [],[]
+    queried=native_queries(root,[{"kind":"nodes","query":"id:"+str(value),"limit":1} for value in missing],result["xml"])
+    bx.require(queried["engine_fingerprint"]==result["engine_fingerprint"],"天赋诊断期间引擎变化，请重算。")
+    details=[]
+    for node_id,row in zip(missing,queried["catalog_batch"]):
+        node=next((entry for entry in row["entries"] if entry["id"]==node_id),None)
+        details.append({"id":node_id,"found":node is not None,**({key:node[key] for key in ("name","ascendancy_name","reachable","points_to_allocate","path") if key in node} if node else {})})
+    return details,[{"code":"native_tree_nodes_unretained","action":"edit_input","location":location,
+                     "expected":sorted(requested),"actual":sorted(result["nodes"]),"tree_diagnostics":details,
+                     "native_context":{"xml_sha256":bx.digest(result["xml"]),"engine_fingerprint":result["engine_fingerprint"],
+                                       "class_id":result.get("class_id"),"ascendancy_id":result.get("ascendancy_id")},
+                     "message":"所列请求节点未保留。path 与 points_to_allocate 来自此实际角色的原生树；模型核对可用点数、目标与取得条件后选择连接路径或修订方案，再重算。此路径不证明最优、可立即取得或其他节点加入后的总成本。"}]
 
 
 def failure_record(exc,location_prefix="",input_file=None):
@@ -1072,17 +1095,11 @@ def evaluate(args):
     document=bx.apply_plan(prepared(source,intent,scenario=scenario),resolved,native=native)
     result=engine.calculate(root,bx.serialise(document))
     bx.require(result["engine_fingerprint"]==baseline["engine_fingerprint"]==native["engine_fingerprint"]==info["engine_fingerprint"],"计算期间引擎内容发生变化，请更新完成后重算。")
-    missing_nodes=sorted({int(v) for v in bx.active_spec(document).get("nodes","").split(",") if v}-set(result["nodes"]))
-    tree_diagnostics=[]
-    if missing_nodes:
-        queried=native_queries(root,[{"kind":"nodes","query":"id:"+str(v),"limit":1} for v in missing_nodes],result["xml"])
-        bx.require(queried["engine_fingerprint"]==result["engine_fingerprint"],"天赋诊断期间引擎变化，请重算。")
-        for node_id,row in zip(missing_nodes,queried["catalog_batch"]):
-            node=next((e for e in row["entries"] if e["id"]==node_id),None)
-            tree_diagnostics.append({"id":node_id,"found":node is not None,**({k:node[k] for k in ("name","ascendancy_name","reachable","points_to_allocate","path") if k in node} if node else {})})
+    tree_diagnostics,tree_repairs=native_tree_diagnostics(root,document,result)
     xml=roundtrip(root,result,document)
     result["xml_sha256"]=bx.digest(xml)
     assessment=assess_candidate(original,document,baseline,result,intent,plan,plan_path.parent,Path(state.get("intent_evidence_folder",str(plan_path.parent))),root=root)
+    assessment["diagnostics"]+=tree_repairs
     bx.require(bx.digest(plan_path.read_bytes())==source_plan_sha256,"计算期间源计划变化，请重新 evaluate。",location="/source_plan",input_file=str(plan_path))
     destination=run/"candidates"/args.name
     requested=bx.serialise(document)
@@ -1501,8 +1518,10 @@ def route_snapshots(route,native,root,folder,output):
                 write_text(directory/"snapshot.xml",saved)
                 write_json(cache_path,{"request_sha256":bx.digest(requested),"result":calculated,
                                       "result_sha256":bx.digest(json.dumps(calculated,sort_keys=True,ensure_ascii=False,allow_nan=False))})
+            tree_details,tree_repairs=native_tree_diagnostics(root,document,calculated,op_path+"/tree")
             record.update(status="calculated",xml_path=str(directory/"snapshot.xml"),xml_sha256=bx.digest(saved),engine_fingerprint=calculated["engine_fingerprint"],
                           result=calculated,document=document,directory=directory,crafted_items=crafts,
+                          tree_diagnostics=tree_details,diagnostics=tree_repairs,
                           configuration_context={**configuration,"resolved_values":calculated.get("config_values",{})})
         except (ValueError,KeyError,TypeError,IndexError,OSError) as exc:
             record.update(failure_record(exc,f"/stages/{stage_index}/snapshot"))
@@ -1666,7 +1685,10 @@ def calculate_route(args):
     checked["pending"]=[p for p in checked["pending"] if p not in validation_pending]+final_checked["pending"]
     checked["claims"]=claims;checked["objective_coverage"]=final_checked["objective_coverage"];checked["diagnostics"]=final_checked["diagnostics"]
     for index,stage in enumerate(checked["stages"]):
-        for row in stage.get("calculation",{}).get("readiness",{}).get("diagnostics",[]):
+        stage_calculation=stage.get("calculation",{})
+        rows=stage_calculation.get("diagnostics",[])+stage_calculation.get("readiness",{}).get("diagnostics",[])
+        if stage_calculation.get("diagnostic"): rows.append(stage_calculation["diagnostic"])
+        for row in rows:
             diagnostic={**row,"stage_id":stage["stage_id"]}
             if row.get("location","").startswith(("/timeline","/usage")):
                 diagnostic["location"]=f"/stages/{index}/snapshot"+row["location"]
@@ -1693,7 +1715,7 @@ def calculate_route(args):
     checked["delivery_status"]="blocked" if route_errors else "draft" if checked["pending"] else "scoped_result"
     checked["delivery_brief"]=facts.delivery_brief(checked["delivery_status"],checked["errors"],checked["pending"])
     checked["publication"]=publication(checked["delivery_status"],checked["errors"],checked["pending"],budget,
-                                       {"stage:"+s["stage_id"]:s["calculation"]["facts"] for s in checked["stages"] if s.get("calculation",{}).get("facts")},resource_audits={"stage:"+s["stage_id"]:s["calculation"]["readiness"] for s in checked["stages"] if s.get("calculation",{}).get("readiness")},claims=claims,keys=["Life","Armour","EnergyShield","CombinedDPS","ManaUnreserved","FireResist","ColdResist","LightningResist","ChaosResist"])
+                                       {"stage:"+s["stage_id"]:s["calculation"]["facts"] for s in checked["stages"] if s.get("calculation",{}).get("facts")},resource_audits={"stage:"+s["stage_id"]:s["calculation"]["readiness"] for s in checked["stages"] if s.get("calculation",{}).get("readiness")},claims=claims,keys=["Life","Armour","EnergyShield","CombinedDPS","ManaUnreserved","LifeRegenRecovery","ManaRegenRecovery","FireResist","ColdResist","LightningResist","ChaosResist"])
     stage_summary=[{"stage_id":s["stage_id"],"name":s["name"],"status":s.get("calculation",{}).get("status","not_calculated"),
                     "native_calculated":s.get("calculation",{}).get("native_calculated",False),
                     "errors_total":len(s.get("calculation",{}).get("errors",[])),"pending_total":len(s.get("calculation",{}).get("pending",[])),

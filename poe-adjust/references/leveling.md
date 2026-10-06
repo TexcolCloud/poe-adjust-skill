@@ -120,7 +120,7 @@ assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[
 
 本阶段实际装备需与 bases 一致，具体物品及规格摘要需出现在截至此阶段的 required_items 中。程序在 calculation.material_specs 返回可直接引用的 item_id/spec_sha256/quantity，不必手工计算摘要。快照是条件规划，已回读不代表装备可得、剧情完成或目标达到。HTML 和 evidence.json 的状态仍取决于各阶段与来源缺口。
 
-所有实际基底从当前 catalog 查询，不只查武器；不能凭熟悉的名称造盔甲或靴。被引擎忽略的物品、未满足需求或丢失节点都是已知错误，不把忽略后的面板当完整假设成功。逐阶段核对环境配置和已完成进度；终点条件不能自动沿用到前面阶段。声明某任务可选奖励不代表同任务多颗奖励都免费；说明选择、商店费用和宝石成长的可执行路径。资料模板可以直接从 research 的 choices[].evidence_templates 取得，再关联具体实例和 claim。
+所有实际基底从当前 catalog 查询，不只查武器；不能凭熟悉的名称造盔甲或靴。被引擎忽略的物品、未满足需求或丢失节点都是已知错误。阶段 tree_diagnostics 和 next_actions 的源位置提供未保留节点在实际角色上的原生 path/points_to_allocate；模型结合可用点数与目标选择连接，不删除所需功能来消除错误。可用阶段 xml_path 做 catalog nodes --input 查询；空角色或另一阶段的路径不能当本阶段成本，多个路径重叠后的实际点数须重算。publication 的实际天赋点数、固定回复及阶段配置，与文字规划逐项核对；尚未装入的规划不能解释本次面板。逐阶段核对环境配置和已完成进度；终点条件不能自动沿用到前面阶段。声明某任务可选奖励不代表同任务多颗奖励都免费；说明选择、商店费用和宝石成长的可执行路径。资料模板可以直接从 research 的 choices[].evidence_templates 取得，再关联具体实例和 claim。
 
 route 同时生成 `<输出名>.review.json`，集中列出每阶段事实、物资、引用及缺口。用同一 TeleAgent 模型核对数字/对象、因果、替代方案排除、进入条件和结论范围；在原 route.assessment.review 填 token/findings/unresolved 及覆盖当前所有判断的 conclusions 后重跑，按 review_template 填实际 scope/findings。格式和失效规则与配装相同。改动阶段、说明、来源或本机数据后旧复核失效，不自动将旧文本绑定新数值；完整交付以 state.file_exported 为准。
 

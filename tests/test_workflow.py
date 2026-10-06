@@ -1286,6 +1286,46 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(actions[1]['pointer'],'/checked_route/pending')
         self.assertEqual(poe.delivery_actions({'status':'scoped_result','errors':[],'pending':[]},'a','b','c'),[])
 
+    def test_route_snapshot_keeps_contextual_tree_path_and_source_repair(self):
+        stage={'stage_id':'dynamic','level':12,'ascendancy_allocated_nodes':[],
+               'skill_groups':[{'name':'Fixture skill','slot':'Gloves','gems':[{'skill_id':'Fireball','level':1,'quality':0}]}],
+               'snapshot':{'operations':{'tree':{'nodes':[1,2,42,43]}}}}
+        route={'class_id':1,'stages':[stage]}
+        native={'xml':SAMPLE,'engine_fingerprint':'fixture','classes':[{'id':1,'name':'Current class','ascendancies':[]}]}
+        actual=bx.parse(SAMPLE);bx.active_spec(actual).set('nodes','1,2')
+        result={'xml':bx.serialise(actual),'engine_fingerprint':'fixture','nodes':[1,2],'class_id':1,'ascendancy_id':0}
+        catalog={'engine_fingerprint':'fixture','catalog_batch':[{'entries':[{'id':42,'name':'Current node','reachable':True,'points_to_allocate':3,'path':[20,30,42]}]}, {'entries':[]}]}
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder)/'route.html';poe.write_json(output.with_suffix('.state.json'),{})
+            for cached in (False,True):
+                with self.subTest(cached=cached),patch.object(engine,'calculate',return_value=copy.deepcopy(result)) as calculate,patch.object(engine,'validate_contract'),patch.object(poe,'roundtrip',return_value=result['xml']) as roundtrip,patch.object(poe,'native_queries',return_value=catalog) as query:
+                    record=poe.route_snapshots(route,native,Path(folder),Path(folder),output)['dynamic']
+                self.assertEqual(record['status'],'calculated',record)
+                detail=next(r for r in record['tree_diagnostics'] if r['id']==42)
+                self.assertEqual(detail['path'],[20,30,42]);self.assertEqual(detail['points_to_allocate'],3)
+                self.assertEqual(record['tree_diagnostics'][-1],{'id':43,'found':False})
+                self.assertEqual(query.call_args.args[2],result['xml'])
+                self.assertEqual([q['query'] for q in query.call_args.args[1]],['id:42','id:43'])
+                diagnostic=next(d for d in record['diagnostics'] if d['code']=='native_tree_nodes_unretained')
+                self.assertEqual(diagnostic['location'],'/stages/0/snapshot/operations/tree')
+                self.assertEqual(diagnostic['expected'],[1,2,42,43]);self.assertEqual(diagnostic['actual'],[1,2])
+                self.assertEqual(diagnostic['native_context']['xml_sha256'],bx.digest(result['xml']))
+                self.assertEqual(stage['snapshot']['operations']['tree']['nodes'],[1,2,42,43])
+                action=poe.delivery_actions({'status':'blocked','errors':['dropped nodes'],'pending':[],'diagnostics':record['diagnostics']},'route.json','result.json','review.json')[0]
+                self.assertEqual(action['diagnostics'],record['diagnostics'])
+                self.assertEqual(calculate.call_count,0 if cached else 1)
+                self.assertEqual(roundtrip.call_count,0 if cached else 1)
+
+    def test_delivery_actions_include_objective_and_refuted_check_source_repairs(self):
+        diagnostics=[{'code':'objective_subject_missing','action':'link_claim','location':'/claims','required_subject':'objective:actual'},
+                     {'code':'objective_basis_missing','action':'record_user_basis','location':'/objectives/0/evidence_refs'},
+                     {'code':'claim_check_refuted','action':'revise_conclusion','location':'/claims/0/checks/0','actual':0,'expected':1}]
+        outcome={'status':'draft','errors':[],'pending':['objective:actual','claim_check:current'],'diagnostics':diagnostics}
+        action=poe.delivery_actions(outcome,'source.json','result.json','review.json','/checked_route')[0]
+        self.assertEqual(action['action'],'repair_input')
+        self.assertEqual(action['diagnostics'],diagnostics)
+        self.assertEqual(action['pointer'],'/checked_route/diagnostics')
+
     def test_missing_claim_bindings_return_direct_review_action_before_final_review(self):
         diagnostics=[{"code":"claim_binding_missing","action":"review_claims","claim_id":"future-id","location":"/claims/0/bindings"},
                      {"code":"claim_binding_stale","action":"review_claims","claim_id":"other-id","location":"/claims/1/bindings"}]
@@ -1305,6 +1345,26 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertNotIn('SeasonSpecificObservation',observed['stats'])
         referenced=poe.calculation_facts(result,[{'evidence_refs':['native:candidate#/stats/SeasonSpecificObservation','native:candidate#/stats/SeasonSpecificFlag']}])
         self.assertEqual(referenced['stats'],result['stats'])
+
+    def test_tree_diagnosis_checks_current_fingerprint_and_skips_retained_nodes(self):
+        document=bx.parse(SAMPLE)
+        result={'nodes':[1,2],'xml':SAMPLE,'engine_fingerprint':'current'}
+        with patch.object(poe,'native_queries',side_effect=AssertionError('no missing nodes')):
+            self.assertEqual(poe.native_tree_diagnostics(Path('.'),document,result),([],[]))
+        result['nodes']=[1]
+        with patch.object(poe,'native_queries',return_value={'engine_fingerprint':'changed'}),self.assertRaisesRegex(ValueError,'引擎变化'):
+            poe.native_tree_diagnostics(Path('.'),document,result)
+
+    def test_publication_reports_actual_tree_and_keeps_unknown_distinct_from_zero(self):
+        calculation={'level':20,'points':0,'ascendancy_points':None,'nodes':[], 'stats':{'LifeRegenRecovery':0,'ManaRegenRecovery':2}}
+        observed=poe.calculation_facts(calculation)
+        self.assertEqual(observed['nodes'],[])
+        published=poe.publication('draft',[],['objective:future'],{'status':'unknown'},{'stage:future':observed})
+        row=next(s for s in published['statements'] if s['kind']=='native_build')
+        self.assertEqual(row['values'],{'level':20,'points':0,'ascendancy_points':None})
+        self.assertIn('普通天赋已分配 0 点',row['text']);self.assertIn('升华已分配 未知 点',row['text'])
+        measurements={r['metric']:r['value'] for r in published['measurements']}
+        self.assertEqual(measurements,{'LifeRegenRecovery':0,'ManaRegenRecovery':2})
 
     def test_view_discovers_current_metric_keys_and_filters_without_recalculation(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2867,10 +2927,13 @@ class RealEngineTests(unittest.TestCase):
 
     def test_38_route_surfaces_stage_errors_and_never_labels_blocked_snapshot_ready(self):
         route=route_fixture();route.update(class_id=3,ascendancy=None,gems={'Fireball':{}})
+        seed=engine.calculate(self.pob,class_id=route['class_id'])
+        context=engine.calculate(self.pob,seed['xml'],catalog='nodes',query='life',limit=100)
+        node=next(n for n in context['catalog'] if not n['allocated'] and not n['ascendancy_name'] and n['reachable'] and n['points_to_allocate']>1 and n['type'] in {'Normal','Notable'})
         route['evidence']=[{'evidence_id':'user','kind':'user_statement','subject':'intent','text':'Offline fixture only'}]
         route['stages']=[{'stage_id':'custom','name':'Diagnostic phase','level':12,'bases':{'Gloves':'Wool Gloves'},
             'skill_groups':[{'name':'Fireball','slot':'Gloves','use':'fixture','gems':[{'instance_id':'one','skill_id':'Fireball','level':1,'quality':0}]}],
-            'snapshot':{'operations':{'items':[{'id':201,'text':'Rarity: NORMAL\nUnrecognized fixture base'}],'equip':[{'slot':'Gloves','item_id':201}],'main_group':1},'metrics':['Life']}}]
+            'snapshot':{'operations':{'items':[{'id':201,'text':'Rarity: NORMAL\nUnrecognized fixture base'}],'equip':[{'slot':'Gloves','item_id':201}],'tree':{'nodes_add':[node['id']]},'main_group':1},'metrics':['Life']}}]
         path=Path(self.temp.name)/'diagnostic-route.json';output=path.with_suffix('.html');poe.write_json(path,route)
         with patch.object(facts,'gem_facts',return_value={}):response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         self.assertEqual(response['status'],'blocked')
@@ -2879,9 +2942,29 @@ class RealEngineTests(unittest.TestCase):
         state=poe.read_json(output.with_suffix('.state.json'))
         self.assertEqual(state['stages']['custom']['status'],'blocked')
         self.assertTrue(state['stages']['custom']['native_calculated'])
+        checked=poe.read_json(output.with_suffix('.evidence.json'))['checked_route']
+        detail=next(d for d in checked['stages'][0]['calculation']['tree_diagnostics'] if d['id']==node['id'])
+        self.assertEqual(detail['path'],node['path'])
+        diagnostic=next(d for d in checked['diagnostics'] if d['code']=='native_tree_nodes_unretained')
+        self.assertEqual(diagnostic['stage_id'],'custom')
+        self.assertEqual(diagnostic['location'],'/stages/0/snapshot/operations/tree')
+        repair=next(a for a in response['next_actions'] if a['action']=='repair_input')
+        self.assertIn(diagnostic,repair['diagnostics'])
+        self.assertEqual(repair['input_revision'],bx.digest(path.read_bytes()))
+        self.assertIn('普通天赋已分配',response['facts_summary'])
         html=output.read_text(encoding='utf8')
         self.assertIn('已知错误',html)
         self.assertIn(response['errors'][0].split('：',1)[-1],html)
+        self.assertIn('tree_diagnostics',html)
+        # Apply the current native path in this API fixture, without a build-specific answer.
+        route['stages'][0]['snapshot']['operations']['tree']['nodes_add']=detail['path']
+        poe.write_json(path,route)
+        with patch.object(facts,'gem_facts',return_value={}):repaired=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        final=poe.read_json(output.with_suffix('.evidence.json'))['checked_route']['stages'][0]['calculation']
+        self.assertEqual(final['tree_diagnostics'],[])
+        self.assertIn(node['id'],final['facts']['nodes'])
+        self.assertFalse(any(d['code']=='native_tree_nodes_unretained' for a in repaired['next_actions'] for d in a.get('diagnostics',[])))
+        self.assertEqual(repaired['status'],'blocked')  # The independent unknown equipment is still invalid.
 
     def test_38_native_default_omission_is_equivalent_but_real_changes_fail(self):
         document=copy.deepcopy(self.original)
