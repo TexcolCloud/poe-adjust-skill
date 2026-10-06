@@ -1,3 +1,32 @@
+# 2.8.10 三模块实机完成：64/65/58分，核心均未通过
+
+按用户要求分别验证配装物化、场景与续航、目标复核。03:44:58[安装2.8.10](.work/2810-install-manifest.json)，旧15文件先核对，源码/ZIP/安装一致；[已安装doctor](.work/2810-installed-doctor.json)4.3805秒四项通过，无原生安装写入。首个doctor误加不支持的--out，修正为标准输出捕获，属开发调用错误，不计产品缺陷。[任务记录](.work/live-2810-manifest.json)仅原XML副本和自然语言目标，无构筑答案、节点、数值答案或CLI步骤。三个新UI任务各首次提交一次并核对输入一致；目标复核于04:41:18启动，只收到物化首次作者交付的42文件原样副本，不接收开发评分、差分诊断或修补提示。
+
+| 模块 | 首次交付与程序核验 | 人工质量判断 |
+|---|---|---|
+| 配装物化 | 04:37:26完成；[冻结42文件](.work/live-2810-materialization-first/manifest.json)，9331885字节；[原生冷复算/SaveDB回读](.work/live-2810-materialization-first/rechecks/summary.json)全量指标一致 | [64/100](.work/live-2810-materialization-first/review.json)，核心未通过；有真实生存收益，但比较条件、临时技能和因果说明不符 |
+| 场景与续航 | 04:19:44完成；[冻结42文件](.work/live-2810-scenario-first/manifest.json)，16572523字节；[原生冷复算/SaveDB回读](.work/live-2810-scenario-first/rechecks/summary.json)全量指标一致 | [65/100](.work/live-2810-scenario-first/review.json)，核心未通过；生命费用可测，自动魔力/联合节奏未证明却称成立 |
+| 目标复核 | 05:02:34完成；[冻结90文件](.work/live-2810-review-first/manifest.json)，12269412字节；[证据核验](.work/live-2810-review-first/rechecks/evidence-verification.json)确认42作者文件不变、原生观测与独立冷算一致 | [58/100](.work/live-2810-review-first/review.json)，核心未通过；抓到两项真问题，又反读宝石效果、误诊引擎并漏查临时护盾 |
+
+[保护核验](.work/2810-pre-live-preservation-verification.json)于两任务启动后确认原XML、已安装15文件、1332历史冻结文件、旧包和原分不变；不冒充提交前核验。每次首次交付先冻结，再复算和人工评分；运行代码/测试/安装保持不变，自动迭代仍PAUSED。物化问卷仅回答玩家保留范围和目标；两次客户端退出中有用户确认的续航“急需”、来源未确认的物化“继续”，第二次由测试者只发“继续”。目标复核再退出一次，[中断现场](.work/live-2810-review-interrupted-1/manifest.json)81文件仅为现场，不评分。客户端、权限等待和测试者操作不扣模型效率；同账户历史隔离未证明，三个分数不是统计准确率，也不替换最新完整任务48分。
+
+物化实际保持装备文本、宝石规格、职业/升华/主技能和103普通+6升华点，17点换17点。生命2053→2384、护盾1513→2263、混沌抗-8→0是真实收益。珠宝Socket映射保持，但孔位2491取消分配后星团不再生效；这属于保存位置与有效装备语义需要澄清，未判定为物理换装备。[相同条件差分](.work/live-2810-materialization-first/rechecks/common-conditions.json)确认比较前后药剂条件不同；[临时技能差分](.work/live-2810-materialization-first/rechecks/temporary-effect-differential.json)确认交付开启瓦尔迅捷，DPS21866.8含3498.7贡献，而声明未计入；熔岩护盾仍计入抗伤，停用后物理最大承受16260→6443、混沌8130→3222。[当前原生效果顺序与开关差分](.work/live-2810-materialization-first/rechecks/granted-effect-flags.json)明确第一效果为VaalHaste、第二为Haste；不开临时技能的改后DPS18368.1，对相同无药剂原角色32705.4下降43.8%。这些是开发诊断，不是新玩家方案或TeleAgent修正结果。
+
+生命回复410.6可复现，但当前[石魔像变体](.work/live-2810-materialization-first/rechecks/golem-variant-diagnosis.json)是of Hordes、没有回复光环，停用后回复不变；作者归因错误。续航初次开发审查也曾将回复误归因魔像，[更正附录](.work/live-2810-scenario-first/review-addendum.json)保留错误及纠正，65首分不重写。续航实际draft有21待办、自动魔力时间线unknown；声称完整30秒节奏及随时可支付超出证据。其[过期复核诊断](.work/live-2810-scenario-first/rechecks/review-identity-diagnosis.json)确认请求XML→原生保存XML的字节摘要变化使选中的input_xml_sha256引用失效，角色语义和其他事实不变；接口身份语义与模型遗漏最终stale分别记录，不能删摘要校验来强行通过。
+
+目标复核的[首份HTML](.work/live-2810-review-first/workspace/survival-refit独立复核结论.html)和[公开答复](.work/live-2810-review-first/public-observations.json)正确识别药剂条件不同、魔像变体回复归因错误，并保留国服未认证与普通怪未单独核算。但它把当前enableGlobal1/2解释反了：实际为瓦尔迅捷启用、普通迅捷停用，却称常驻光环启用且无需按键，进一步误诊“PoB光环有收益不收费”。其自身停用迅捷结果的可用魔力仍185，正文却推断约490；当前原生第二效果单独启用实算可用魔力-124，原因是普通光环保留，不能用该结果替交付当前的瓦尔效果背书。复核也未检查GuardSkillActive=true，仍宣布不用手动临时增益达标，并建议XML导入即用。原生数值可靠、部分质疑正确，不足以证明复核结论可靠。它对纯净之捷的聚合DPS差值与作者“哨兵”归因缺少主体一致的分解，未把所谓16%偏低当作已证实错误加分。
+
+后续修订应按本次实际问题处理，配装取舍仍交给模型：
+
+| 确切阻塞 | 通用改进方向 |
+|---|---|
+| 原生效果序号和保存位置被模型猜成固定含义 | 沿用inspect，按当前原生grantedEffectList暴露效果ID/名称/开关/费用；珠宝同时列保存位置、节点分配和实际生效状态，不写技能名或版本特例 |
+| 比较条件、临时贡献和因果归属没有闭合 | 模型选择常态/爆发及必要条件，程序生成相同条件的前后事实；因果说明对齐实际变体与来源，必要时用差分测量，缺覆盖保持未知 |
+| 单次支付或固定回复被扩展为全动作节奏成立 | 围绕用户所需动作列共同窗口，保留自动触发与动作互斥的能力边界；最终结论读取导出后的事实和未解决项 |
+| 同角色的请求XML和原生保存XML字节身份混用 | 区分角色计算身份与传输/来源摘要；引用明确自己的角色，保持真正变更的失效校验 |
+
+本轮三个有限实测已完成，后续迭代暂停。[收尾保护核验](.work/2810-closeout-preservation-verification.json)保存历史冻结、旧包、原分和本轮首分身份；复用原冻结器/通用角色复算助手，保护核验入口改为读取当前任务清单，避免继续依赖旧2.8.9任务路径。交付仍为同一2.8.10运行代码/测试/ZIP/安装。本轮没有把上述待改进方向当作已修复，也没有新整条开荒/整体换流派验收；269项离线通过和本次单例模块分不表示通用高准确率。
+
 # 2.8.10 请求保真与恢复：完整离线269项通过
 
 最终[完整回归](.work/2810-final-regression.log)269项全部通过，含56项真实PoECharm、213项非原生、无跳过，耗时1410.301秒。[测试前](.work/2810-final-source-before.json)/[后](.work/2810-final-source-after.json)16文件摘要一致。回归后只修正配装协议中说明段落截断表格的排版，非空行内容不变；[格式变更凭证](.work/2810-release-document-format.json)与[最终交付快照](.work/2810-final-source-release.json)单独记录，运行代码和测试未再改动。[交付ZIP](dist/poe-adjust-2.8.10.zip)185310字节，仍15文件、六Python/二Lua/标准库，SHA256为93adddc185267b93a50c702acfa064e7ed6a35781789fcd63fbacd72e59922ff。
@@ -17,7 +46,7 @@
 | 恢复丢所选引擎 | 初始状态保存实际pob_path，status/重跑沿用；显式覆盖仍重新核对指纹 | 旧状态未知路径不能凭指纹反推 |
 | 超大JSON整数崩出接口 | 共用finite_number，预算/资源/配置/报价等边界校验；10**400定位预算字段，JSON失败、state failed | 非宽泛Exception吞错；普通有限数字保持 |
 
-自审补入 probe 的选择保真与聚合实际装备数量，避免只修导出/引用名称；同规格重复库存提前报错，不被字典覆盖。复用六Python/二Lua及现有状态、诊断、缓存与测试文件，清理按本地item_id全局索引和未校验zip拼接，更新调用方及协议；没有新增交付模块、依赖或并行legacy路径。历史冻结文件、旧包和全部模型评分保持。本机仍安装2.8.9；本轮先离线/原生验证，不操作TeleAgent或重启自动迭代。最新已完成独立模型实测仍为2.8.8的48/100，接口通过不能改分或推算配装准确率。
+自审补入 probe 的选择保真与聚合实际装备数量，避免只修导出/引用名称；同规格重复库存提前报错，不被字典覆盖。复用六Python/二Lua及现有状态、诊断、缓存与测试文件，清理按本地item_id全局索引和未校验zip拼接，更新调用方及协议；没有新增交付模块、依赖或并行legacy路径。历史冻结文件、旧包和全部模型评分保持。以上为03:44:58安装前的离线阶段记录，当时本机安装2.8.9；当前安装及三个模块实测见首节。最新完整任务分仍为2.8.8的48/100，接口通过不能改分或推算配装准确率。
 
 第一次完整回归在原角色正常微调出现继承字段 `mainActiveSkill="nil"` 的误拦截，已停止该次运行并保留[部分日志](.work/2810-first-full-regression.log)/[原快照](.work/2810-first-full-source-before.json)，未记通过。[确切复现](.work/2810-normalization-repro.log)定位整数转换；修补区分本次显式操作、原生省略/继承哨兵，保留合法原角色微调和空组；原生选项接口缺字段显式unsupported，缓存同样核对能力结构。[七项真实引擎重核](.work/2810-normalization-green.log)159.170秒全部通过，含原微调/导出、空组、合法1/2、999、批次故障及完整两阶段恢复。类型自审发现物资kind为数组/对象会抛TypeError，已改成具体kind位置的ContractError并保留[红测](.work/2810-kind-shape-red.log)/[绿测](.work/2810-kind-shape-green.log)；红测的后续断言上下文错误另属夹具，已整理。没有以检测到缺字段为由默认为空选项，仍无固定赛季/对象例外。
 
