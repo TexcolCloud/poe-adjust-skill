@@ -122,6 +122,6 @@ assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[
 
 所有实际基底从当前 catalog 查询，不只查武器；不能凭熟悉的名称造盔甲或靴。被引擎忽略的物品、未满足需求或丢失节点都是已知错误。阶段 tree_diagnostics 和 next_actions 的源位置提供未保留节点在实际角色上的原生 path/points_to_allocate；模型结合可用点数与目标选择连接，不删除所需功能来消除错误。可用阶段 xml_path 做 catalog nodes --input 查询；空角色或另一阶段的路径不能当本阶段成本，多个路径重叠后的实际点数须重算。publication 的实际天赋点数、固定回复及阶段配置，与文字规划逐项核对；尚未装入的规划不能解释本次面板。逐阶段核对环境配置和已完成进度；终点条件不能自动沿用到前面阶段。声明某任务可选奖励不代表同任务多颗奖励都免费；说明选择、商店费用和宝石成长的可执行路径。资料模板可以直接从 research 的 choices[].evidence_templates 取得，再关联具体实例和 claim。
 
-route 同时生成 `<输出名>.review.json`，集中列出每阶段事实、物资、引用及缺口。用同一 TeleAgent 模型核对数字/对象、因果、替代方案排除、进入条件和结论范围；在原 route.assessment.review 填 token/findings/unresolved 及覆盖当前所有判断的 conclusions 后重跑，按 review_template 填实际 scope/findings。格式和失效规则与配装相同。改动阶段、说明、来源或本机数据后旧复核失效，不自动将旧文本绑定新数值；完整交付以 state.file_exported 为准。
+route 同时生成 `<输出名>.review.json`，集中列出每阶段事实、物资、引用及缺口。按 next_actions 指向的用户目标和全部依赖，用同一 TeleAgent 模型核对数字/对象、因果、替代方案排除、进入条件和结论范围；在原 route.assessment.review 按 review_template 填逐项用户 objectives、逐条 conclusions 及总评，再重跑，具体格式见共同证据协议。改动阶段、说明、来源或本机数据后旧复核失效，不自动将旧文本绑定新数值；state.file_exported 仅证明文件完成，目标实现范围由实际事实与缺口分别说明。
 
 物理实例的 required_items 只登记首次取得，后续沿用不重复计费。再次购买另一颗同名宝石使用新 instance_id；对旧实例升级或改造记录实际转换依据与服务/材料。已匹配的 owned 实例声明自动用于库存核对，无须在 inventory 重抄；显式 inventory 同规格记录会优先使用，但仍核对声明数量和规格。不能重复使用同一份数量凭据抵消多颗物品。

@@ -57,7 +57,7 @@
 | main_group | 当前主技能组的1起索引 |
 | items | `[{id:正整数,text:"原生完整物品文本"}]` 或下述 craft；不改其他物品/非活动套装 |
 | equip | `[{slot:"本机槽位",item_id:物品ID,active:false}]`；0 表示移除；天赋珠宝使用 `Jewel <节点ID>` |
-| tree | nodes 全量或 nodes_add/nodes_remove 增量；class_id、ascendancy_id、secondary_ascendancy_id 从当前目录选择；masteries 全量或 masteries_add 局部映射 |
+| tree | nodes 全量或 nodes_add/nodes_remove 增量，均填写实际分配节点及连接点；class_id、ascendancy_id、secondary_ascendancy_id 从当前目录选择；masteries 全量或 masteries_add 局部映射 |
 | level | 目标角色等级，由实际引擎核对保留值与使用要求 |
 | weapon_set | XML 支持的1或2；这是接口格式，非武器组合策略 |
 | config | 候选专有配置变化；null 显式删除。共同场景写顶层 scenario，未知字段保留未覆盖 |
@@ -84,6 +84,8 @@ Calcs 使用输入角色的主技能状态、EFFECTIVE 模式与战斗配置。`
 `variants.json` 仅含 `variants` 数组，各项为 `{"id":"自定唯一标识","operations":{...}}`。operations 与 plan 共用同一套装备、宝石、天赋、配置、配方接口，不写第二套变化格式。每个变体独立应用到指定 candidate.xml；需要组合时把所有变化放在同一项，禁止将单项增益简单相加。旧 `--group/--index/--ids` 是生成同样变体的单位置简写。自动分批，没有固定候选总数。
 
 每项返回完整原生实算后的指标、分配点数、错误、资源账目与缺口；输入不合法的单项单独报错。所有结果都是 `screened` 或诊断 `blocked`，不代表预算、获取、最终目标已经通过。变体不修改候选文件；选定后写回完整 plan/evaluate/export。`--node-ids` 使用原生 getNodeCalculator，只筛未分配且未被装备授予的节点词缀，不包含连接路径/点数合法性；用完整路径组成变体再次实算。
+
+未保留节点的 tree_diagnostics 从实际 XML 查询 path。所有缺失目标均有可达路径且不与显式 nodes_remove 冲突时，diagnostic.connection_proposal 返回可供审查的 changes；它合并当前已请求节点和原生路径，并保留原树操作的职业/升华及专精字段。模型核对目标、可用点数和 native_context，决定接受提案或选择其他路径。接受时将该 changes 保存为修改请求，使用 next_actions 的 input_revision 交 edit，再 evaluate/route 核对实际点数和全部依赖。提案尚未应用，不证明最优、可立即分配或路径成本可以直接相加；未知或不可达节点由模型继续诊断和设计。
 
 `--out` 的比较文件放在会话目录外的普通任务工作区，避免覆盖候选。模型读取需要的行，勿一次输出大矩阵导致平台转存到内部目录。
 

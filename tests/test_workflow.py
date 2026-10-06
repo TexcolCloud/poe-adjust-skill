@@ -1112,6 +1112,36 @@ class FinalReviewTests(unittest.TestCase):
         review["conclusions"].append(copy.deepcopy(review["conclusions"][0]))
         with self.assertRaises(ValueError): facts.final_review({}, {}, claims, {}, {"review":review})
 
+    def test_final_review_covers_each_user_objective_even_without_a_claim(self):
+        objectives=[{'objective_id':'custom-first','text':'A player requirement','claim_ids':['one'],'status':'model_assessed'},
+                    {'objective_id':'custom-later','text':'Another player requirement','claim_ids':[],'status':'unresolved'}]
+        observations={'objective_coverage':copy.deepcopy(objectives),'pending':['objective:custom-later']}
+        claims=[{'claim_id':'one','text':'A scoped observation'}]
+        packet,_=facts.final_review({}, {}, claims, observations, {})
+        review={'token':packet['token'],'findings':'Current claims checked.',
+                'conclusions':[{'claim_id':'one','scope':'Current object','findings':'This observation is scoped.'}]}
+        checked,pending=facts.final_review({}, {}, claims, observations, {'review':review})
+        self.assertEqual(checked['status'],'unresolved')
+        self.assertEqual(checked['coverage']['missing_objective_ids'],['custom-first','custom-later'])
+        self.assertEqual([row['objective_id'] for row in packet['review_template']['objectives']],['custom-first','custom-later'])
+        self.assertIn('final_review:objective:custom-later',pending)
+        review['objectives']=[{'objective_id':row['objective_id'],'scope':'Actual player requirement',
+                              'findings':'Measured scope reviewed; missing dependencies remain.'} for row in objectives]
+        checked,pending=facts.final_review({}, {}, claims, observations, {'review':review})
+        self.assertEqual(checked['status'],'model_reviewed');self.assertFalse(pending)
+        self.assertEqual(checked['facts']['pending'],['objective:custom-later'])
+        self.assertEqual(checked['facts']['objective_coverage'][1]['status'],'unresolved')
+        review['objectives'].append({'objective_id':'foreign','scope':'Different requirement','findings':'Cannot substitute this goal.'})
+        self.assertIn('final_review:unknown_objective:foreign',facts.final_review({}, {}, claims, observations, {'review':review})[1])
+        review['objectives'].pop();review['objectives'].append(copy.deepcopy(review['objectives'][0]))
+        with self.assertRaises(bx.ContractError) as caught:
+            facts.final_review({}, {}, claims, observations, {'review':review})
+        self.assertEqual(caught.exception.diagnostic['location'],'/assessment/review/objectives/2/objective_id')
+        observations['objective_coverage'].append({'objective_id':'added','text':'New requirement','claim_ids':[],'status':'unresolved'})
+        review['objectives'].pop()
+        self.assertIn('final_review:stale',facts.final_review({}, {}, claims, observations, {'review':review})[1])
+        self.assertEqual(objectives[1]['status'],'unresolved')
+
     def test_all_active_skills_have_independent_single_payment_facts(self):
         result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":False}
         result["stats"].update(ManaUnreserved=50)
@@ -1315,6 +1345,57 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 self.assertEqual(action['diagnostics'],record['diagnostics'])
                 self.assertEqual(calculate.call_count,0 if cached else 1)
                 self.assertEqual(roundtrip.call_count,0 if cached else 1)
+
+    def test_tree_connection_proposal_is_an_explicit_source_edit_with_current_context(self):
+        document=bx.parse(SAMPLE);bx.active_spec(document).set('nodes','1,2,42,43')
+        actual=copy.deepcopy(document);bx.active_spec(actual).set('nodes','1,2')
+        result={'xml':bx.serialise(actual),'engine_fingerprint':'fixture','nodes':[1,2],'class_id':1,'ascendancy_id':0}
+        catalog={'engine_fingerprint':'fixture','catalog_batch':[
+            {'entries':[{'id':42,'reachable':True,'path':[20,30,42],'points_to_allocate':3}]},
+            {'entries':[{'id':43,'reachable':True,'path':[30,43],'points_to_allocate':2}]}]}
+        location='/stages/6/snapshot/operations/tree'
+        for tree in ({'nodes_add':[42,43],'nodes_remove':[99],'masteries_add':{'2':11},'class_id':1},
+                     {'nodes':[1,2,42,43],'masteries':{'2':11},'ascendancy_id':0}):
+            original=copy.deepcopy(tree);requested=bx.serialise(document)
+            with patch.object(poe,'native_queries',return_value=catalog) as query:
+                _,diagnostics=poe.native_tree_diagnostics(Path('.'),document,result,location,tree_operations=tree)
+            proposal=diagnostics[0]['connection_proposal']
+            changed=proposal['changes']['replace'][location]
+            self.assertEqual(changed['nodes'],[1,2,20,30,42,43])
+            self.assertNotIn('nodes_add',changed);self.assertNotIn('nodes_remove',changed)
+            for key,value in original.items():
+                if key not in {'nodes','nodes_add','nodes_remove'}: self.assertEqual(changed[key],value)
+            self.assertEqual(proposal['additional_node_ids'],[20,30])
+            self.assertEqual(query.call_args.args[2],result['xml'])
+            self.assertEqual(tree,original);self.assertEqual(bx.serialise(document),requested)
+            self.assertEqual(diagnostics[0]['native_context']['engine_fingerprint'],'fixture')
+            action=poe.delivery_actions({'status':'blocked','errors':['Dropped nodes'],'pending':[],
+                                       'diagnostics':diagnostics},'route.json','result.json','review.json')[0]
+            self.assertEqual(action['diagnostics'][0]['connection_proposal']['changes'],proposal['changes'])
+
+    def test_tree_connection_proposal_cannot_undo_removals_or_guess_unknown_paths(self):
+        document=bx.parse(SAMPLE);bx.active_spec(document).set('nodes','1,2,42')
+        actual=copy.deepcopy(document);bx.active_spec(actual).set('nodes','1,2')
+        result={'xml':bx.serialise(actual),'engine_fingerprint':'fixture','nodes':[1,2]}
+        variants=[{'entries':[]}, {'entries':[{'id':42,'reachable':False,'path':[],'points_to_allocate':1000}]},
+                  {'entries':[{'id':42,'reachable':True,'path':[20,42],'points_to_allocate':2}]}]
+        for row in variants:
+            with patch.object(poe,'native_queries',return_value={'engine_fingerprint':'fixture','catalog_batch':[row]}):
+                _,diagnostics=poe.native_tree_diagnostics(Path('.'),document,result,tree_operations={'nodes_add':[42],'nodes_remove':[20]})
+            self.assertNotIn('connection_proposal',diagnostics[0])
+        with patch.object(poe,'native_queries',return_value={'engine_fingerprint':'fixture','catalog_batch':[variants[-1]]}):
+            _,diagnostics=poe.native_tree_diagnostics(Path('.'),document,result)
+        self.assertNotIn('connection_proposal',diagnostics[0])
+
+    def test_final_review_action_points_to_actual_user_goals_and_template(self):
+        observations={'objective_coverage':[{'objective_id':'dynamic','text':'Actual requirement','claim_ids':[],'status':'unresolved'}],
+                      'pending':['objective:dynamic']}
+        packet,_=facts.final_review({}, {}, [], observations, {})
+        outcome={'status':'draft','errors':[],'pending':['objective:dynamic','final_review:missing']}
+        action=poe.delivery_actions(outcome,'source.json','details.json','current-review.json')[-1]
+        self.assertEqual(action['review_file'],'current-review.json')
+        self.assertEqual(facts.pointer(packet,action['objective_pointer']),observations['objective_coverage'])
+        self.assertEqual(facts.pointer(packet,action['template_pointer']),packet['review_template'])
 
     def test_delivery_actions_include_objective_and_refuted_check_source_repairs(self):
         diagnostics=[{'code':'objective_subject_missing','action':'link_claim','location':'/claims','required_subject':'objective:actual'},
@@ -2956,9 +3037,16 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn('已知错误',html)
         self.assertIn(response['errors'][0].split('：',1)[-1],html)
         self.assertIn('tree_diagnostics',html)
-        # Apply the current native path in this API fixture, without a build-specific answer.
-        route['stages'][0]['snapshot']['operations']['tree']['nodes_add']=detail['path']
-        poe.write_json(path,route)
+        # Accept the observed proposal through the real editor, without a build-specific answer.
+        proposal=diagnostic['connection_proposal']
+        self.assertIn(node['id'],proposal['changes']['replace'][diagnostic['location']]['nodes'])
+        self.assertEqual(poe.read_json(path)['stages'][0]['snapshot']['operations']['tree'],{'nodes_add':[node['id']]})
+        changes=path.with_name('connect-changes.json');poe.write_json(changes,proposal['changes'])
+        with self.assertRaises(bx.ContractError):
+            poe.edit_document(args(invoked=True,kind='route',file=str(path),changes=str(changes),if_sha256='stale-source'))
+        self.assertEqual(bx.digest(path.read_bytes()),repair['input_revision'])
+        edited=poe.edit_document(args(invoked=True,kind='route',file=str(path),changes=str(changes),if_sha256=repair['input_revision']))
+        self.assertEqual(edited['revision'],bx.digest(path.read_bytes()))
         with patch.object(facts,'gem_facts',return_value={}):repaired=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         final=poe.read_json(output.with_suffix('.evidence.json'))['checked_route']['stages'][0]['calculation']
         self.assertEqual(final['tree_diagnostics'],[])

@@ -22,7 +22,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.6"
+VERSION = "2.8.7"
 SCHEMA_VERSION = 2
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
@@ -921,11 +921,12 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
                         "instruction":"先按当前接口能力核对缺口。未支持的机制不能靠补输入变成已测量；模型决定调整方案、取得其他可核实证据或保留明确条件。"})
     if any(value.startswith("final_review:") for value in outcome["pending"]):
         actions.append({**shared,"action":"review_current_result","review_file":str(review_file),
-                        "instruction":"先处理前面的问题并重算，读取新复核包后审查实际对象、目标与未解决条件，再填写源 assessment.review。不得自动回填 token。"})
+                        "objective_pointer":"/facts/objective_coverage","dependencies_pointer":"/facts/pending","template_pointer":"/review_template",
+                        "instruction":"先处理前面的问题并重算；读取新包的用户目标、全部依赖及模板，逐项核对实际依据和未实现部分，再填写源 assessment.review。判断列表完整不代表用户目标完成；不得自动回填 token。"})
     return actions
 
 
-def native_tree_diagnostics(root,document,result,location="/operations/tree"):
+def native_tree_diagnostics(root,document,result,location="/operations/tree",*,tree_operations=None):
     """Observe dropped requested nodes and native paths in this exact build; never allocate."""
     requested={int(value) for value in bx.active_spec(document).get("nodes","").split(",") if value}
     missing=sorted(requested-set(result["nodes"]))
@@ -936,11 +937,23 @@ def native_tree_diagnostics(root,document,result,location="/operations/tree"):
     for node_id,row in zip(missing,queried["catalog_batch"]):
         node=next((entry for entry in row["entries"] if entry["id"]==node_id),None)
         details.append({"id":node_id,"found":node is not None,**({key:node[key] for key in ("name","ascendancy_name","reachable","points_to_allocate","path") if key in node} if node else {})})
-    return details,[{"code":"native_tree_nodes_unretained","action":"edit_input","location":location,
-                     "expected":sorted(requested),"actual":sorted(result["nodes"]),"tree_diagnostics":details,
-                     "native_context":{"xml_sha256":bx.digest(result["xml"]),"engine_fingerprint":result["engine_fingerprint"],
-                                       "class_id":result.get("class_id"),"ascendancy_id":result.get("ascendancy_id")},
-                     "message":"所列请求节点未保留。path 与 points_to_allocate 来自此实际角色的原生树；模型核对可用点数、目标与取得条件后选择连接路径或修订方案，再重算。此路径不证明最优、可立即取得或其他节点加入后的总成本。"}]
+    diagnostic={"code":"native_tree_nodes_unretained","action":"edit_input","location":location,
+                "expected":sorted(requested),"actual":sorted(result["nodes"]),"tree_diagnostics":details,
+                "native_context":{"xml_sha256":bx.digest(result["xml"]),"engine_fingerprint":result["engine_fingerprint"],
+                                  "class_id":result.get("class_id"),"ascendancy_id":result.get("ascendancy_id")},
+                "message":"所列请求节点未保留；核对原生路径与源操作中的连接点。path 与 points_to_allocate 来自此实际角色的原生树；模型核对可用点数、目标与取得条件后选择路径并重算。查询返回路径不等于已加入源操作，也不证明最优、可立即取得或多个路径的合计点数。"}
+    if tree_operations is not None and all(row["found"] and row.get("reachable") and row.get("path") and row["id"] in row["path"] for row in details):
+        paths={value for row in details for value in row["path"]}
+        conflicts=paths & set(tree_operations.get("nodes_remove",[]))
+        if conflicts:
+            diagnostic["connection_conflicts_with_removal"]=sorted(conflicts)
+        else:
+            tree=copy.deepcopy(tree_operations)
+            tree.pop("nodes_add",None);tree.pop("nodes_remove",None)
+            tree["nodes"]=sorted(requested|paths)
+            diagnostic["connection_proposal"]={"changes":{"replace":{location:tree}},"additional_node_ids":sorted(paths-requested),
+                                                "scope":"仅为保留当前已请求节点而合并本次原生路径；尚未应用。模型决定是否采用，并用 input_revision 经 edit 提交，再重算实际点数、专精、资源与目标；不自动分配，不证明最优或点数可用。"}
+    return details,[diagnostic]
 
 
 def failure_record(exc,location_prefix="",input_file=None):
@@ -1095,7 +1108,7 @@ def evaluate(args):
     document=bx.apply_plan(prepared(source,intent,scenario=scenario),resolved,native=native)
     result=engine.calculate(root,bx.serialise(document))
     bx.require(result["engine_fingerprint"]==baseline["engine_fingerprint"]==native["engine_fingerprint"]==info["engine_fingerprint"],"计算期间引擎内容发生变化，请更新完成后重算。")
-    tree_diagnostics,tree_repairs=native_tree_diagnostics(root,document,result)
+    tree_diagnostics,tree_repairs=native_tree_diagnostics(root,document,result,tree_operations=plan.get("operations",{}).get("tree"))
     xml=roundtrip(root,result,document)
     result["xml_sha256"]=bx.digest(xml)
     assessment=assess_candidate(original,document,baseline,result,intent,plan,plan_path.parent,Path(state.get("intent_evidence_folder",str(plan_path.parent))),root=root)
@@ -1518,7 +1531,7 @@ def route_snapshots(route,native,root,folder,output):
                 write_text(directory/"snapshot.xml",saved)
                 write_json(cache_path,{"request_sha256":bx.digest(requested),"result":calculated,
                                       "result_sha256":bx.digest(json.dumps(calculated,sort_keys=True,ensure_ascii=False,allow_nan=False))})
-            tree_details,tree_repairs=native_tree_diagnostics(root,document,calculated,op_path+"/tree")
+            tree_details,tree_repairs=native_tree_diagnostics(root,document,calculated,op_path+"/tree",tree_operations=snap.get("operations",{}).get("tree"))
             record.update(status="calculated",xml_path=str(directory/"snapshot.xml"),xml_sha256=bx.digest(saved),engine_fingerprint=calculated["engine_fingerprint"],
                           result=calculated,document=document,directory=directory,crafted_items=crafts,
                           tree_diagnostics=tree_details,diagnostics=tree_repairs,
@@ -1710,7 +1723,7 @@ def calculate_route(args):
          "stages":[{"stage_id":s["stage_id"],"level":s.get("level"),"act":s.get("act"),"completed_act":s.get("completed_act"),
                     "entry_conditions":s.get("entry_conditions",[]),"calculation":s.get("calculation",{"status":"not_calculated"})} for s in checked["stages"]]},route.get("assessment",{}))
     checked["pending"]+=review_pending
-    checked["final_review"]={k:review[k] for k in ("token","status","findings","conclusions","coverage","scope")}
+    checked["final_review"]={k:review[k] for k in ("token","status","findings","conclusions","objectives","coverage","scope")}
     checked["errors"]=list(dict.fromkeys(route_errors))
     checked["delivery_status"]="blocked" if route_errors else "draft" if checked["pending"] else "scoped_result"
     checked["delivery_brief"]=facts.delivery_brief(checked["delivery_status"],checked["errors"],checked["pending"])

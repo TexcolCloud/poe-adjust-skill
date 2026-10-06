@@ -71,10 +71,10 @@ delivery_brief 从全部 errors/pending 生成状态和缺口类别；next_actio
 最终复核使用现有 TeleAgent 模型，不增加另一模型服务。先完成方案/claims 修订并 evaluate，再阅读 review.json 的 facts/claims：核对数字与技能/主体/阶段、因果证据、替代方案排除理由、切换进入条件以及 summary/迁移说明/最终回答的范围。发现问题就修改并重新 evaluate，直到可以如实记录本轮复核。填写源 plan 的 `assessment.review`，再 evaluate：
 
 ```json
-{"token":"本次 review.json 的完整 token","findings":"整份方案的核对结果，包括各条说明是否一致","unresolved":[],"conclusions":[{"claim_id":"当前实际 claim_id","scope":"此条结论成立的对象、场景及范围","findings":"实际依据、条件、发现与取舍；解释和已测量部分分别说明"}]}
+{"token":"本次 review.json 的完整 token","findings":"整份方案的核对结果，包括各条说明是否一致","unresolved":[],"objectives":[{"objective_id":"当前实际 objective_id","scope":"此要求已实现及尚未实现的范围","findings":"对应对象、测量、来源、代价和未解决条件"}],"conclusions":[{"claim_id":"当前实际 claim_id","scope":"此条结论成立的对象、场景及范围","findings":"实际依据、条件、发现与取舍；解释和已测量部分分别说明"}]}
 ```
 
-review_template 由程序列出当次所有判断的 ID，scope/findings 留空供模型评审；conclusions 必须覆盖所有当前 claim_id 且不得重复，陌生 ID 及遗漏保留 draft，coverage 列出具体差异。旧的只有总评段落的复核仍可读取，但不能算完整复核。程序只检查覆盖与摘要，不判断这些文字的真实性。
+先读取 next_actions.review_current_result 指向的当前 facts.objective_coverage 和 facts.pending，再按 review_template 逐项评审。模板列出所有用户 objective_id 和判断 claim_id，scope/findings 留空；objectives 与 conclusions 分别覆盖当次全部 ID，缺 claim 的目标也必须记录未实现部分。重复 ID 报具体位置，陌生 ID 及遗漏保留 draft，coverage 列出差异。只有总评或只有判断评审的旧记录可追溯，但不能代替完整目标复核。程序只核对覆盖与摘要；这些文字不能消除原有物资、资源、目标或机械缺口，也不证明目标已经达到。
 
 token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源/预算和数值；改变后旧复核失效。`final_review:missing/stale` 保留 draft，findings/unresolved 不改写机械矛盾或其他缺口。此步骤只证明模型复核针对这一版，不证明语言无误；不要用脚本自动填 token，不能以复核记录宣称全部机制验证。
 
