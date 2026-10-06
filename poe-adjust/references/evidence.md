@@ -32,7 +32,7 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 条件依据与最终验收分别记录：报价、库存、充能启动等前提引用实际来源/原生值；最终判断可引用 budget/resources。核验报告不能反过来充当生成它自己的前提，循环引用不会补齐该项依据。引用绑定规范化后的当前 XML，原生调用的运输格式差异不作为新方案身份。
 
-“测得某值”“机制导致某值”“实际覆盖该条件”“满足用户目标”分别需要对应依据。引用一个面板数值不证明自己的因果解释。与解释冲突时，先检查当前支付资源、主体、实际装备、配置和明细；必要时只改一个输入探测，再说明其影响范围。模型可以选择不同使用条件或接受代价，但须把条件落进对应候选/阶段，不用假想实战效果覆盖当前值，也不以无依据的“引擎问题”解释异常。
+“测得某值”“机制导致某值”“实际覆盖该条件”“满足用户目标”分别需要对应依据。引用一个面板数值不证明自己的因果解释。探测先核对 damage_observation 的技能、主体、XML 与场景；另一技能的指标不变，不能排除被改组件的作用。与解释冲突时，先检查当前支付资源、主体、实际装备、配置和明细；必要时只改一个输入探测，再说明其影响范围。模型可以选择不同使用条件或接受代价，但须把条件落进对应候选/阶段，不用假想实战效果覆盖当前值，也不以无依据的“引擎问题”解释异常。已有数值而缺少启动/持续覆盖，与根本未读到数值分别表述。
 
 常用 subject：`goal`、`progress:normal`、`progress:ascendancy`、`progress:secondary_ascendancy`、`condition:guard`、`condition:Flask 1`、`config:<字段>`、`skill:<skill_ref>`、`dependency:<skill_ref>`、`count:<组>:<宝石位置>`、`resource:Mana:leech`、`resource:EnergyShield:recharge`、`transformation:<槽位>`、`legality:item:<物品ID>`、`migration`、`template_source`。以实际 pending 为索引说明问题；permission、缺失原生量和 capability 缺口不能靠填理由转成程序通过。
 
@@ -41,6 +41,8 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 简单频率/同一窗口用 usage，每行 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。skill_ref 来自本次 active_skills，对应 claim.subjects:`skill:<引用>`。频率为次/秒，窗口为秒，有限非负；未知省略。程序核对原生动作频率、单次支付和满速费用，只有费用符合单次支付乘频率时才线性投影。同一窗口可合并，不同窗口不会借用主技能窗口放行；混合动作使用下文 timeline。降频不沿用满速吸取，未重算的 DPS 仍为原生快照。资源缺口和启动前不足不能被 prose 消除。
 
 readiness.single_payments 列出所有当前启用技能对三资源的独立单次支付、可用储量、原生定位和三值状态，包括尚未声明 usage 的副技能。每项从满可用储量独立检查，不证明连续动作或任意时点都可支付；生命支付后须存活，EB 与能盾恢复上限从当前原生规则读取，缺字段保持 unknown。resources.snapshot_balance_nonnegative 只比较当前账目中的声明频率与假设回复。sustained_use 区分共同时间线测量与未测得；无共同时间线时，即使面板吸取大于消耗也不能写成已证实持续恢复。
+
+每行 mean_use 给出当前技能原生满速 cost_per_second、fixed_net_regeneration_per_second 及相减后的 net_drain_per_second。固定净回复优先用当前 Net<Resource>Regen，否则要求同时读到回复和持续伤害；缺值不填零。mean_pool_depletion_seconds 仅在正净消耗下给平均储量耗尽估算，生命保留正储量；非正净消耗或缺值为 null，不宣称无限续航。它是独立平均投影，不模拟离散扣费、其他动作、命中吸取、充能、药剂或效果变化；准确动作支付与混合节奏用 timeline。
 
 共同时间线为 `timeline:{duration_seconds:周期秒数,events:[{skill_ref:"当前引用",at:周期内秒数}]}`。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。模型选择有依据的节奏，程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，并核对同技能动作间隔及循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
 
@@ -78,7 +80,7 @@ token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源
 
 候选名称为1–48位小写英文/数字/连字符。原件、意图、请求 XML、候选记录/文件及引擎内容都有完整性校验；直接手改输出会要求重算。baseline 缓存按意图、共同场景、引擎及适配版本区分，各候选保留自己的基准。
 
-probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。返回各变体原生快照、差异与未评审依赖；不继承旧宝石的使用结论，最终选择仍写完整 plan/evaluate。批量大小为进程资源保护，自动分批比较。
+probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。返回各变体原生快照、差异与未评审依赖；baseline_damage_observation 和各行 damage_observation 记录当次选定主技能、skill_ref、组、主体、显示定义、XML 与实际配置。dps_metric 按各行当前主技能选择，不假定它等于被修改对象；其他技能的影响应选择对应 main_group 或读取有主体的分项再实算。零差值只支持所测对象在该场景下数值不变，不证明某机制无效。不继承旧宝石的使用结论，最终选择仍写完整 plan/evaluate。批量大小为进程资源保护，自动分批比较。
 
 export 再复算并重核来源和复核 token。blocked 只输出诊断 HTML；draft 输出配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json、review.json、delivery.json。只有 XML 与 HTML 均落盘后 delivery.file_exported 才为 true，清除同候选旧状态的另一 XML 文件；可捕获失败记录 failed/last_operation，并取消本次交付成功身份。进程被强制终止仍可能留下 preparing/exporting，由 status 核对后恢复。无 URL 的本地证据仍正常展示。
 

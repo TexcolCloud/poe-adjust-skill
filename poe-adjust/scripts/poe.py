@@ -22,7 +22,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.2"
+VERSION = "2.8.3"
 SCHEMA_VERSION = 2
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
@@ -1178,6 +1178,15 @@ def read_candidate(args):
     bx.require(engine.check(root)["engine_fingerprint"]==outcome["engine_fingerprint"],"引擎、数据或适配器变化，请重新 evaluate。")
     return run,state,outcome,xml,root
 
+def damage_observation(calculation, name):
+    metric="MinionCombinedDPS" if any(s.get("is_main") and not s.get("disabled") and s.get("minion") for s in calculation.get("active_skills",[])) else "CombinedDPS"
+    observed={**calculation,"stats":{**calculation.get("stats",{}),metric:calculation.get("stats",{}).get(metric)}}
+    record=facts.resolve_reference("native:"+name+"#/stats/"+metric,{}, {name:observed})
+    if record["value"] is None: record["status"]="unknown"
+    record["scope"]="当前选定主技能/主体、XML 与实际场景的伤害快照；其他组变化下此值不变，不证明被改技能无收益、增益未触发或机制无效。"
+    return record
+
+
 def probe(args):
     run,state,outcome,xml,root=read_candidate(args)
     source=bx.parse(xml)
@@ -1213,7 +1222,6 @@ def probe(args):
     metrics=getattr(args,"metrics",None)
     metrics=metrics.split(",") if metrics else list(METRICS)
     bx.require(all(k and isinstance(k,str) for k in metrics),"metrics 使用本次数值输出中的指标名。")
-    dps_metric="MinionCombinedDPS" if any(skill.get("is_main") and skill.get("minion") for skill in baseline.get("active_skills",[])) else "CombinedDPS"
     original=bx.read_document(run/"original.xml")
     rows=[]
     for offset in range(0,len(variants),12):
@@ -1246,12 +1254,14 @@ def probe(args):
             audit=resources.assess(result,state["intent"],plan,[])
             context_changes=[k for k in ("config_values","level","class","main_skill") if baseline.get(k)!=result.get(k)]
             comparison=compare(baseline,result,not context_changes)
+            damage=damage_observation(result,"variant")
+            dps_metric=damage["locator"].rsplit("/",1)[-1]
             rows.append({"id":variant["id"],**({"skill_id":variant["id"]} if not getattr(args,"variants",None) else {}),"status":"blocked" if errors+ce+audit["errors"] else "screened",
                          "engine_fingerprint":result["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"operations":variant["operations"],"crafted_items":crafts,
                          "stats":{k:result["stats"].get(k) for k in metrics},"comparison":{k:v for k,v in comparison.items() if k in metrics},"context_changes":context_changes,
-                         "dps_metric":dps_metric,"dps_delta":comparison.get(dps_metric,{}).get("delta"),"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
+                         "dps_metric":dps_metric,"dps_delta":comparison.get(dps_metric,{}).get("delta"),"damage_observation":damage,"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
                          "errors":errors+ce+audit["errors"],"pending":pending+cp+audit["pending"],"warnings":warnings+audit["warnings"],"readiness":audit})
-    return {"status":"screened","alternatives":rows,"next":"各变体均为独立完整原生实算；组合必须单列变体，不能相加单项收益。未继承旧操作/证据判断，不改候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
+    return {"status":"screened","baseline_damage_observation":damage_observation(baseline,"baseline"),"alternatives":rows,"next":"各变体均为独立完整原生实算；比较前核对 damage_observation 的技能/主体、XML、实际场景与目标。组合必须单列变体，不能相加单项收益。未继承旧操作/证据判断，不改候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
 
 
 def export(args):

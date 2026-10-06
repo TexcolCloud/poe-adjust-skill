@@ -42,13 +42,13 @@ def input_shape(document, *, complete=True):
                 bx.require(at is not None and at>=0 and (duration is None or at<duration),"动作时间位于周期内。",location=path+"/at",expected={"minimum":0,"exclusive_maximum":duration},actual=event.get("at"))
 
 
-def payment(data, cost_key, shield_covers_mana, no_cost=False):
-    value=number(data,cost_key+"Cost")
+def payment(data, cost_key, shield_covers_mana, no_cost=False, suffix="Cost"):
+    value=number(data,cost_key+suffix)
     if no_cost and value is None: value=0
     if shield_covers_mana:
         if cost_key=="Mana": return 0
         if cost_key=="ES":
-            mana=number(data,"ManaCost")
+            mana=number(data,"Mana"+suffix)
             if no_cost and mana is None: mana=0
             return value+mana if value is not None and mana is not None else None
     return value
@@ -69,6 +69,12 @@ def available_pool(stats, resource):
     return min(pool,cap) if pool is not None and cap is not None else pool
 
 
+def fixed_net_regeneration(stats, resource):
+    value=number(stats,"Net"+resource+"Regen")
+    regen,degen=number(stats,resource+"RegenRecovery"),number(stats,resource+"Degen")
+    return value if value is not None else regen-degen if regen is not None and degen is not None else None
+
+
 def single_payments(result):
     """Independent payments from a full pool, never a sequence or sustain proof."""
     eb=result.get("resource_rules",{}).get("energy_shield_protects_mana")
@@ -82,8 +88,19 @@ def single_payments(result):
             rule_known=resource=="Life" or eb is not None or number(data,"ManaCost")==0 or skill.get("no_cost") is True
             known=rule_known and cost is not None and cost>=0 and pool is not None and pool>=0
             affordable=pool>cost if resource=="Life" and cost and known else pool>=cost if known else None
+            full=payment(data,cost_key,eb,skill.get("no_cost") is True,suffix="PerSecondCost")
+            regen=fixed_net_regeneration(result["stats"],resource)
+            full_rule_known=resource=="Life" or eb is not None or number(data,"ManaPerSecondCost")==0 or skill.get("no_cost") is True
+            mean_known=full_rule_known and full is not None and full>=0 and pool is not None and pool>=0 and regen is not None
+            drain=full-regen if mean_known else None
+            mean={"status":"native_mean_projection" if mean_known else "unknown","cost_per_second":full,
+                  "native_action_rate":native_rate(skill),"fixed_net_regeneration_per_second":regen,"net_drain_per_second":drain,
+                  "mean_pool_depletion_seconds":max(pool-(1 if resource=="Life" else 0),0)/drain if drain is not None and drain>0 else None,
+                  "excluded_recovery":["leech","recharge","flask"],
+                  "scope":"仅此技能原生满速费用与当前固定净回复的平均投影；未计其他动作、离散支付时点、吸取、充能、药剂补充或条件变化。时间为平均估算，空值不证明无限续航。"}
             rows.append({"skill_ref":skill.get("skill_ref"),"actor":skill.get("actor"),"resource_id":resource,
                          "payment":cost,"pool":pool,"status":"supported" if affordable is True else "refuted" if affordable is False else "unknown",
+                         "mean_use":mean,
                          "cost_source":{"skill_pointer":f"/active_skills/{index}/costs","main_fallback_pointer":"/stats" if skill.get("is_main") else None},
                          "scope":"每项独立从当前满可用储量支付一次；不证明任意时点、连续动作、吸取启动或持续补充。"})
     return rows
@@ -142,8 +159,7 @@ def timeline_assessment(result, timeline):
     for resource,cost_key in (("Mana","Mana"),("Life","Life"),("EnergyShield","ES")):
         stats=result["stats"]
         pool=available_pool(stats,resource)
-        regen=number(stats,"Net"+resource+"Regen")
-        if regen is None and number(stats,resource+"RegenRecovery") is not None and number(stats,resource+"Degen") is not None: regen=stats[resource+"RegenRecovery"]-stats[resource+"Degen"]
+        regen=fixed_net_regeneration(stats,resource)
         payments={ref:payment(s.get("costs",{}),cost_key,eb,s.get("no_cost") is True) for ref,s in skills.items()}
         gaps=[]
         for ref,skill in skills.items():
@@ -242,8 +258,7 @@ def assess(result, intent, plan, claims=None):
             if native_cost is None: native_cost=0
         pool = available_pool(stats,resource)
         raw_regen, degen = number(stats,resource+"RegenRecovery"), number(stats,resource+"Degen")
-        regen = number(stats,"Net"+resource+"Regen")
-        if regen is None and raw_regen is not None and degen is not None: regen = raw_regen-degen
+        regen = fixed_net_regeneration(stats,resource)
         native_leech = number(stats,resource+"LeechGainRate")
         leech = 0 if main and main.get("actor") in {"mirage","minion"} else native_leech
         automatic_values = [number(skill.get("costs",{}),cost_key+"PerSecondCost") for skill in automatic]

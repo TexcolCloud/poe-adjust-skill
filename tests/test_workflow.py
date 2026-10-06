@@ -1009,6 +1009,36 @@ class ReadOnlyDataTests(unittest.TestCase):
 
 
 class FinalReviewTests(unittest.TestCase):
+    def test_each_skill_mean_drain_uses_fixed_net_regen_and_excludes_leech(self):
+        result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":False}
+        result["stats"].update(ManaUnreserved=240,ManaRegenRecovery=18,ManaDegen=3,ManaLeechGainRate=500)
+        result["active_skills"].append({"skill_ref":"secondary","costs":{"ManaCost":20,"ManaPerSecondCost":75,"LifeCost":0,"LifePerSecondCost":0,"ESCost":0,"ESPerSecondCost":0},"usage_rate":{"value":3.75}})
+        row=next(r for r in resources.single_payments(result) if r["skill_ref"]=="secondary" and r["resource_id"]=="Mana")
+        mean=row["mean_use"]
+        self.assertEqual((mean["cost_per_second"],mean["fixed_net_regeneration_per_second"],mean["net_drain_per_second"]),(75,15,60))
+        self.assertEqual(mean["mean_pool_depletion_seconds"],4)
+        self.assertEqual(mean["status"],"native_mean_projection")
+        self.assertEqual(resources.assess(result,{}, {})["sustained_use"]["status"],"unknown")
+        result["stats"]["NetManaRegen"]=75
+        mean=next(r for r in resources.single_payments(result) if r["skill_ref"]=="secondary" and r["resource_id"]=="Mana")["mean_use"]
+        self.assertEqual(mean["net_drain_per_second"],0)
+        self.assertIsNone(mean["mean_pool_depletion_seconds"])
+
+    def test_mean_projection_maps_payment_resource_and_preserves_unknown_values(self):
+        result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":True}
+        result["stats"].update(ManaCost=10,ManaPerSecondCost=50,ESCost=2,ESPerSecondCost=10,EnergyShieldRecoveryCap=200,EnergyShieldRegenRecovery=20)
+        mana,life,shield=resources.single_payments(result)
+        self.assertEqual(mana["mean_use"]["cost_per_second"],0)
+        self.assertEqual((shield["mean_use"]["cost_per_second"],shield["mean_use"]["net_drain_per_second"],shield["mean_use"]["mean_pool_depletion_seconds"]),(60,40,5))
+        result["stats"].pop("EnergyShieldDegen")
+        shield=resources.single_payments(result)[2]["mean_use"]
+        self.assertEqual(shield["status"],"unknown")
+        self.assertIsNone(shield["mean_pool_depletion_seconds"])
+        result["stats"]["NetEnergyShieldRegen"]=-5
+        self.assertAlmostEqual(resources.single_payments(result)[2]["mean_use"]["mean_pool_depletion_seconds"],200/65)
+        result["resource_rules"]={}
+        self.assertEqual(resources.single_payments(result)[0]["mean_use"]["status"],"unknown")
+
     def test_single_payment_preserves_unknown_rules_life_survival_and_shield_cap(self):
         result=resource_fixture();result["stats"].update(ManaCost=30,LifeCost=1000,ESCost=10,EnergyShieldRecoveryCap=35)
         rows=resources.single_payments(result)
@@ -1144,6 +1174,33 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_probe_damage_observation_keeps_selected_skill_and_actor_context(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);poe.write_text(run/'original.xml',SAMPLE)
+            variant_file=run/'variants.json';poe.write_json(variant_file,{'variants':[{'id':'secondary-change','operations':{}}]})
+            baseline={'stats':{'CombinedDPS':100},'main_skill':'fixture-main','main_skill_name':'Fixture main','main_group':1,'config_values':{'native-scene':True},'engine_fingerprint':'fixture','input_xml_sha256':'before',
+                      'active_skills':[{'id':'fixture-main','name':'Fixture main','skill_ref':'qualified-main','is_main':True,'actor':'player'}],
+                      'stat_metadata':{'CombinedDPS':[{'label':'Combined DPS','format':'.1f','actor':'player'}]}}
+            candidate=copy.deepcopy(baseline);candidate.update(input_xml_sha256='after',points=1,ascendancy_points=0,secondary_ascendancy_points=0)
+            record=(run,{'intent':{}},{'plan':{'mode':'refine'},'engine_fingerprint':'fixture','baseline':baseline},SAMPLE,run)
+            with patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',side_effect=[baseline,{'calculations':[candidate]}]),patch.object(poe,'materialize_items',side_effect=lambda plan,root:(plan,[])),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',return_value={'errors':[],'pending':[],'warnings':[]}):
+                response=poe.probe(args(run=str(run),name='fixture',variants=str(variant_file)))
+            observation=response['alternatives'][0]['damage_observation']
+            self.assertEqual(response['alternatives'][0]['dps_delta'],0)
+            self.assertEqual(observation['context']['main_skill_ref'],'qualified-main')
+            self.assertEqual(observation['context']['main_group'],1)
+            self.assertEqual(observation['meaning']['actor'],'player')
+            self.assertEqual(observation['context']['config_values'],{'native-scene':True})
+            self.assertEqual(response['baseline_damage_observation']['context']['xml_sha256'],'before')
+
+    def test_damage_observation_selects_current_minion_metric_and_keeps_missing_unknown(self):
+        calculation={'stats':{'CombinedDPS':0,'MinionCombinedDPS':230},'main_skill':'native-minion','active_skills':[{'skill_ref':'current-minion','is_main':True,'minion':True,'actor':'minion'}]}
+        observed=poe.damage_observation(calculation,'candidate')
+        self.assertEqual((observed['locator'],observed['value']),('/stats/MinionCombinedDPS',230))
+        self.assertEqual(observed['context']['main_skill_ref'],'current-minion')
+        calculation['stats'].pop('MinionCombinedDPS')
+        self.assertIsNone(poe.damage_observation(calculation,'candidate')['value'])
+
     def test_probe_preserves_native_diagnostic_and_maps_variant_source(self):
         with tempfile.TemporaryDirectory() as folder:
             run=Path(folder);poe.write_text(run/'original.xml',SAMPLE)
@@ -2379,6 +2436,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(result["status"], "screened")
         rows = result["alternatives"]
         self.assertAlmostEqual(rows[1]["dps_delta"], 0, places=6)
+        self.assertEqual(rows[1]["damage_observation"]["context"]["main_group"],1)
+        self.assertEqual(rows[1]["damage_observation"]["value"],rows[1]["stats"]["CombinedDPS"])
         self.assertTrue(any("未辅助" in error for error in rows[2]["warnings"]), rows[2]["warnings"])
         changed = bx.apply_plan(bx.read_document(folder / "candidate.xml"), {"mode": "refine", "summary": "comparison", "operations": {"gems": [{"group": 1, "index": 2, "skill_id": "SupportIronGrip", "level": 19, "quality": 0}]}})
         standalone = engine.calculate(self.pob, bx.serialise(changed))
@@ -2470,6 +2529,7 @@ class RealEngineTests(unittest.TestCase):
         result = poe.probe(args(run=str(self.run_dir), name="minion-context", group=1, index=2,
                                 ids="SupportMinionDamage,SupportMeleePhysicalDamage", level=19, quality=0))
         self.assertEqual(result["alternatives"][0]["dps_metric"], "MinionCombinedDPS")
+        self.assertEqual(result["alternatives"][0]["damage_observation"]["meaning"]["actor"],"minion")
         self.assertAlmostEqual(result["alternatives"][0]["dps_delta"], 0)
         self.assertNotEqual(result["alternatives"][1]["dps_delta"], 0)
         exported = poe.export(args(run=str(self.run_dir), name="minion-context"))

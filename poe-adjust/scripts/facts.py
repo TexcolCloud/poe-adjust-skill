@@ -334,10 +334,12 @@ def resolve_reference(reference, evidence, native=None):
         bx.require(separator and locator and name in (native or {}), "原生引用须指定本次结果及字段，例如 native:candidate#/stats/Life。")
         calculation = native[name]
         value = pointer(calculation, locator)
+        main=next((s for s in calculation.get("active_skills",[]) if s.get("is_main") and not s.get("disabled")),{})
         record = {"evidence_id": reference, "kind": "native", "subject": name, "locator": locator, "value": value,
                   "status": "native_observed", "origin": calculation.get("origin","program_calculation"), "digest": bx.digest(json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)),
                   "context": {"engine_fingerprint": calculation.get("engine_fingerprint"), "xml_sha256": calculation.get("xml_sha256") or calculation.get("input_xml_sha256") or (bx.digest(calculation["xml"]) if calculation.get("xml") else None),
-                              "config_values":calculation.get("config_values",{}),"class_id":calculation.get("class_id"),"ascendancy_id":calculation.get("ascendancy_id"),"main_skill":calculation.get("main_skill")},
+                              "config_values":calculation.get("config_values",{}),"class_id":calculation.get("class_id"),"ascendancy_id":calculation.get("ascendancy_id"),"main_skill":calculation.get("main_skill"),
+                              "main_skill_ref":main.get("skill_ref"),"main_skill_name":main.get("name") or calculation.get("main_skill_name"),"main_group":calculation.get("main_group")},
                   "meaning":reference_meaning(calculation,locator)}
         record["formatted_fact"]=format_observation(record)
         evidence[reference] = record
