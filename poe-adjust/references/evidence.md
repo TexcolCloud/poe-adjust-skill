@@ -10,7 +10,7 @@
 - web：url 与正文实际包含的 excerpt，由脚本读取公开官方/PoEDB 页面，输出 source_observed。其他公开来源可用 TeleAgent 联网工具读取，再使用 artifact。
 - artifact：path 相对声明源 JSON 所在目录解释（intent 文件目录或 plan/route 文件目录），限该目录及子目录内不超过 2 MB 的文本。source_base 返回实际基准目录，越界诊断给出 /evidence/<位置>/path、允许目录与实际路径；需要的联网/探针记录先保存到该目录。excerpt 必须确实存在，记录摘要与采集 URL/时间。artifact_observed 只证明片段可追溯，不证明文件必定来自声称的网站或其中数字已被原生测量。不能用此路径读取平台内部输出目录。
 - local_data：使用 `data read` 的 evidence_template（source/line/count/content_sha256），补 evidence_id/subject。程序从本机重新读取，不接受替代 text/path/url。输出 local_data_observed 只证明原文及摘要，不证明含义与当前方案相关、当季可得或游戏内实测。
-- 原生引用直接写 `native:candidate#/stats/Life`、`native:baseline#/stats/Life` 等 JSON pointer，无需声明 evidence。只能访问本次已有字段，指针不执行代码。引用值与引擎/计算 XML 绑定；不要猜旧数组下标。
+- 原生引用使用本次 reference_contract 中的 prefix/fields，无需声明 evidence。next_actions 指向完整契约；字段和证据根来自当前实际结果。view 的 pointer 在输出文件中定位，native 的 locator 则在对应证据根中定位，两者分别使用。配装文件的 `/result` 对应 candidate，`/readiness` 对应 resources；例如持续状态引用 `native:resources#/sustained_use/status`。路线有当次成功计算的 `stage:<id>` 及其派生 `resources:stage:<id>`，未计算阶段没有这些根。只能访问本次已有字段，指针不执行代码；引用值与引擎/计算 XML 绑定，数组索引按当前数据确认。失败时 source_diagnostic 给出现有父对象字段或数组长度及 reference_contract，修实际引用。
 
 claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks`，可声明 `claim_type`。字符串数组与 checks 格式见下文。可比较命题使用 `claim_type:"comparison"`，checks 必须非空；门槛、指标和取舍由模型选择。默认 judgment 只表示模型解释，不证明数值达标。程序不从自由文字猜测阈值。
 
@@ -26,7 +26,7 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 关联写在 **claim.subjects**，不是 claim_id。例如 objective_id 为 `user-X`，解释该目标的 claim 可以用 claim_id:`explain-X`、subjects:`["objective:user-X","goal"]`。一个判断可以关联多个真实适用的对象，不必为每个字段写重复文字。objective_coverage.required_subject 和 diagnostics 给出缺少的关系；claims[].diagnostics 指向失败引用和实际来源原因。先修这些协议/引用遗漏，再决定哪些确实无法核实。
 
-事实优先使用完整占位引用，例如 `text:"{{fact:native:candidate#/stats/Life}}"`，程序生成 rendered_text 并将引用纳入 evidence_refs。meaning 含当次原生显示 label/format、可辨认的 unit/display_multiplier、actor 和限定归属 object_identity；context 含 XML/引擎摘要、职业、主技能和实际配置。相同名称不能替代限定对象。单位或显示比例不明/冲突时保持 unknown，不从字段名猜单位。`{{value:...}}` 保留原始标量用于已有输入，模型自行添加单位不受程序证明。完整事实可展示数组描述；value 只支持标量。缺字段保持 unresolved，不能替换为零。
+事实优先使用完整占位引用，例如 `text:"{{fact:native:candidate#/stats/Life}}"`，程序生成 rendered_text 并将引用纳入 evidence_refs。observations 保留 origin/status/scope，区分来源实际值、程序派生投影与模型解释；新接口展示已有数值不等于首次测得。meaning 含当次原生显示 label/format、可辨认的 unit/display_multiplier、actor 和限定归属 object_identity；context 含 XML/引擎摘要、职业、主技能和实际配置。相同名称不能替代限定对象。单位或显示比例不明/冲突时保持 unknown，不从字段名猜单位。`{{value:...}}` 保留原始标量用于已有输入，模型自行添加单位不受程序证明。完整事实可展示数组描述；value 只支持标量。缺字段保持 unresolved，不能替换为零。
 
 可比较命题用 `checks:[{"reference":"native:candidate#/stats/Life","op":"ge","value":3000}]`，阈值由本次用户目标/模型理由决定，示例不规定目标。op 为 eq/ge/le；数值按**原始值**比较，eq 也支持同类型布尔/字符串，布尔不当数字。budget 与 resources 是当前程序核验结果，可引用 `native:budget#/within_limit` 或 `native:resources#/timeline/status`。预算确认示例为 eq/true；缺值、null 或异类型为 unknown，矛盾为 refuted，带 expected/actual 的诊断不能由文字或自审 token 消除。checks 证明精确命题，不能证明任意自由文字、因果、来源可信度或整套实战可行。
 

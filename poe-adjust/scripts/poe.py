@@ -22,7 +22,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.3"
+VERSION = "2.8.4"
 SCHEMA_VERSION = 2
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
@@ -885,6 +885,13 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
         actions.append({**shared,"action":"repair_input","pointer":details_pointer+("/errors" if outcome["errors"] else "/diagnostics"),
                         "total":len(outcome["errors"]) if outcome["errors"] else len(repairs),"diagnostics":repairs,
                         "instruction":"按具体诊断修订原方案；保留用户目标所需功能，不能靠删除有效组件消除错误。"})
+    if outcome.get("reference_contract"):
+        actions.append({**shared,"action":"view","file":str(details_file),"pointer":details_pointer+"/reference_contract",
+                        "instruction":"读取本次原生证据根和字段前缀；view 的输出文件路径与 native 引用根分别使用。"})
+    scenes=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="review_configuration"]
+    if scenes:
+        actions.append({**shared,"action":"review_configuration","diagnostics":scenes,
+                        "instruction":"先将用户目标场景落到计算输入；按实际配置与当前本机配置原文选择条件，确认重算结果后再评审。"})
     unsupported=[value for value in outcome["pending"] if value.startswith(("capability:","native:"))]
     dependencies=[value for value in outcome["pending"] if not value.startswith(("final_review:","capability:","native:"))]
     if dependencies:
@@ -935,7 +942,8 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     plan_evidence = facts.load_evidence(plan.get("evidence", []), evidence_folder, context, root=root)
     bx.require(not (evidence.keys() & plan_evidence.keys()),"intent 和 plan 的 evidence_id 不能重复。")
     evidence.update(plan_evidence)
-    claims = facts.assess_claims(plan.get("claims", []), evidence, {"baseline": baseline, "candidate": result},specification=plan,engine_fingerprint=result["engine_fingerprint"])
+    native={"baseline":baseline,"candidate":result}
+    claims = facts.assess_claims(plan.get("claims", []), evidence, native,specification=plan,engine_fingerprint=result["engine_fingerprint"])
     coverage,coverage_pending=facts.objective_coverage(intent.get("objectives",[]),evidence,claims)
     errors, warnings, native_gaps = mechanical_issues(document, result, intent)
     mechanical_errors = list(errors)
@@ -953,12 +961,15 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     # Source and inventory judgments were resolved first; they cannot certify
     # themselves by merely referring to their own resulting budget status.
     report_context={"engine_fingerprint":result["engine_fingerprint"],"xml_sha256":result.get("xml_sha256"),"origin":"program_assessment"}
-    claims = facts.assess_claims(plan.get("claims",[]),evidence,{"baseline":baseline,"candidate":result,"budget":{**budget,**report_context},"resources":{**audit,**report_context}},specification=plan,engine_fingerprint=result["engine_fingerprint"])
+    native.update(budget={**budget,**report_context},resources={**audit,**report_context})
+    references=facts.reference_contract(native)
+    claims = facts.assess_claims(plan.get("claims",[]),evidence,native,specification=plan,engine_fingerprint=result["engine_fingerprint"])
     coverage,coverage_pending=facts.objective_coverage(intent.get("objectives",[]),evidence,claims)
     if budget["over_budget"]: errors.append("已知采购成本下界超过用户预算。")
     warnings += budget["warnings"]
     pending = native_gaps + constraint_pending + audit["pending"] + coverage_pending
-    if not facts.configuration_reviewed(claims,"candidate"): pending.append("config:scenario")
+    scene_diagnostics=facts.configuration_diagnostics(claims,{"candidate":result})
+    if scene_diagnostics: pending.append("config:scenario")
     pending += ["claim_revision:"+claim["claim_id"] for claim in claims if any(d["code"] in {"claim_binding_stale","claim_binding_missing"} for d in claim["diagnostics"])]
     pending += ["claim_check:"+claim["claim_id"] for claim in claims if claim["check_status"] in {"refuted","unknown"}]
     pending += ["material:"+value for value in budget["unresolved"]]
@@ -986,11 +997,11 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     if comparison_notes: warnings.append("前后只展示数值差，不声明同条件提升百分比。")
     review, review_pending = facts.final_review({"intent": intent, "plan": plan}, evidence, claims,
         {"baseline": calculation_facts(baseline, claims), "candidate": calculation_facts(result, claims),
-         "resources": audit, "materials": requirements, "budget": budget, "objective_coverage":coverage, "equipment_changes":equipment,"comparison_notes": comparison_notes,
+         "resources": audit, "reference_contract":references, "materials": requirements, "budget": budget, "objective_coverage":coverage, "equipment_changes":equipment,"comparison_notes": comparison_notes,
          "pending": list(dict.fromkeys(pending)), "errors": errors}, assessment)
     pending += review_pending
     errors, pending = list(dict.fromkeys(errors)), list(dict.fromkeys(pending))
-    diagnostics=list(audit.get("diagnostics",[]))+goal_diagnostics
+    diagnostics=list(audit.get("diagnostics",[]))+goal_diagnostics+scene_diagnostics
     for claim in claims:
         diagnostics.extend({**row,"claim_id":claim["claim_id"],"category":"input","status":"unknown"} for row in claim["diagnostics"])
     for objective in coverage:
@@ -1010,7 +1021,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
                           "target_version":version["status"], "goal":"model_assessed" if "goal_assessment" not in pending else "unresolved",
                           "scope":"程序核对结构、可用原生事实和证据引用；目标取舍、来源语义、效果覆盖仍是模型判断，不是实战保证。"},
             "configuration_audit":{"original_inputs":[dict(n.attrib) for n in bx.active_config(original).findall("Input")],"common_changes":plan.get("scenario",{}),"user_required":intent.get("scenario",{}),"candidate_changes":plan.get("operations",{}).get("config",{}),"baseline_actual":baseline.get("config_values",{}),"candidate_actual":result.get("config_values",{})},
-            "diagnostics":diagnostics,"budget":budget,"readiness":audit,"objective_coverage":coverage,"claims":claims,"evidence":evidence,"target_version_evidence":version,
+            "diagnostics":diagnostics,"reference_contract":references,"budget":budget,"readiness":audit,"objective_coverage":coverage,"claims":claims,"evidence":evidence,"target_version_evidence":version,
             "review_packet":review,
             "equipment_changes":equipment,"actual_changes":actual_changes(baseline,result,equipment),"comparison_notes":comparison_notes,"comparison":compare(baseline,result,not comparison_notes)}
 
@@ -1582,6 +1593,7 @@ def calculate_route(args):
             if actual_bases.get(slot)!=base: errors.append("快照装备与阶段声明的基底不一致："+slot)
         relevant=[c for c in claims if {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
         audit=resources.assess(value,checked,{k:stage["snapshot"][k] for k in ("usage","timeline") if k in stage["snapshot"]},relevant)
+        stage_native["resources:stage:"+sid]={**audit,"engine_fingerprint":value["engine_fingerprint"],"xml_sha256":value.get("xml_sha256"),"origin":"program_assessment"}
         errors+=audit["errors"]; notes+=audit["warnings"]; gaps+=audit["pending"]
         texts=bx.item_texts(document)
         material_specs=[]
@@ -1636,14 +1648,18 @@ def calculate_route(args):
     declared={facts.material_ref(item):item for item in route.get("inventory",[])}
     budget=budget_summary({**route,"inventory":list({**owned,**declared}.values())},route,list(requirements.values()),registry,claims)
     checked["budget_assessment"]=budget
-    claims=facts.assess_claims(route.get("claims",[]),registry,{**stage_native,"budget":{**budget,"engine_fingerprint":calculation["engine_fingerprint"],"origin":"program_assessment"}},specification=route,engine_fingerprint=calculation["engine_fingerprint"])
+    stage_native["budget"]={**budget,"engine_fingerprint":calculation["engine_fingerprint"],"origin":"program_assessment"}
+    checked["reference_contract"]=facts.reference_contract(stage_native)
+    claims=facts.assess_claims(route.get("claims",[]),registry,stage_native,specification=route,engine_fingerprint=calculation["engine_fingerprint"])
     final_checked,final_warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
     checked["pending"]=[p for p in checked["pending"] if p not in validation_pending]+final_checked["pending"]
     checked["claims"]=claims;checked["objective_coverage"]=final_checked["objective_coverage"];checked["diagnostics"]=final_checked["diagnostics"]
     for old,final in zip(checked["stages"],final_checked["stages"]): old["instance_transitions"]=final["instance_transitions"]
     checked["pending"] += ["claim_check:"+c["claim_id"] for c in claims if c["check_status"] in {"refuted","unknown"}]
     checked["pending"] += ["claim_revision:"+c["claim_id"] for c in claims if any(d["code"] in {"claim_binding_stale","claim_binding_missing"} for d in c["diagnostics"])]
-    checked["pending"] += ["config:scenario:"+sid for sid in snapshots if "result" in snapshots[sid] and not facts.configuration_reviewed(claims,"stage:"+sid)]
+    scene_diagnostics=facts.configuration_diagnostics(claims,{"stage:"+sid:stage_native["stage:"+sid] for sid in snapshots if "stage:"+sid in stage_native})
+    checked["diagnostics"]+=scene_diagnostics
+    checked["pending"] += ["config:scenario:"+d["required_subject"][len("configuration:stage:"):] for d in scene_diagnostics]
     warnings=list(dict.fromkeys(warnings+final_warnings))
     if route.get("budget") is not None:
         if budget["status"] in {"unknown","uncertain_range"} or budget["high"]>route["budget"]["amount"]: checked["pending"].append("budget")
@@ -1651,7 +1667,7 @@ def calculate_route(args):
     checked["pending"]=list(dict.fromkeys(checked["pending"]+["material:"+ref for ref in budget["unresolved"]]))
     if budget["over_budget"]: route_errors.append("已知采购成本下界超过用户预算。")
     review,review_pending=facts.final_review(route,registry,claims,
-        {"engine_fingerprint":calculation["engine_fingerprint"],"budget":budget,"pending":checked["pending"],"errors":route_errors,"objective_coverage":checked["objective_coverage"],
+        {"engine_fingerprint":calculation["engine_fingerprint"],"reference_contract":checked["reference_contract"],"budget":budget,"pending":checked["pending"],"errors":route_errors,"objective_coverage":checked["objective_coverage"],
          "stages":[{"stage_id":s["stage_id"],"level":s.get("level"),"act":s.get("act"),"completed_act":s.get("completed_act"),
                     "entry_conditions":s.get("entry_conditions",[]),"calculation":s.get("calculation",{"status":"not_calculated"})} for s in checked["stages"]]},route.get("assessment",{}))
     checked["pending"]+=review_pending
@@ -1669,7 +1685,7 @@ def calculate_route(args):
     bx.require(bx.digest(path.read_bytes())==input_sha256,"核对期间源路线变化，请重跑 route。",location="/input",input_file=str(path))
     evidence_file=output.with_suffix(".evidence.json")
     review_file=output.with_suffix(".review.json")
-    actions=delivery_actions({"status":checked["delivery_status"],"errors":checked["errors"],"pending":checked["pending"],"diagnostics":checked["diagnostics"]},path,evidence_file,review_file,"/checked_route")
+    actions=delivery_actions({k:checked[k] for k in ("errors","pending","diagnostics","reference_contract")}|{"status":checked["delivery_status"]},path,evidence_file,review_file,"/checked_route")
     write_json(review_file,review)
     write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings})
     write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))

@@ -757,6 +757,48 @@ class NativeBoundaryTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_native_reference_diagnostics_recover_without_aliasing_old_values(self):
+        native={"candidate":{"stats":{"FutureValue":None}},
+                "resources":{"entries":[{"future/value":4}],"origin":"program_assessment"},
+                "stage:future":{"config_values":{"new_condition":False}}}
+        bad=["native:absent#/entries/0/future~1value",
+             "native:candidate#/readiness/entries/0/future~1value",
+             "native:resources#/entries/7/future~1value"]
+        for reference in bad:
+            with self.subTest(reference=reference):
+                evidence={reference:{"status":"native_observed","value":999}}
+                row=facts.assess_claims([{"claim_id":"current","text":"Check this observation.","subjects":["goal"],"evidence_refs":[reference]}],evidence,native)[0]
+                self.assertEqual(row["status"],"unresolved")
+                self.assertNotIn(reference,evidence)
+                diagnostic=row["diagnostics"][0]["source_diagnostic"]
+                contract=diagnostic["reference_contract"]
+                self.assertEqual(set(contract),set(native))
+                self.assertEqual(contract["resources"]["prefix"],"native:resources#")
+                self.assertEqual(contract["stage:future"]["fields"]["config_values"],"native:stage:future#/config_values")
+                self.assertIn("expected",diagnostic)
+                self.assertIn("location",diagnostic)
+        valid="native:resources#/entries/0/future~1value"
+        fixed=facts.assess_claims([{"claim_id":"current","text":"A derived observation.","subjects":["goal"],"checks":[{"reference":valid,"op":"eq","value":4}]}],{},native)[0]
+        self.assertEqual((fixed["status"],fixed["check_status"]),("model_assessed","supported"))
+
+    def test_current_reference_contract_and_observation_provenance_survive_review(self):
+        native={"candidate":{"origin":"native_fixture","stats":{"Observed":6}},
+                "resources":{"origin":"program_assessment","timeline":{"status":"unknown","amount":None}},
+                "stage:future":{"origin":"current_schema","future/field":{"a~b":False}}}
+        refs=["native:candidate#/stats/Observed","native:resources#/timeline/amount","native:stage:future#/future~1field/a~0b"]
+        claim={"claim_id":"observed","text":"Scoped values.","subjects":["goal"],"evidence_refs":refs,
+               "checks":[{"reference":refs[1],"op":"ge","value":0}]}
+        current=facts.assess_claims([claim],{},native)[0]
+        self.assertEqual(current["check_status"],"unknown")
+        self.assertEqual([r["origin"] for r in current["observations"]],["native_fixture","program_assessment","current_schema"])
+        self.assertIsNone(current["observations"][1]["value"])
+        self.assertIs(current["observations"][2]["value"],False)
+        contract=facts.reference_contract(native)
+        self.assertEqual(contract["stage:future"]["fields"],{"future/field":"native:stage:future#/future~1field","origin":"native:stage:future#/origin"})
+        self.assertEqual(contract["resources"]["origin"],"program_assessment")
+        packet,_=facts.final_review({}, {}, [current], {"reference_contract":contract}, {})
+        self.assertEqual(packet["claims"][0]["observations"],current["observations"])
+
     def test_evidence_shape_has_paths_for_unknown_fields_types_and_missing_values(self):
         for key in ("collected_from","future_bad_field"):
             with self.subTest(key=key),self.assertRaises(bx.ContractError) as error:
@@ -1969,6 +2011,13 @@ class RealEngineTests(unittest.TestCase):
         self.assertIsNone(final["comparison"]["CombinedDPS"]["percent"])
         self.assertEqual(output["publication"]["statements"][1]["status"],"unknown")
         evidence = poe.read_json(self.run_dir / "candidates/refine/evaluation.json")
+        self.assertEqual(set(evidence["reference_contract"]),{"baseline","candidate","budget","resources"})
+        self.assertEqual(evidence["reference_contract"]["resources"]["fields"]["single_payments"],"native:resources#/single_payments")
+        self.assertEqual(evidence["reference_contract"]["resources"]["origin"],"program_assessment")
+        scene=next(d for d in evidence["diagnostics"] if d["code"]=="configuration_review_missing")
+        self.assertEqual(scene["actual"],evidence["result"]["config_values"])
+        self.assertEqual(scene["required_subject"],"configuration:candidate")
+        self.assertTrue(any(a["action"]=="view" and a["pointer"]=="/reference_contract" for a in result["next_actions"]))
         granted = [gem for gem in evidence["result"]["gems"] if gem.get("source")]
         self.assertTrue(granted)
         self.assertTrue(all(not gem["group_enabled"] for gem in granted), granted)
@@ -2687,6 +2736,15 @@ class RealEngineTests(unittest.TestCase):
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         first,second=checked["stages"]
         self.assertTrue(first["calculation"]["roundtrip_verified"])
+        self.assertIn("config:scenario:a",response["pending"])
+        self.assertNotIn("config:scenario:b",response["pending"])
+        scenario=next(d for d in checked["diagnostics"] if d["code"]=="configuration_review_missing")
+        self.assertEqual(scenario["reference"],"native:stage:a#/config_values")
+        self.assertEqual(scenario["required_subject"],"configuration:stage:a")
+        self.assertEqual(scenario["actual"],first["calculation"]["config_values"])
+        self.assertEqual(checked["reference_contract"]["stage:a"]["fields"]["stats"],"native:stage:a#/stats")
+        self.assertEqual(checked["reference_contract"]["resources:stage:a"]["origin"],"program_assessment")
+        self.assertTrue(any(a["action"]=="view" and a["pointer"]=="/checked_route/reference_contract" for a in response["next_actions"]))
         self.assertEqual(first["calculation"]["stats"]["Life"],checked["evidence"]["native:stage:a#/stats/Life"]["value"])
         self.assertEqual(checked["evidence"]["native:stage:a#/stats/Life"]["context"]["xml_sha256"],first["calculation"]["xml_sha256"])
         self.assertTrue(Path(first["calculation"]["xml_path"]).exists())
@@ -2716,6 +2774,16 @@ class RealEngineTests(unittest.TestCase):
         with patch.object(facts,"gem_facts",return_value={}),patch.object(poe,"roundtrip",wraps=poe.roundtrip) as replay:
             poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         self.assertEqual(replay.call_count,1)
+        scenario_claim={"claim_id":"scenario","text":"Fixture input scene only; no gameplay guarantee.",
+                        "subjects":["configuration:stage:a"],"evidence_refs":["native:stage:a#/config_values","native:resources:stage:a#/sustained_use/status"]}
+        route["claims"].append(scenario_claim)
+        scenario_claim["bindings"]=facts.claim_bindings(route,scenario_claim,engine.fingerprint(self.pob))
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):
+            response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        self.assertNotIn("config:scenario:a",response["pending"])
+        checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        self.assertFalse(any(d["code"]=="configuration_review_missing" for d in checked["diagnostics"]))
 
     def test_37_unparsed_nonflask_remains_unknown_even_when_native_active_false(self):
         result=engine.calculate(self.pob,bx.serialise(self.original))

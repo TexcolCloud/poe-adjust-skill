@@ -130,13 +130,17 @@ def web_template(page, excerpt):
 def pointer(value, locator):
     """Resolve a JSON pointer as data, without evaluating model expressions."""
     bx.require(isinstance(locator, str) and (not locator or locator.startswith("/")), "locator 使用 JSON pointer，例如 /stats/Life。")
-    for token in locator.split("/")[1:]:
+    tokens=locator.split("/")[1:]
+    for index,token in enumerate(tokens):
         token = token.replace("~1", "/").replace("~0", "~")
+        parent="/"+"/".join(tokens[:index]) if index else ""
         if isinstance(value, list):
-            bx.require(token.isdigit() and int(token) < len(value), "证据数组索引不存在：" + locator)
+            bx.require(token.isdigit() and int(token) < len(value), "证据数组索引不存在：" + locator,
+                       location=parent,expected={"type":"array","length":len(value)},actual=token)
             value = value[int(token)]
         else:
-            bx.require(isinstance(value, dict) and token in value, "证据字段不存在：" + locator)
+            bx.require(isinstance(value, dict) and token in value, "证据字段不存在：" + locator,
+                       location=parent,expected={"type":"object","fields":sorted(value)} if isinstance(value,dict) else {"type":"object","actual_type":type(value).__name__},actual=token)
             value = value[token]
     return value
 
@@ -326,14 +330,26 @@ def claim_bindings(document, claim, engine_fingerprint):
     return result
 
 
+def reference_contract(native):
+    """Describe the current evidence roots, independently of output-file paths."""
+    return {name:{"prefix":"native:"+name+"#","origin":value.get("origin","program_calculation"),
+                  "fields":{key:"native:"+name+"#/"+key.replace("~","~0").replace("/","~1") for key in sorted(value)}}
+            for name,value in native.items()}
+
+
 def resolve_reference(reference, evidence, native=None):
     bx.require(isinstance(reference, str) and reference, "证据引用应为非空字符串。")
     if reference.startswith("native:"):
         evidence.pop(reference,None)  # Missing current fields never reuse an older value.
         name, separator, locator = reference[len("native:"):].partition("#")
-        bx.require(separator and locator and name in (native or {}), "原生引用须指定本次结果及字段，例如 native:candidate#/stats/Life。")
-        calculation = native[name]
-        value = pointer(calculation, locator)
+        try:
+            bx.require(separator and locator and name in (native or {}), "原生引用须指定本次结果及字段；按当前 reference_contract 选择证据根。",
+                       location="native",expected=sorted(native or {}),actual=name)
+            calculation = native[name]
+            value = pointer(calculation, locator)
+        except bx.ContractError as exc:
+            exc.diagnostic["reference_contract"]=reference_contract(native or {})
+            raise
         main=next((s for s in calculation.get("active_skills",[]) if s.get("is_main") and not s.get("disabled")),{})
         record = {"evidence_id": reference, "kind": "native", "subject": name, "locator": locator, "value": value,
                   "status": "native_observed", "origin": calculation.get("origin","program_calculation"), "digest": bx.digest(json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)),
@@ -431,7 +447,7 @@ def assess_claims(claims, evidence, native=None, *, specification=None, engine_f
             except ValueError as exc:
                 missing.append(str(exc))
                 diagnostics.append({"code":"missing_reference","location":f"/claims/{index}/evidence_refs","reference":reference,
-                                    "action":"repair_evidence","message":str(exc)})
+                                    "action":"repair_evidence","message":str(exc),"source_diagnostic":getattr(exc,"diagnostic",None)})
         def substitute(match):
             mode,ref=match.group(1),match.group(2)
             observed=evidence.get(ref,{})
@@ -455,7 +471,7 @@ def assess_claims(claims, evidence, native=None, *, specification=None, engine_f
         row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] and row["check_status"] in {"supported","not_requested"} else "unresolved"
         row["missing_evidence"] = missing
         row["diagnostics"] = diagnostics
-        row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "meaning", "formatted_fact", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
+        row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "origin", "status", "scope", "meaning", "formatted_fact", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
                                for ref in row["evidence_refs"] if ref in evidence and evidence[ref].get("status") != "unresolved"]
         row["scope"] = "checks 仅证明所声明数值命题；model_assessed 仍为模型判断。完整事实含本机标签、单位及上下文，自由文字蕴含关系与因果未自动证明。"
         result.append(row)
@@ -470,6 +486,15 @@ def configuration_reviewed(claims, calculation_name):
     reference="native:"+calculation_name+"#/config_values"
     return any(c["status"]=="model_assessed" and "configuration:"+calculation_name in c["subjects"] and
                any(ref==reference or ref.startswith(reference+"/") for ref in c["evidence_refs"]) for c in claims)
+
+
+def configuration_diagnostics(claims, calculations):
+    """Locate missing scene review against actual, successfully calculated roots."""
+    return [{"code":"configuration_review_missing","location":"/claims","action":"review_configuration",
+             "required_subject":"configuration:"+name,"reference":"native:"+name+"#/config_values",
+             "actual":value.get("config_values"),"category":"input","status":"unknown",
+             "message":"核对当前实际配置与用户场景，修改对应计算输入并重算，再用具体引用评审此场景。"}
+            for name,value in calculations.items() if not configuration_reviewed(claims,name)]
 
 
 def objective_coverage(objectives, evidence, claims):
