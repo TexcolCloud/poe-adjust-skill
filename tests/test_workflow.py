@@ -1226,14 +1226,17 @@ class FinalReviewTests(unittest.TestCase):
         self.assertEqual(audit["conditions"]["flask_facts"][0]["flask_local"]["chargesUsed"],10)
 
     def test_large_evaluation_terminal_summary_points_to_complete_workspace_record(self):
-        output=io.StringIO()
-        long={"status":"draft","candidate":"fixture","pending":["unknown:"+str(i)+"x"*80 for i in range(200)],"readiness":{"details":"x"*20000}}
-        with patch.object(poe,"evaluate",return_value=long),redirect_stdout(output):
-            code=poe.main(["evaluate","--run",str(ROOT/".work/fixture"),"--name","test","--plan","fixture.json"])
-        response=json.loads(output.getvalue())
-        self.assertEqual(code,0);self.assertEqual(response["pending_total"],200)
-        self.assertEqual(len(response["pending"]),12);self.assertLess(len(output.getvalue()),12000)
-        self.assertTrue(response["details_file"].endswith("evaluation.json"))
+        with tempfile.TemporaryDirectory() as folder:
+            output=io.StringIO();run=Path(folder)
+            long={"status":"draft","candidate":"fixture","pending":["unknown:"+str(i)+"x"*80 for i in range(200)],"readiness":{"details":"x"*20000}}
+            artifact=run/"candidates/test/evaluation.json";poe.write_json(artifact,{"response":long})
+            with patch.object(poe,"evaluate",return_value=long),redirect_stdout(output):
+                code=poe.main(["evaluate","--run",str(run),"--name","test","--plan","fixture.json"])
+            response=json.loads(output.getvalue())
+            self.assertEqual(code,0);self.assertEqual(response["pending_total"],200);self.assertLess(len(output.getvalue()),12000)
+            pointers={r["pointer"] for r in response["continuations"]}
+            self.assertTrue({"/response/pending","/response/readiness"}<=pointers)
+            self.assertEqual(facts.pointer(poe.read_json(response["details_file"]),"/response/pending"),long["pending"])
 
     def test_stage_targets_use_actual_values_and_preserve_unmet_conditions(self):
         claim={"claim_id":"ready","status":"model_assessed","subjects":["stage:a"]}
@@ -1519,14 +1522,15 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(response['value'][0],{'id':'1','cost':0,'active':False})
             self.assertLess(len(stdout.getvalue()),2000);self.assertEqual(bx.digest(path.read_bytes()),original)
 
-    def test_view_missing_pointer_and_oversized_selection_do_not_return_fabricated_value(self):
+    def test_view_missing_pointer_rejects_and_oversized_selection_pages_real_value(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'evidence.json';poe.write_json(path,{'large':'x'*20000})
-            for pointer in ('/missing','/large'):
-                stderr=io.StringIO()
-                with redirect_stderr(stderr):code=poe.main(['view','--file',str(path),'--pointer',pointer])
-                response=json.loads(stderr.getvalue());self.assertEqual(code,2);self.assertFalse(response['ok'])
-                self.assertNotIn('value',response)
+            stderr=io.StringIO()
+            with redirect_stderr(stderr):code=poe.main(['view','--file',str(path),'--pointer','/missing'])
+            response=json.loads(stderr.getvalue());self.assertEqual(code,2);self.assertFalse(response['ok']);self.assertNotIn('value',response)
+            stdout=io.StringIO()
+            with redirect_stdout(stdout):code=poe.main(['view','--file',str(path),'--pointer','/large','--limit','4000'])
+            response=json.loads(stdout.getvalue());self.assertEqual(code,0);self.assertEqual(response['value'],'x'*4000);self.assertEqual(response['next_offset'],4000)
 
     def test_objective_id_cannot_replace_subject_and_diagnosis_names_field(self):
         objectives=[{'objective_id':'custom','text':'User chosen goal','evidence_refs':['user']}]
@@ -1960,6 +1964,162 @@ class EditAndRecoveryTests(unittest.TestCase):
         poe.write_json(self.request,change)
         return poe.edit_document(args(kind=kind,file=str(self.source),changes=str(self.request),if_sha256=revision,invoked=True))
 
+    def test_public_edit_rejects_present_invalid_values_without_writing_or_calculating(self):
+        route_values=[({"game_version":"3.29 explanatory prose"},"/game_version"),
+                      ({"stages":[{"stage_id":"s","skill_groups":[{"gems":[{"skill_id":[]}]}]}]},"/stages/0/skill_groups/0/gems/0/skill_id"),
+                      ({"stages":[{"stage_id":"s","skill_groups":[{"enabled":"true","gems":[]}]}]},"/stages/0/skill_groups/0/enabled")]
+        for field,value in [("level",True),("level",-1),("quality","20")]:
+            route_values.append(({"stages":[{"stage_id":"s","skill_groups":[{"gems":[{"skill_id":"FutureSkill",field:value}]}]}]},f"/stages/0/skill_groups/0/gems/0/{field}"))
+        plan_values=[({"mode":[]},"/mode"),({"operations":{"weapon_set":3}},"/operations/weapon_set"),
+                     ({"operations":{"tree":{"unknown":1}}},"/operations/tree"),
+                     ({"operations":{"tree":{"nodes":[1],"nodes_add":[2]}}},"/operations/tree"),
+                     ({"operations":{"tree":{"nodes_add":[1,1]}}},"/operations/tree/nodes_add"),
+                     ({"operations":{"items":[{"id":1,"craft":{"base":"future","affixes":[{"id":"future","roll":2}]}}]}},"/operations/items/0/craft/affixes/0/roll")]
+        for kind,variants in (("route",route_values),("plan",plan_values)):
+            for index,(body,location) in enumerate(variants):
+                with self.subTest(kind=kind,body=body),patch.object(engine,"calculate") as worker:
+                    self.source=self.folder/f"invalid-{kind}-{index}.json"
+                    first=self.edit({"set":{"name":"saved"}},kind=kind)
+                    before={p:p.read_bytes() for p in (self.source,self.source.with_suffix(".edit.json"))}
+                    poe.write_json(self.request,{"set":body})
+                    stderr=io.StringIO()
+                    with redirect_stderr(stderr),redirect_stdout(io.StringIO()):
+                        code=poe.main(["edit","--kind",kind,"--file",str(self.source),"--changes",str(self.request),"--if-sha256",first["revision"],"--invoked"])
+                    self.assertEqual(code,2);error=json.loads(stderr.getvalue())["diagnostic"]
+                    self.assertEqual(error["code"],"invalid_input");self.assertEqual(error["location"],location)
+                    self.assertIn("expected",error);self.assertIn("actual",error)
+                    self.assertEqual({p:p.read_bytes() for p in before},before);worker.assert_not_called()
+
+    def test_replace_validates_duplicate_collection_identifiers(self):
+        for collection,identifier in (("objectives","objective_id"),("evidence","evidence_id")):
+            with self.subTest(collection=collection):
+                self.source=self.folder/(collection+".json")
+                original=[{identifier:"a"},{identifier:"b"}]
+                if collection=="objectives":
+                    for row in original: row["text"]="objective"
+                else:
+                    for row in original: row.update(kind="user_statement",subject="subject")
+                first=self.edit({"set":{collection:original}})
+                before={p:p.read_bytes() for p in (self.source,self.source.with_suffix(".edit.json"))}
+                duplicate=copy.deepcopy(original);duplicate[1][identifier]="a"
+                with self.assertRaises(bx.ContractError) as error:
+                    self.edit({"replace":{"/"+collection:duplicate}},first["revision"])
+                self.assertEqual(error.exception.diagnostic["location"],f"/{collection}/1/{identifier}")
+                self.assertEqual({p:p.read_bytes() for p in before},before)
+
+    def test_route_output_roles_cannot_alias_input_before_any_write(self):
+        for suffix in (".state.json",".evidence.json",".review.json"):
+            with self.subTest(suffix=suffix),patch.object(poe,"calculate_route") as worker:
+                folder=self.folder/suffix;folder.mkdir()
+                source=folder/("report"+suffix);poe.write_json(source,{"schema_version":2,"notes":"retain"})
+                before=source.read_bytes()
+                with self.assertRaises(bx.ContractError) as error:
+                    poe.route_command(args(file=str(source),out=str(folder/"report.html"),invoked=True))
+                self.assertEqual(error.exception.diagnostic["code"],"path_conflict")
+                self.assertEqual(source.read_bytes(),before);worker.assert_not_called()
+                if suffix!=".state.json": self.assertFalse((folder/"report.state.json").exists())
+
+    def test_edit_rejects_merged_input_size_before_committing(self):
+        first=self.edit({"set":{"notes":"a"*7_300_000}})
+        before={p:p.read_bytes() for p in (self.source,self.source.with_suffix(".edit.json"))}
+        with self.assertRaises(bx.ContractError) as error:
+            self.edit({"set":{"risks":"b"*1_400_000}},first["revision"])
+        self.assertEqual(error.exception.diagnostic["code"],"input_too_large")
+        self.assertEqual({p:p.read_bytes() for p in before},before)
+
+    def test_batch_remove_addresses_one_common_pre_removal_document(self):
+        first=self.edit({"set":{"stages":[{"stage_id":s} for s in ("zero","one","two")]}})
+        self.edit({"remove":["/stages/0","/stages/1"]},first["revision"])
+        self.assertEqual([s["stage_id"] for s in poe.read_json(self.source)["stages"]],["two"])
+
+    def test_partial_unknown_drafts_remain_valid_and_shape_diagnostics_are_shared(self):
+        self.edit({"set":{"game_version":None,"ascendancy":None,"stages":[{"stage_id":"later","level":None,"skill_groups":[{"gems":[{"skill_id":"future"}]}]}]}})
+        self.assertIsNone(poe.read_json(self.source)["game_version"])
+        engine.validate_game_version(None,"unknown","current")
+        for complete in (False,True):
+            with self.subTest(complete=complete),self.assertRaises(bx.ContractError) as caught:
+                bx.plan_shape({"mode":"refine","summary":"purpose","operations":{"gems":[{"group":1,"index":1,"skill_id":[]}]}},complete=complete)
+            self.assertEqual(caught.exception.diagnostic["location"],"/operations/gems/0/skill_id")
+        with self.assertRaises(bx.ContractError) as caught: routes.link_queries({"schema_version":2,"stages":[{"stage_id":"s","skill_groups":[{"gems":[{"skill_id":[]}]}]}]})
+        self.assertEqual(caught.exception.diagnostic["location"],"/stages/0/skill_groups/0/gems/0/skill_id")
+
+    def test_nested_route_template_output_alias_is_rejected_before_worker_and_state(self):
+        out=self.folder/"nested.html";sid="a";directory=poe.stage_directory(out,sid)
+        for filename in ("snapshot.xml","snapshot.json","evaluation.json"):
+            with self.subTest(filename=filename),patch.object(poe,"calculate_route") as worker:
+                template=directory/filename;poe.write_text(template,"retain original")
+                poe.write_json(self.source,{"schema_version":2,"stages":[{"stage_id":sid,"snapshot":{"template_xml":str(template)}}]})
+                with self.assertRaises(bx.ContractError) as caught:poe.route_command(args(file=str(self.source),out=str(out),invoked=True))
+                self.assertEqual(caught.exception.diagnostic["code"],"path_conflict");self.assertEqual(template.read_text(),"retain original")
+                self.assertFalse(out.with_suffix(".state.json").exists());worker.assert_not_called()
+
+    def test_evaluation_output_alias_preserves_source_state_and_original(self):
+        run=self.folder/"run";run.mkdir();source=run/"baseline.json"
+        poe.write_json(source,{"schema_version":2,"mode":"refine","summary":"purpose"})
+        poe.write_json(run/"run.json",{"retained":"state"});poe.write_text(run/"original.xml",SAMPLE)
+        before={p:p.read_bytes() for p in (source,run/"run.json",run/"original.xml")}
+        with patch.object(poe,"read_run",return_value=(run,{"intent":{"confirmed":True}})),patch.object(engine,"calculate") as worker,self.assertRaises(bx.ContractError) as caught:
+            poe.evaluate(args(run=str(run),name="test",plan=str(source)))
+        self.assertEqual(caught.exception.diagnostic["code"],"path_conflict");self.assertEqual({p:p.read_bytes() for p in before},before);worker.assert_not_called()
+
+    def test_view_oversized_single_record_has_recursive_child_continuation(self):
+        content={"a/b~c":"字"*13000};poe.write_json(self.source,{"rows":[content,{"small":False}]})
+        page=poe.view_json(args(file=str(self.source),pointer="/rows",fields="",keys=False,query="",limit=100,offset=0))
+        self.assertEqual(page["deferred_values"],["/rows/0"]);self.assertEqual(page["next_offset"],1)
+        child=poe.view_json(args(file=str(self.source),pointer="/rows/0",fields="",keys=False,query="",limit=100,offset=0))
+        self.assertEqual(child["deferred_values"],["/rows/0/a~1b~0c"])
+        text=poe.view_json(args(file=str(self.source),pointer=child["deferred_values"][0],fields="",keys=False,query="",limit=4000,offset=0))
+        self.assertEqual(text["value"],"字"*4000);self.assertEqual(text["next_offset"],4000)
+
+    def test_public_view_pages_long_string_and_includes_bounded_envelope(self):
+        expected='中文"\\\n'*4_000
+        poe.write_json(self.source,{"notes":expected})
+        offset=0;parts=[]
+        for _ in range(len(expected)+1):
+            stdout=io.StringIO()
+            with redirect_stdout(stdout):
+                code=poe.main(["view","--file",str(self.source),"--pointer","/notes","--limit","100","--offset",str(offset)])
+            self.assertEqual(code,0);self.assertLessEqual(len(stdout.getvalue()),12000)
+            page=json.loads(stdout.getvalue());self.assertIsInstance(page["value"],str);parts.append(page["value"])
+            if page["next_offset"] is None: break
+            self.assertGreater(page["next_offset"],offset);offset=page["next_offset"]
+        self.assertEqual("".join(parts),expected)
+
+    def test_public_edit_json_type_domains_preserve_last_valid_source_and_receipt(self):
+        first=self.edit({"set":{"name":"last valid"}},kind="plan")
+        before={p:p.read_bytes() for p in (self.source,self.source.with_suffix(".edit.json"))}
+        domains={"skill_id":[None,True,0,[],{},""],"level":[None,True,0,-1,"1",[],{}],"quality":[None,True,-1,"0",[],{}],
+                 "enabled":[None,0,1,"true",[],{}],"count":[None,True,0,"1",[],{}],"skill_part":[None,True,0,"1",[],{}]}
+        for field,values in domains.items():
+            for value in values:
+                with self.subTest(field=field,value=value),patch.object(engine,"calculate") as worker:
+                    change={"set":{"operations":{"gems":[{"group":1,"index":1,field:value}]}}}
+                    poe.write_json(self.request,change);stderr=io.StringIO()
+                    with redirect_stderr(stderr),redirect_stdout(io.StringIO()):
+                        code=poe.main(["edit","--kind","plan","--file",str(self.source),"--changes",str(self.request),"--if-sha256",first["revision"],"--invoked"])
+                    self.assertEqual(code,2);diagnostic=json.loads(stderr.getvalue())["diagnostic"]
+                    self.assertEqual(diagnostic["location"],"/operations/gems/0/"+field)
+                    self.assertEqual(diagnostic["actual"],value);self.assertEqual(diagnostic["input_revision"],first["revision"])
+                    self.assertFalse(diagnostic["retryable"]);worker.assert_not_called()
+                    self.assertEqual({p:p.read_bytes() for p in before},before)
+
+    def test_public_edit_receipt_io_failure_reports_the_actual_commit(self):
+        first=self.edit({"set":{"name":"before"}});poe.write_json(self.request,{"set":{"name":"after"}})
+        write=poe.write_json
+        def failure(path,value):
+            if Path(path)==self.source.with_suffix(".edit.json"): raise OSError("receipt failed")
+            write(path,value)
+        stderr=io.StringIO()
+        with patch.object(poe,"write_json",side_effect=failure),redirect_stderr(stderr):
+            code=poe.main(["edit","--kind","route","--file",str(self.source),"--changes",str(self.request),"--if-sha256",first["revision"],"--invoked"])
+        self.assertEqual(code,2);diagnostic=json.loads(stderr.getvalue())["diagnostic"]
+        self.assertTrue(diagnostic["source_committed"]);self.assertFalse(diagnostic["receipt_committed"])
+        self.assertFalse(diagnostic["retryable"]);self.assertTrue(diagnostic["recoverable"])
+        self.assertEqual(diagnostic["current_revision"],bx.digest(self.source.read_bytes()))
+        self.assertEqual(poe.read_json(self.source)["name"],"after")
+        self.assertEqual(poe.read_json(self.source.with_suffix(".edit.json"))["revision"],first["revision"])
+        self.edit({"set":{"name":"recovered"}},diagnostic["current_revision"])
+
     def test_doctor_preserves_native_capabilities_and_exposes_adapter_boundaries(self):
         stdout=io.StringIO()
         with patch.object(engine,"health",return_value={"capabilities":{"observed_native_feature":True},"health_probe":{"roundtrip":True}}),redirect_stdout(stdout):
@@ -2092,11 +2252,46 @@ class EditAndRecoveryTests(unittest.TestCase):
         def fail_receipt(path,value):
             if Path(path)==self.source.with_suffix(".edit.json"):raise OSError("receipt disk failure")
             write(path,value)
-        with patch.object(poe,"write_json",side_effect=fail_receipt),self.assertRaises(OSError):self.edit({"set":{"name":"after"}},first["revision"])
+        with patch.object(poe,"write_json",side_effect=fail_receipt),self.assertRaises(bx.ContractError) as caught:self.edit({"set":{"name":"after"}},first["revision"])
+        diagnostic=caught.exception.diagnostic
+        self.assertEqual(diagnostic["code"],"io_error");self.assertTrue(diagnostic["source_committed"]);self.assertFalse(diagnostic["receipt_committed"])
         view=poe.view_json(args(file=str(self.source),pointer="",fields="name",keys=False,query="",limit=10,offset=0))
         self.assertEqual(view["value"]["name"],"after");self.assertNotEqual(view["revision"],first["revision"])
+        self.assertEqual(diagnostic["current_revision"],view["revision"])
         self.edit({"set":{"name":"recovered"}},view["revision"])
         self.assertEqual(poe.read_json(self.source)["name"],"recovered")
+
+    def test_public_route_large_stage_summary_has_reachable_full_continuation(self):
+        # Interface simulation: input passes the actual route validator; no claim
+        # that eighty native snapshots or a platform truncation was observed.
+        fixture=RouteTests();fixture.setUp();template=copy.deepcopy(fixture.route["stages"][-1])
+        fixture.route["stages"]=[];fixture.equipment={}
+        for index in range(80):
+            stage=copy.deepcopy(template);stage["stage_id"]=f"phase-{index:03d}";stage["name"]="Independently selected stage "+str(index)
+            fixture.route["stages"].append(stage)
+            fixture.equipment[stage["stage_id"]]={"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Iron Gauntlets","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}}
+        fixture.check()
+        poe.write_json(self.source,fixture.route);out=self.folder/"large.html";details=out.with_suffix(".evidence.json")
+        payload={"status":"draft","file_exported":True,"stages":80,
+                 "stage_summary":[{"stage_id":s["stage_id"],"name":s["name"],"status":"draft","native_calculated":True,"errors_total":0,"pending_total":1} for s in fixture.route["stages"]],
+                 "next_actions":[{"action":"edit_input","location":f"/stages/{i}/snapshot"} for i in range(80)]}
+        def simulate(_):
+            poe.write_json(details,{"response":payload,"stage_summary":payload["stage_summary"],"next_actions":payload["next_actions"]})
+            return copy.deepcopy(payload)
+        stdout=io.StringIO()
+        with patch.object(poe,"calculate_route",side_effect=simulate),redirect_stdout(stdout):
+            code=poe.main(["route","--file",str(self.source),"--out",str(out),"--invoked"])
+        self.assertEqual(code,0);self.assertLessEqual(len(stdout.getvalue()),12000)
+        response=json.loads(stdout.getvalue())
+        links=response.get("continuations",[])+response.get("next_actions",[])
+        continuation=next(row for row in links if row.get("action")=="view" and row.get("pointer","").endswith("/stage_summary"))
+        rows=[];offset=0
+        while True:
+            page=poe.view_json(args(file=continuation["file"],pointer=continuation["pointer"],fields="",keys=False,query="",limit=10,offset=offset))
+            rows.extend(page["value"])
+            if page["next_offset"] is None: break
+            offset=page["next_offset"]
+        self.assertEqual(rows,payload["stage_summary"])
 
     def test_large_edit_reply_points_to_saved_full_ids_instead_of_tool_truncation(self):
         changes={"set":{"stages":[{"stage_id":f"stage-{i}","skill_groups":[{"gems":[{"skill_id":"Future","level":1}]}]} for i in range(200)]}}

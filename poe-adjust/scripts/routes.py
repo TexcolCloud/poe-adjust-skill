@@ -31,8 +31,9 @@ def preflight(route, *, complete=True):
     if "class_id" in route: bx.require(type(route["class_id"]) is int and route["class_id"]>=0,"class_id 使用本机职业整数 ID。",location="/class_id",expected="nonnegative integer",actual=route["class_id"])
     for field in ("name","goal","league","scope"):
         if field in route: bx.require(isinstance(route[field],str),field+" 应为文字。",location="/"+field,expected="string",actual=route[field])
-    for field in ("ascendancy","game_version"):
+    for field in ("ascendancy",):
         if field in route: bx.require(route[field] is None or isinstance(route[field],str),field+" 应为文字或 null。",location="/"+field,expected="string or null",actual=route[field])
+    bx.game_version_shape(route.get("game_version"))
     stages=route.get("stages",[])
     if complete:
         bx.require(route.get("confirmed") is True,"先确认路线方向。",location="/confirmed",expected=True,actual=route.get("confirmed"))
@@ -49,17 +50,25 @@ def preflight(route, *, complete=True):
             if stage.get(field) is not None: bx.require(type(stage[field]) is int and stage[field]>=(1 if field in {"level","act"} else 0),field+" 使用相应非负/正整数。",location=path+"/"+field,expected="positive integer" if field in {"level","act"} else "nonnegative integer",actual=stage[field])
         for field in ("skill_groups","required_items","ascendancy_nodes","entry_conditions","entry_checks"):
             if field in stage: bx.require(isinstance(stage[field],list),field+" 应为数组。",location=path+"/"+field,expected="array",actual=type(stage[field]).__name__)
+        instances=set()
         for group_index,group in enumerate(stage.get("skill_groups",[])):
             group_path=path+f"/skill_groups/{group_index}"
-            bx.require_keys(group,GROUP_FIELDS,group_path)
-            bx.require(isinstance(group.get("gems"),list),"技能组 gems 应为数组。",location=group_path+"/gems",expected="array",actual=type(group.get("gems")).__name__)
-            for gem_index,gem in enumerate(group["gems"]): bx.require_keys(gem,GEM_FIELDS,group_path+f"/gems/{gem_index}")
+            bx.group_shape(group,group_path,allowed=GROUP_FIELDS)
+            if complete: bx.require("gems" in group,"技能组需要 gems。",location=group_path+"/gems",expected="array",actual=group.get("gems"))
+            for gem_index,gem in enumerate(group.get("gems",[])):
+                gem_path=group_path+f"/gems/{gem_index}";bx.gem_shape(gem,gem_path,allowed=GEM_FIELDS,auto=True)
+                if "instance_id" in gem:
+                    identity=gem["instance_id"]
+                    bx.require(identity not in instances,"同一阶段的 instance_id 不能占两个位置。",location=gem_path+"/instance_id",expected="unique instance within stage",actual=identity)
+                    instances.add(identity)
         for item_index,item in enumerate(stage.get("required_items",[])):
             bx.require(isinstance(item,dict),"物资需要对象。",location=path+f"/required_items/{item_index}",expected="object",actual=type(item).__name__)
             facts.material_ref(item)
         if "snapshot" in stage:
             snap=stage["snapshot"]
             bx.require_keys(snap,SNAPSHOT_FIELDS,path+"/snapshot")
+            if "template_xml" in snap: bx.require(isinstance(snap["template_xml"],str) and snap["template_xml"].strip(),"template_xml 需要具体路径。",location=path+"/snapshot/template_xml",expected="nonempty string",actual=snap["template_xml"])
+            if "metrics" in snap: bx.require(isinstance(snap["metrics"],list) and all(isinstance(k,str) and k for k in snap["metrics"]),"metrics 使用指标名数组。",location=path+"/snapshot/metrics",expected="string array",actual=snap["metrics"])
             try: resources.input_shape(snap,complete=complete)
             except bx.ContractError as exc:
                 exc.diagnostic["location"]=path+"/snapshot"+exc.diagnostic.get("location","")
@@ -70,6 +79,7 @@ def preflight(route, *, complete=True):
                 except bx.ContractError as exc:
                     exc.diagnostic["location"]=path+"/snapshot"+exc.diagnostic.get("location","")
                     raise
+    gem_ids(route)
     return route
 
 
@@ -84,10 +94,13 @@ def gem_ids(route):
     library=route.get("gems",{})
     bx.require(isinstance(library,dict),"gems 使用本机 skill_id 到目录备注的映射。",location="/gems",expected="object",actual=type(library).__name__)
     bx.require(all(isinstance(k,str) and k and isinstance(v,dict) and set(v)<={"note"} for k,v in library.items()),"gems 仅保留 note；旧 acquisition/fallback 移到实际阶段物资及进入条件。")
+    for key,row in library.items():
+        if "note" in row: bx.require(isinstance(row["note"],str),"宝石目录 note 应为文字。",location="/gems/"+key.replace("~","~0").replace("/","~1")+"/note",expected="string",actual=row["note"])
     return sorted(set(library)|{gem["skill_id"] for stage in route.get("stages",[]) for group in stage.get("skill_groups",[]) for gem in group.get("gems",[]) if isinstance(gem.get("skill_id"),str)})
 
 
 def link_queries(route):
+    preflight(route,complete=False)
     return sorted({",".join(g["skill_id"] for g in group.get("gems",[])) for stage in route.get("stages",[]) for group in stage.get("skill_groups",[]) if group.get("gems")})
 
 
@@ -116,17 +129,16 @@ def resolve_gem_levels(stages,gems):
 
 
 def validate_group(group,stage,gems,library,compatibility,capacity,warnings,pending,path):
-    bx.require_keys(group,GROUP_FIELDS,path)
+    bx.group_shape(group,path,allowed=GROUP_FIELDS)
     for field in ("name","use"):
         bx.require(isinstance(group.get(field),str) and group[field].strip(),"技能组需要具体 "+field,location=path+"/"+field,expected="nonempty string",actual=group.get(field))
     bx.require(isinstance(group.get("slot"),str),"slot 应为槽位名，未装备用空字符串。",location=path+"/slot",expected="native slot name or empty string",actual=group.get("slot"))
-    bx.require(type(group.get("enabled",True)) is bool,"enabled 应为布尔值；关闭计算仍占孔。",location=path+"/enabled",expected="boolean",actual=group.get("enabled"))
     entries=group.get("gems")
     bx.require(isinstance(entries,list) and entries,"每个物理组需要宝石实例。",location=path+"/gems",expected="nonempty gem array",actual=entries)
     if capacity is not None and group["slot"]: bx.require(len(entries)<=capacity,"单组连线超过基底孔位容量："+group["slot"])
     for gem_index,gem in enumerate(entries):
         gem_path=path+f"/gems/{gem_index}"
-        bx.require_keys(gem,GEM_FIELDS,gem_path)
+        bx.gem_shape(gem,gem_path,allowed=GEM_FIELDS)
         bx.require(isinstance(gem.get("instance_id"),str) and gem["instance_id"],"宝石实例需要稳定 instance_id。",location=gem_path+"/instance_id",expected="nonempty instance_id",actual=gem.get("instance_id"))
         native=gems.get(gem.get("skill_id"))
         bx.require(native and gem["skill_id"] in library,"本机未识别宝石 ID。",location=gem_path+"/skill_id",expected="current native skill_id",actual=gem.get("skill_id"))

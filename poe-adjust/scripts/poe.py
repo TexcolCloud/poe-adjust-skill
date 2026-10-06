@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import errno
 from collections import Counter
 from datetime import datetime, timezone
 import html
@@ -22,8 +23,9 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.8"
+VERSION = "2.8.9"
 SCHEMA_VERSION = 2
+JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
@@ -45,6 +47,10 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def transient_io(error):
+    return getattr(error,"errno",None) in {errno.EAGAIN,errno.EBUSY,errno.EINTR,errno.ETIMEDOUT} or getattr(error,"winerror",None) in {32,33}
+
+
 def execution_entrypoint():
     return {"script":str(Path(__file__).resolve()),"python":str(Path(sys.executable).resolve()),"skill_version":VERSION}
 
@@ -56,9 +62,10 @@ def input_contract(kind):
             "scope":"来自当前验证器的顶层字段归属；嵌套格式与语义仍按对应协议。配装目标修改 intent，操作/判断修改 plan。"}
 
 
-def read_json(path):
+def read_json(path, *, role="artifact"):
     path = Path(path)
-    bx.require(path.is_file() and path.stat().st_size <= bx.MAX_XML, f"JSON 文件不存在或过大：{path}")
+    bx.require(path.is_file(),f"JSON 文件不存在：{path}",location="/file",expected="existing JSON file",actual=str(path),input_file=str(path))
+    bx.require(path.stat().st_size<=JSON_LIMITS[role],f"JSON 超过 {role} 读取上限。",code="input_too_large" if role=="input" else "artifact_too_large",location="/file",expected={"maximum_bytes":JSON_LIMITS[role],"role":role},actual=path.stat().st_size,input_file=str(path))
     def finite_float(text):
         value=float(text)
         bx.require(math.isfinite(value),"JSON 不接受非有限数字。",location="/",expected="finite number",actual=text)
@@ -70,8 +77,15 @@ def read_json(path):
             result[key]=value
         return result
     value = json.loads(path.read_text(encoding="utf-8-sig"),parse_float=finite_float,object_pairs_hook=unique_object,parse_constant=lambda number: bx.require(False,"JSON 不接受非有限数字。",location="/",expected="finite number",actual=number))
-    bx.require(isinstance(value, dict), "JSON 顶层应为对象。")
+    bx.require(isinstance(value, dict), "JSON 顶层应为对象。",location="/",expected="object",actual=type(value).__name__,input_file=str(path))
     return value
+
+
+def json_text(value, *, role="artifact"):
+    text=json.dumps(value,ensure_ascii=False,indent=2,allow_nan=False)
+    size=len(text.encode("utf-8"))
+    bx.require(size<=JSON_LIMITS[role],f"编码后的 JSON 超过 {role} 上限；本次未提交。",code="input_too_large" if role=="input" else "artifact_too_large",location="/",expected={"maximum_bytes":JSON_LIMITS[role],"role":role},actual=size)
+    return text
 
 
 def write_text(path, text):
@@ -90,7 +104,43 @@ def write_text(path, text):
 
 
 def write_json(path, value):
-    write_text(path, json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False))
+    write_text(path,json_text(value))
+
+
+def check_path_roles(reads, writes):
+    """Resolve role aliases before a transaction writes its first artifact."""
+    resolved=[(role,Path(path).resolve()) for role,path in reads if path is not None]
+    produced=[]
+    for role,value in writes:
+        path=Path(value).resolve()
+        engine.check_output_path(path)
+        for other,target in resolved+produced:
+            same=path==target or path.is_file() and target.is_file() and path.samefile(target)
+            bx.require(not same,"输出与读取文件或其他输出角色指向同一文件。",code="path_conflict",location="/out",expected={"distinct_roles":[other,role]},actual=str(path))
+        produced.append((role,path))
+
+
+def document_reads(document, folder):
+    reads=[]
+    objects=[document]+[s.get("snapshot",{}) for s in document.get("stages",[]) if isinstance(s,dict)]
+    for index,obj in enumerate(objects):
+        if isinstance(obj,dict) and isinstance(obj.get("template_xml"),str): reads.append((f"template[{index}]",folder/obj["template_xml"]))
+    for index,row in enumerate(document.get("evidence",[])):
+        if isinstance(row,dict) and row.get("kind")=="artifact" and isinstance(row.get("path"),str): reads.append((f"evidence[{index}]",folder/row["path"]))
+    return reads
+
+
+def stage_directory(output, stage_id):
+    return output.parent/(output.stem+".calculations")/bx.digest(stage_id)[:12]
+
+
+def route_outputs(output, route):
+    writes=[("route_html",output)]+[("route_"+key,output.with_suffix("."+key+".json")) for key in ("state","evidence","review")]
+    for stage in route.get("stages",[]):
+        if isinstance(stage,dict) and "snapshot" in stage and isinstance(stage.get("stage_id"),str):
+            directory=stage_directory(output,stage["stage_id"])
+            writes.extend(("stage_"+stage["stage_id"]+"_"+name,directory/name) for name in ("snapshot.xml","snapshot.json","evaluation.json"))
+    return writes
 
 
 EDIT_COLLECTIONS={"stages":("stage_id",),"claims":("claim_id",),"evidence":("evidence_id",),"objectives":("objective_id",)}
@@ -202,12 +252,13 @@ def edit_document(args):
     bx.require(path.suffix.lower()==".json" and path!=changes_path,"方案与修改请求使用两个独立 JSON 文件。",location="/file",actual=str(path))
     root=engine.resolve_root(args.pob); engine.check_output_path(path)
     bx.require(reference is not None or getattr(args,"proposal_id",None) is None,"proposal_id 需配合 proposal_file。",location="/proposal_id")
-    request,adoption=proposal_request(args,root,path) if reference else (read_json(changes_path),None)
+    request,adoption=proposal_request(args,root,path) if reference else (read_json(changes_path,role="input"),None)
     bx.require_keys(request,{"set","replace","remove","review_claims"},"/","修改请求使用 set/replace/remove/review_claims。")
     bx.require(isinstance(request.get("set",{}),dict),"set 应为对象。",location="/set",expected="object",actual=type(request.get("set")).__name__)
     existing=path.read_bytes() if path.is_file() else None
     stamp=bx.digest(existing) if existing is not None else None
     receipt=path.with_suffix(".edit.json")
+    check_path_roles([("change_request",changes_path)],[("editable_input",path),("edit_receipt",receipt)])
     bx.require(receipt!=changes_path,"修改请求不能使用程序的 .edit.json 凭证文件名。",location="/changes",actual=str(changes_path))
     request_hash=bx.digest(json.dumps({"kind":args.kind,"request":request,**({"adoption":adoption} if adoption else {})},sort_keys=True,ensure_ascii=False,allow_nan=False))
     if receipt.is_file() and existing is not None:
@@ -217,10 +268,10 @@ def edit_document(args):
             if old.get("entrypoint")!=execution_entrypoint() or old.get("input_contract")!=input_contract(args.kind):
                 old.update(entrypoint=execution_entrypoint(),input_contract=input_contract(args.kind));write_json(receipt,old)
             return {**old,"replayed":True,"file":str(path),"status":"saved_draft"}
-    bx.require(existing is None or getattr(args,"if_sha256",None)==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",location="/if_sha256",expected=stamp,actual=getattr(args,"if_sha256",None))
+    bx.require(existing is None or getattr(args,"if_sha256",None)==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",code="input_revision_stale",location="/if_sha256",expected=stamp,actual=getattr(args,"if_sha256",None))
     if adoption:
         bx.require(existing is not None and adoption["input_revision"]==stamp,"源方案变化，请重算新的提案。",code="proposal_context_stale",location="/if_sha256",expected=stamp,actual=adoption["input_revision"])
-    document=read_json(path) if existing is not None else {"schema_version":SCHEMA_VERSION}
+    document=read_json(path,role="input") if existing is not None else {"schema_version":SCHEMA_VERSION}
     result=merge_edit(document,request.get("set",{}))
     replacements=request.get("replace",{})
     bx.require(isinstance(replacements,dict),"replace 为现有 JSON pointer 到新值的映射。",location="/replace",expected="object",actual=type(replacements).__name__)
@@ -232,19 +283,25 @@ def edit_document(args):
         parent[int(last) if isinstance(parent,list) else last]=copy.deepcopy(value)
     removes=request.get("remove",[])
     bx.require(isinstance(removes,list) and all(isinstance(v,str) and v.startswith("/") for v in removes),"remove 使用非空 JSON pointer 数组。",location="/remove",expected="pointer array",actual=removes)
+    deletion_targets=[]
+    bx.require(len(set(removes))==len(removes) and not any(b.startswith(a+"/") for a in removes for b in removes if a!=b),"remove 不能重复或同时删除父字段和其子字段。",location="/remove",expected="distinct non-overlapping pointers",actual=removes)
     for locator in removes:
         parent_pointer,_,last=locator.rpartition("/")
         parent=facts.pointer(result,parent_pointer); last=last.replace("~1","/").replace("~0","~")
         facts.pointer(result,locator)
-        if isinstance(parent,list): del parent[int(last)]
-        else: del parent[last]
+        key=int(last) if isinstance(parent,list) else last
+        bx.require(not any(parent is other and key==old for other,old in deletion_targets),"remove 的不同写法指向同一对象。",location="/remove",expected="distinct resolved targets",actual=removes)
+        deletion_targets.append((parent,key))
+    # Every locator addresses the same document after set/replace. Descending
+    # array indices avoid changing the identity of another requested deletion.
+    for parent,key in sorted(deletion_targets,key=lambda row: row[1] if isinstance(row[1],int) else -1,reverse=True): del parent[key]
     bx.require(result.get("schema_version")==SCHEMA_VERSION,"方案使用当前 schema_version。",location="/schema_version",expected=SCHEMA_VERSION,actual=result.get("schema_version"))
     if args.kind=="route":
         routes.preflight(result,complete=False)
         for stage in result.get("stages",[]):
             available=[]
             for group_index,group in enumerate(stage.get("skill_groups",[])):
-                for gem_index,gem in enumerate(group["gems"]):
+                for gem_index,gem in enumerate(group.get("gems",[])):
                     if "instance_id" not in gem:
                         gem["instance_id"]="gem-"+bx.digest(json.dumps([stage["stage_id"],group_index,gem_index,gem.get("skill_id")],ensure_ascii=False))[:12]
                     available.append(gem)
@@ -253,6 +310,7 @@ def edit_document(args):
                     matches=[g for g in available if g.get("skill_id")==need.get("skill_id")]
                     if len(matches)==1: need["instance_id"]=matches[0]["instance_id"]
                     else: bx.require(False,"同名宝石数量有歧义；用返回的实例 ID 明确取得对象。",location="/stages",expected="unambiguous instance_id",actual=need)
+        routes.preflight(result,complete=False)
     else:
         bx.plan_shape(result,complete=False)
         facts.model_shape(result,complete=False)
@@ -280,18 +338,28 @@ def edit_document(args):
     # Validate local structure before touching the only source. Semantic choices
     # and current native legality remain evaluate/route responsibilities.
     bx.require((path.read_bytes() if path.is_file() else None)==existing,"保存前方案已变化，请重新读取 revision。",location="/file",actual=str(path))
-    write_json(path,result)
-    revision=bx.digest(path.read_bytes())
+    source_text=json_text(result,role="input")
+    check_path_roles([("change_request",changes_path)]+document_reads(result,path.parent),[("editable_input",path),("edit_receipt",receipt)])
+    revision=bx.digest(source_text)
     handles={key:[{field:row.get(field) for field in fields} for row in result.get(key,[])] for key,fields in EDIT_COLLECTIONS.items() if key in result}
     response={"kind":args.kind,"file":str(path),"receipt_file":str(receipt),"revision":revision,"request_sha256":request_hash,"result_sha256":revision,"engine_fingerprint":fingerprint,"entrypoint":execution_entrypoint(),"handles":handles,"status":"saved_draft",
               "counts":document_counts(result),"actual_changes":document_changes(document,result),"invalidated_claims":invalidated,"input_contract":input_contract(args.kind),
               "artifacts":{"source":[{"path":str(path),"role":"editable_plan"}],"persistent_state":[{"path":str(receipt),"role":"revision_and_retry_receipt"}],"temporary":[]},
               "next_actions":[{"action":"edit_or_calculate","file":str(path),"revision":revision,"reference":"references/leveling.md" if args.kind=="route" else "references/build.md"}],
               "scope":"已保存输入草案及稳定标识；没有计算、确认游戏合法性或自动完成模型评审。"}
-    if args.kind=="route": response["stage_instances"]=[{"stage_id":s["stage_id"],"instances":[{k:g.get(k) for k in ("instance_id","skill_id","level")} for group in s.get("skill_groups",[]) for g in group["gems"]]} for s in result.get("stages",[])]
+    if args.kind=="route": response["stage_instances"]=[{"stage_id":s["stage_id"],"instances":[{k:g.get(k) for k in ("instance_id","skill_id","level")} for group in s.get("skill_groups",[]) for g in group.get("gems",[])]} for s in result.get("stages",[])]
     if adoption: response["adopted_proposal"]=adoption
     response["facts_summary"]=f"已保存草案；实际修改 {len(response['actual_changes'])} 处，阶段 {response['counts']['stages']} 个、技能组 {response['counts']['skill_groups']} 组、宝石 {response['counts']['gems']} 颗、判断 {response['counts']['claims']} 条。待重新评审判断 {len(invalidated)} 条。持久状态凭证保留在 {receipt}；程序临时文件已自动处理。此操作没有计算或证明配装达标。"
-    write_json(receipt,response)
+    json_text(response)  # Check both encoded documents before committing either.
+    try:
+        bx.require((path.read_bytes() if path.is_file() else None)==existing,"提交前方案发生变化，请重新读取 revision。",code="input_revision_stale",location="/file",expected=stamp,actual=str(path))
+        write_text(path,source_text)
+        write_json(receipt,response)
+    except OSError as exc:
+        current=bx.digest(path.read_bytes()) if path.is_file() else None
+        error=bx.ContractError(str(exc),code="io_error",location="/receipt_file" if current==revision else "/file",expected="atomic source and receipt writes",actual=str(receipt if current==revision else path))
+        error.diagnostic.update(action="read_current_revision",retryable=current!=revision and transient_io(exc),recoverable=True,source_committed=current==revision,receipt_committed=False,current_revision=current,previous_revision=stamp,receipt_file=str(receipt))
+        raise error from exc
     return response
 
 
@@ -299,12 +367,12 @@ def view_json(args):
     """Read ordinary task JSON by the existing pointer contract; never recalculate."""
     path=Path(args.file).resolve()
     bx.require(path.suffix.lower()==".json","view 读取任务工作区已有 JSON，游戏原文使用 data。")
-    bx.require(1<=args.limit<=100 and args.offset>=0,"limit 为1–100，offset为非负整数。",location="/pagination")
+    bx.require(1<=args.limit<=12000 and args.offset>=0,"limit 为正整数，offset为非负整数。",location="/pagination",expected="limit 1..12000, offset >=0",actual={"limit":args.limit,"offset":args.offset})
     revision=bx.digest(path.read_bytes())
     selected=facts.pointer(read_json(path),args.pointer)
     bx.require(bx.digest(path.read_bytes())==revision,"读取期间文件变化；重读当前字段与 revision。",location="/file",actual=str(path))
     fields=args.fields.split(",") if args.fields else []
-    bx.require(all(field.strip()==field and field for field in fields) and len(fields)==len(set(fields)),"fields 使用不同的直接字段名，逗号分隔。",location="/fields")
+    bx.require(len(fields)<=100 and all(field.strip()==field and field for field in fields) and len(fields)==len(set(fields)),"fields 使用最多100个不同的直接字段名，逗号分隔。",location="/fields")
     if args.keys:
         bx.require(isinstance(selected,dict) and not fields,"keys 列出当前对象字段；不与 fields 同用。",location=args.pointer)
         selected=sorted(selected)
@@ -318,17 +386,39 @@ def view_json(args):
         absent=[field for field in fields if field not in value]
         if absent: missing.append({"index":index,"fields":absent})
         return {key:value[key] for key in fields if key in value}
-    if isinstance(selected,list):
+    result={"file":str(path),"revision":revision,"pointer":args.pointer,"fields":fields,"keys":args.keys,"query":args.query,"offset":args.offset,
+            "missing_fields":missing,"read_only":True,"next_actions":[],
+            "scope":"当前JSON分页；缺字段保持缺失。offset 对应 page_unit。deferred_values 按子 pointer 继续读取；next_offset 继续同一字段。未重算。"}
+    fits=lambda value: len(json.dumps(value,ensure_ascii=False,allow_nan=False))<=9500
+    bx.require(len(json.dumps(result,ensure_ascii=False))<=6000,"读取参数过长，请缩小 fields/query。",location="/pagination",expected="bounded reader parameters",actual={"fields_count":len(fields),"query_characters":len(args.query or "")})
+    if isinstance(selected,str):
+        bx.require(not fields,"字符串用 pointer/offset/limit 分页。",location="/fields")
         total=len(selected);end=min(total,args.offset+args.limit)
-        value=[project(row,args.offset+index) for index,row in enumerate(selected[args.offset:end])]
-        following=end if end<total else None
+        result.update(total=total,page_unit="characters",value=selected[args.offset:end],next_offset=end if end<total else None)
+        while not fits(result) and end>args.offset:
+            end=args.offset+(end-args.offset)//2
+            result.update(value=selected[args.offset:end],next_offset=end if end<total else None)
+    elif isinstance(selected,(list,dict)):
+        bx.require(args.limit<=100,"数组/对象 limit 为1–100；长字符串可用更大 limit。",location="/limit",expected="1..100",actual=args.limit)
+        is_array=isinstance(selected,list)
+        if not is_array: selected=project(selected)
+        entries=selected if is_array else list(selected)
+        total=len(entries);end=min(total,args.offset+args.limit)
+        def page(stop):
+            return [project(row,args.offset+i) for i,row in enumerate(entries[args.offset:stop])] if is_array else {k:selected[k] for k in entries[args.offset:stop]}
+        result.update(total=total,page_unit="items" if is_array else "fields",value=page(end),next_offset=end if end<total else None)
+        while not fits(result) and end-args.offset>1:
+            end=args.offset+(end-args.offset)//2
+            missing.clear();result.update(value=page(end),next_offset=end if end<total else None)
+        if not fits(result) and args.offset<total:
+            key=str(args.offset) if is_array else entries[args.offset]
+            pointer=args.pointer+"/"+key.replace("~","~0").replace("/","~1")
+            result.update(value=[] if is_array else {},deferred_values=[pointer],next_offset=args.offset+1 if args.offset+1<total else None,
+                          next_actions=[{"action":"view","file":str(path),"pointer":pointer,"offset":0,"limit":20}])
     else:
-        bx.require(args.offset==0,"offset 仅用于数组；对象用 fields，嵌套值用 pointer。",location="/offset")
-        value=project(selected);total=len(selected) if isinstance(selected,dict) else 1;following=None
-    result={"file":str(path),"revision":revision,"pointer":args.pointer,"fields":fields,"keys":args.keys,"query":args.query,"offset":args.offset,"total":total,"next_offset":following,
-            "value":value,"missing_fields":missing,"read_only":True,
-            "scope":"当前已保存JSON的所选字段；没有重新计算或刷新来源。缺字段保持缺失，不按零/false补值。"}
-    bx.require(len(json.dumps(result,ensure_ascii=False,allow_nan=False))<=12000,"所选内容仍过大；缩小 limit、选择 fields 或用 pointer 进入具体对象，不输出整份文件。",location=args.pointer)
+        bx.require(args.offset==0 and not fields,"标量没有分页字段。",location="/offset",expected=0,actual=args.offset)
+        result.update(total=1,page_unit="scalar",value=selected,next_offset=None)
+    bx.require(fits(result),"本页元数据过大，请缩小读取参数。",location="/pagination",expected="bounded page",actual={"characters":len(json.dumps(result,ensure_ascii=False))})
     return result
 
 
@@ -443,7 +533,7 @@ def validate_intent(value, original, native=None, folder=None):
 def set_intent(args):
     run, state = read_run(args.run)
     root = engine.resolve_root(state["pob_path"])
-    supplied=read_json(args.file)
+    supplied=read_json(args.file,role="input")
     facts.model_shape(supplied)
     native = engine.calculate(root, catalog="rules", query="slots")
     intent = validate_intent(supplied, bx.read_document(run / "original.xml"), native, Path(args.file).resolve().parent)
@@ -823,29 +913,16 @@ def roundtrip(root, result, document):
 
 def materialize_items(plan, root):
     """Translate ordinary base/rare recipes using the installed modifier pool."""
+    bx.operations_shape(plan.get("operations",{}))
     recipes,source_indices = [],[]
     for index,item in enumerate(plan.get("operations", {}).get("items", [])):
         if "craft" not in item:
             continue
-        bx.require(set(item) == {"id", "craft"} and type(item["id"]) is int and item["id"] > 0, "配方物品只接受 id 与 craft，不能混入 text。")
         spec = item["craft"]
-        bx.require(isinstance(spec, dict) and set(spec) <= {"base", "ilvl", "quality", "sockets", "affixes"}, "craft 仅接受 base/ilvl/quality/sockets/affixes。")
-        bx.require(isinstance(spec.get("base"), str) and spec["base"].strip(), "craft.base 使用 catalog bases 返回的完整基底名。")
-        bx.require(type(spec.get("ilvl")) is int and spec["ilvl"] > 0, "craft.ilvl 应为正整数；原生词缀与获取依据分别核对。")
-        bx.require(type(spec.get("quality", 0)) is int and spec.get("quality", 0) >= 0, "craft.quality 应为非负整数，取得方式须有依据。")
-        sockets = spec.get("sockets", "")
-        bx.require(isinstance(sockets, str) and (not sockets or re.fullmatch(r"[RGBW](?:[- ][RGBW])*", sockets)), "craft.sockets 只接受普通孔，例如 W-W-W-W 或 R-R G-G。")
-        affixes = spec.get("affixes")
-        bx.require(isinstance(affixes, list), "craft.affixes 应为数组；[] 生成普通基底，非空数组生成稀有目标。",location=f"/operations/items/{index}/craft/affixes",expected="array")
-        for affix in affixes:
-            bx.require(isinstance(affix, dict) and set(affix) <= {"id", "roll"} and isinstance(affix.get("id"), str), "词缀配方需要 catalog affixes 返回的 id，可选 roll。")
-            roll = affix.get("roll", 0.5)
-            bx.require(type(roll) in (float, int) and math.isfinite(roll) and 0 <= roll <= 1, "roll 是词缀范围内位置 0–1，默认 0.5，不是实际数值。")
         recipes.append({"id": item["id"], **spec})
         source_indices.append(index)
     if not recipes:
         return plan, []
-    bx.require(len({spec["id"] for spec in recipes}) == len(recipes), "不能有重复配方物品 ID。")
     audit = []
     for offset in range(0,len(recipes),10):
         try: audit.extend(engine.calculate(root, crafts=recipes[offset:offset+10])["crafted_items"])
@@ -1119,6 +1196,7 @@ def failure_record(exc,location_prefix="",input_file=None):
 def record_command_failure(args, exc):
     """Invalidate the current attempt, keeping prior calculated artifacts intact."""
     if args.command not in {"evaluate","export"}: return
+    if getattr(exc,"diagnostic",{}).get("code")=="path_conflict": return
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}",args.name): return
     run=Path(args.run).resolve()
     state_path=run/"run.json"
@@ -1225,9 +1303,12 @@ def evaluate(args):
     bx.require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", args.name), "候选名称请使用 1–48 位小写英文、数字或连字符。")
     intent, plan_path = state["intent"], Path(args.plan).resolve()
     source_plan_sha256=bx.digest(plan_path.read_bytes())
-    plan = read_json(plan_path)
+    plan = read_json(plan_path,role="input")
     bx.plan_shape(plan)
     facts.model_shape(plan)
+    destination=run/"candidates"/args.name
+    check_path_roles([("source_plan",plan_path),("original_xml",run/"original.xml")]+document_reads(plan,plan_path.parent),
+                     [("run_state",run/"run.json"),("baseline",run/"baseline.json"),("previous_delivery",run/"output"/args.name/"delivery.json")]+[("candidate_"+name,destination/name) for name in ("requested.xml","candidate.xml","plan.json","evaluation.json","review.json")])
     bx.require(plan.get("schema_version")==SCHEMA_VERSION,"plan 使用 schema_version=2，旧策略字段请按 references/build.md 与 evidence.md 迁移。")
     original = bx.read_document(run / "original.xml")
     root = engine.resolve_root(args.pob or state["pob_path"])
@@ -1279,18 +1360,20 @@ def evaluate(args):
     delivery=run/"output"/args.name/"delivery.json"
     if delivery.is_file():
         write_json(delivery,{"file_exported":False,"status":outcome["status"],"candidate":args.name,"reason":"superseded_by_evaluation"})
+    response={"candidate":str(destination),"evaluation_file":str(destination/"evaluation.json"),"status":outcome["status"],"errors":outcome["errors"],"pending":outcome["pending"],"warnings":outcome["warnings"],
+            "budget":outcome["budget"],"readiness":outcome["readiness"],"roundtrip_verified":True,"delivery_brief":outcome["delivery_brief"],
+            "comparison":{k:v for k,v in outcome["comparison"].items() if k in METRICS},"baseline_warnings":baseline.get("warnings",[]),
+            "tree_diagnostics":tree_diagnostics,"review_file":str(destination/"review.json"),"review_token":outcome["review_packet"]["token"],
+            "next_actions":outcome["next_actions"],
+            "next":"按 next_actions 处理实际错误和目标缺口，再审查当前 review.json。方案改变会作废旧复核；缺字段与结论不得用 token 或计算成功代替。"}
+    outcome["response"]=response
     write_json(destination/"evaluation.json",outcome)
     write_json(destination/"review.json",outcome["review_packet"])
     state.setdefault("candidates",{})[args.name]={"evaluation_sha256":bx.digest((destination/"evaluation.json").read_text(encoding="utf-8"))}
     state.update(phase="evaluated",updated_at=now(),engine_fingerprint=result["engine_fingerprint"],entrypoint=execution_entrypoint(),
                  last_operation={"command":"evaluate","candidate":args.name,"file_exported":False,"status":outcome["status"]})
     write_json(run/"run.json",state)
-    return {"candidate":str(destination),"evaluation_file":str(destination/"evaluation.json"),"status":outcome["status"],"errors":outcome["errors"],"pending":outcome["pending"],"warnings":outcome["warnings"],
-            "budget":outcome["budget"],"readiness":outcome["readiness"],"roundtrip_verified":True,"delivery_brief":outcome["delivery_brief"],
-            "comparison":{k:v for k,v in outcome["comparison"].items() if k in METRICS},"baseline_warnings":baseline.get("warnings",[]),
-            "tree_diagnostics":tree_diagnostics,"review_file":str(destination/"review.json"),"review_token":outcome["review_packet"]["token"],
-            "next_actions":outcome["next_actions"],
-            "next":"按 next_actions 处理实际错误和目标缺口，再审查当前 review.json。方案改变会作废旧复核；缺字段与结论不得用 token 或计算成功代替。"}
+    return response
 
 def actual_changes(before, after, equipment=None):
     """Use recalculated objects for the delivery summary, never stale plan prose."""
@@ -1402,7 +1485,7 @@ def probe(args):
         return {"status":"screened","engine_fingerprint":screened["engine_fingerprint"],"xml_sha256":bx.digest(xml),"alternatives":screened["node_screening"],
                 "next":"仅为原生节点词缀筛选，不含连接路径、点数或组合认证；选定完整路径后用 --variants 实算，再 evaluate。"}
     if getattr(args,"variants",None):
-        request=read_json(args.variants)
+        request=read_json(args.variants,role="input")
         bx.require(set(request)=={"variants"},"比较文件只接受 variants。")
         variants=request["variants"]
     else:
@@ -1471,6 +1554,8 @@ def export(args):
     run,state,outcome,xml,root=read_candidate(args)
     folder=run/"candidates"/args.name
     output=run/"output"/args.name
+    check_path_roles([("source_plan",outcome.get("source_plan")),("original_xml",run/"original.xml"),("requested_xml",folder/"requested.xml"),("candidate_xml",folder/"candidate.xml"),("evaluation",folder/"evaluation.json")]+document_reads(outcome["plan"],Path(outcome["evidence_folder"])),
+                     [("run_state",run/"run.json")]+[("delivery_"+name,output/name) for name in ("delivery.json","final-assessment.json","review.json","配装说明.html","配装草案.xml","改进配装.xml")])
     state.update(phase="exporting",selected_candidate=args.name,updated_at=now(),entrypoint=execution_entrypoint(),
                  last_operation={"command":"export","candidate":args.name,"file_exported":False,"status":"preparing"})
     write_json(run/"run.json",state)
@@ -1488,6 +1573,18 @@ def export(args):
     outcome.update(assessment)
     outcome["result"]={k:v for k,v in verification.items() if k!="xml"}
     outcome["next_actions"]=delivery_actions(outcome,outcome["source_plan"],output/"final-assessment.json",output/"review.json")
+    filename="配装草案.xml" if outcome["status"]=="draft" else "改进配装.xml"
+    if outcome["status"]=="blocked":
+        response={"status":"blocked","file_exported":False,"delivery_brief":outcome["delivery_brief"],"files":[str(output/"配装说明.html")],"errors":outcome["errors"],"pending":outcome["pending"],"next_actions":outcome["next_actions"],"next":"已生成诊断说明；先解决已知矛盾并重新 evaluate。"}
+    else:
+        summary=outcome["publication"]["facts_summary"]+"\n\n"+scenario_summary(verification)+"\n已导出 XML，通过本机计算、保存回读与最终复算；以上是所列配置下的快照。"
+        if outcome["comparison_notes"]: summary+="前后口径差异："+"；".join(outcome["comparison_notes"])
+        response={"status":outcome["status"],"file_exported":True,"delivery_brief":outcome["delivery_brief"],"files":[str(output/filename),str(output/"配装说明.html")],"facts_summary":summary,"publication":outcome["publication"],
+                  "facts":outcome["review_packet"]["facts"],"objective_coverage":outcome["objective_coverage"],
+                  "pending":outcome["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
+                  "next_actions":outcome["next_actions"],
+                  "reply_policy":"直接交付返回的文件，保留草案文件名；先沿用 delivery_brief/facts_summary 的真实状态和全部缺口类别，再解释 claims[].rendered_text 中有依据的取舍。最终聊天与HTML保持同一结论；不把复核token或回读当机制、预算或目标达成证明。"}
+    outcome["response"]=response
     write_json(output/"final-assessment.json",outcome)
     write_json(output/"review.json",outcome["review_packet"])
     write_text(output/"配装说明.html",report_html(state,outcome))
@@ -1496,21 +1593,14 @@ def export(args):
             (output/old_name).unlink(missing_ok=True)
         write_json(output/"delivery.json",{"file_exported":False,"status":"blocked","candidate":args.name})
         state.update(phase="evaluated",updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":False,"status":"blocked"}); write_json(run/"run.json",state)
-        return {"status":"blocked","file_exported":False,"delivery_brief":outcome["delivery_brief"],"files":[str(output/"配装说明.html")],"errors":outcome["errors"],"pending":outcome["pending"],"next_actions":outcome["next_actions"],"next":"已生成诊断说明；先解决已知矛盾并重新 evaluate。"}
-    filename="配装草案.xml" if outcome["status"]=="draft" else "改进配装.xml"
+        return response
     write_text(output/filename,xml)
     (output/("改进配装.xml" if filename=="配装草案.xml" else "配装草案.xml")).unlink(missing_ok=True)
     write_json(output/"delivery.json",{"file_exported":True,"status":outcome["status"],"candidate":args.name,
                "files":{name:bx.digest((output/name).read_bytes()) for name in (filename,"配装说明.html")},"review_token":outcome["review_packet"]["token"]})
     state.update(phase="exported",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":True,"status":outcome["status"]})
     write_json(run/"run.json",state)
-    summary=outcome["publication"]["facts_summary"]+"\n\n"+scenario_summary(verification)+"\n已导出 XML，通过本机计算、保存回读与最终复算；以上是所列配置下的快照。"
-    if outcome["comparison_notes"]: summary+="前后口径差异："+"；".join(outcome["comparison_notes"])
-    return {"status":outcome["status"],"file_exported":True,"delivery_brief":outcome["delivery_brief"],"files":[str(output/filename),str(output/"配装说明.html")],"facts_summary":summary,"publication":outcome["publication"],
-            "facts":outcome["review_packet"]["facts"],"objective_coverage":outcome["objective_coverage"],
-            "pending":outcome["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
-             "next_actions":outcome["next_actions"],
-            "reply_policy":"直接交付返回的文件，保留草案文件名；先沿用 delivery_brief/facts_summary 的真实状态和全部缺口类别，再解释 claims[].rendered_text 中有依据的取舍。最终聊天与HTML保持同一结论；不把复核token或回读当机制、预算或目标达成证明。"}
+    return response
 
 def native_queries(root,queries,xml="",class_id=None,equipment_layouts=None):
     bx.require(isinstance(queries,list) and queries,"queries 应为非空数组。")
@@ -1532,7 +1622,7 @@ def catalog(args):
     kinds={"gems","skills","nodes","uniques","config","links","classes","bases","affixes","rules","metrics"}
     document=bx.serialise(bx.read_document(Path(args.input))) if args.input else ""
     if getattr(args,"batch",None):
-        queries=read_json(args.batch).get("queries")
+        queries=read_json(args.batch,role="input").get("queries")
         bx.require(isinstance(queries,list) and queries,"queries 应为非空数组。",location="/queries",expected="nonempty array",actual=queries)
         for index,query in enumerate(queries):
             location=f"/queries/{index}"
@@ -1662,7 +1752,7 @@ def route_snapshots(route,native,root,folder,output,*,gems=None):
             plan={"mode":"rebuild","summary":"路线阶段条件快照","operations":operations}
             resolved,crafts=materialize_items(plan,root)
             document=bx.apply_plan(source,resolved,native=native)
-            directory=output.parent/(output.stem+".calculations")/bx.digest(sid)[:12]
+            directory=stage_directory(output,sid)
             requested=bx.serialise(document)
             cache_path=directory/"snapshot.json"
             calculated=None
@@ -1709,6 +1799,9 @@ def route_command(args):
     bx.require(output.suffix.lower()==".html" and output!=path,"--out 需要独立 HTML 文件。",location="/out",actual=str(output))
     root=engine.resolve_root(args.pob)
     state_path=output.with_suffix(".state.json")
+    check_path_roles([("route_input",path),("edit_receipt",path.with_suffix(".edit.json"))],route_outputs(output,{}))
+    route=read_json(path,role="input")
+    check_path_roles([("route_input",path),("edit_receipt",path.with_suffix(".edit.json"))]+document_reads(route,path.parent),route_outputs(output,route))
     initial={"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"entrypoint":execution_entrypoint(),"phase":"preparing","file_exported":False,"input":str(path),"output":str(output),
              "input_sha256":bx.digest(path.read_bytes()) if path.is_file() else None,"engine_fingerprint":engine.fingerprint(root)}
     if state_path.is_file():
@@ -1734,7 +1827,7 @@ def calculate_route(args):
     path=Path(args.file).resolve(); output=Path(args.out).resolve()
     bx.require(output.suffix.lower()==".html" and output!=path,"--out 需要独立 HTML 文件。")
     input_sha256=bx.digest(path.read_bytes())
-    route=read_json(path)
+    route=read_json(path,role="input")
     routes.preflight(route)
     root=engine.resolve_root(args.pob)
     ids=routes.gem_ids(route)
@@ -1896,8 +1989,10 @@ def calculate_route(args):
     evidence_file=output.with_suffix(".evidence.json")
     review_file=output.with_suffix(".review.json")
     actions=delivery_actions({k:checked[k] for k in ("errors","pending","diagnostics","reference_contract")}|{"status":checked["delivery_status"]},path,evidence_file,review_file,"/checked_route")
+    response={"status":checked["delivery_status"],"file_exported":True,"delivery_brief":checked["delivery_brief"],"facts_summary":checked["publication"]["facts_summary"],"errors":checked["errors"],"stage_summary":stage_summary,"files":[str(output),str(evidence_file)],"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":checked["pending"],"warnings":warnings,
+             "next_actions":actions,"scope":"目录核对与实际阶段快照分别列出；仅 calculation 中的数值经过所声明完整输入实算，未物化阶段不宣称精确 DPS/生存/续航。获取位置不证明当前已完成任务。", "next":"按 next_actions 修订再重跑同一route；完成计算不等于输入合法或阶段就绪。诊断XML不能作为可执行配装交付，剩余真实缺口按delivery_brief明示为条件草案。"}
     write_json(review_file,review)
-    write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings,"next_actions":actions})
+    write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings,"next_actions":actions,"response":response})
     write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))
     progress=read_json(output.with_suffix(".state.json"))
     write_json(output.with_suffix(".state.json"),{**progress,"phase":"exported","file_exported":True,"status":checked["delivery_status"],"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":calculation["engine_fingerprint"],
@@ -1905,9 +2000,7 @@ def calculate_route(args):
                "files":{str(p):bx.digest(p.read_bytes()) for p in (output,evidence_file,review_file)},"review_token":review["token"],
                "stages":{row["stage_id"]:{k:v for k,v in row.items() if k not in {"stage_id","name"}} for row in stage_summary if row["status"]!="not_calculated"},
                "delivery_brief":checked["delivery_brief"],"next_actions":actions})
-    return {"status":checked["delivery_status"],"file_exported":True,"delivery_brief":checked["delivery_brief"],"facts_summary":checked["publication"]["facts_summary"],"errors":checked["errors"],"stage_summary":stage_summary,"files":[str(output),str(evidence_file)],"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":checked["pending"],"warnings":warnings,
-             "next_actions":actions,"scope":"目录核对与实际阶段快照分别列出；仅 calculation 中的数值经过所声明完整输入实算，未物化阶段不宣称精确 DPS/生存/续航。获取位置不证明当前已完成任务。", "next":"按 next_actions 修订再重跑同一route；完成计算不等于输入合法或阶段就绪。诊断XML不能作为可执行配装交付，剩余真实缺口按delivery_brief明示为条件草案。"}
-
+    return response
 
 def workflow_status(args):
     """Read integrity and next operations without repeating native calculation."""
@@ -2036,6 +2129,38 @@ def parser():
     return p
 
 
+def bound_reply(value, args):
+    """Bound the complete envelope; every omitted field remains on disk."""
+    size=lambda row:len(json.dumps({"ok":True,**row},ensure_ascii=False,allow_nan=False))+1
+    if size(value)<=12000: return value
+    prefix="/response"
+    if args.command=="edit": details=Path(value["receipt_file"]);prefix=""
+    elif args.command=="route": details=Path(args.out).resolve().with_suffix(".evidence.json")
+    elif args.command in {"evaluate","export"}:
+        details=Path(args.run).resolve()/("candidates" if args.command=="evaluate" else "output")/args.name/("evaluation.json" if args.command=="evaluate" else "final-assessment.json")
+    else:
+        bx.require(False,"完整返回过大；缩小查询或先保存 --out 后用 view 分页。",code="response_too_large",location="/out",expected="bounded response or saved artifact",actual={"characters":size(value),"command":args.command})
+    bx.require(details.is_file(),"完整返回凭证不存在，不能截断后交付。",code="response_artifact_missing",location="/out",expected="saved full response",actual=str(details))
+    saved=read_json(details)
+    result=dict(value)
+    result.update(details_file=str(details),output_scope="终端摘要；continuations 指向完整字段，按 view 分页，无须重算。",continuations=[])
+    if args.command=="edit":
+        result["next_actions"]=[{"action":"view","file":str(details),"pointer":"/handles","keys":True}]+([{"action":"view","file":str(details),"pointer":"/stage_instances","limit":10}] if result["kind"]=="route" else [])+[{"action":"view","file":str(details),"pointer":"/input_contract"}]
+    protected={"entrypoint","runtime","status","file_exported","kind","file","revision","receipt_file","details_file","output_scope","continuations"}
+    trimmed=set()
+    while size(result)>11200:
+        options=[key for key in result if key not in protected and key not in trimmed]
+        bx.require(options,"返回元数据过大。",code="response_too_large",location="/",expected="bounded response metadata",actual={"characters":size(result)})
+        key=max(options,key=lambda k:len(json.dumps(result[k],ensure_ascii=False)))
+        pointer=prefix+"/"+key.replace("~","~0").replace("/","~1")
+        target=facts.pointer(saved,pointer)
+        if isinstance(target,(list,dict,str)): result[key+"_total"]=len(target)
+        result[key]=target[:160] if isinstance(target,str) else [] if isinstance(target,list) else {} if isinstance(target,dict) else target
+        result["continuations"].append({"action":"view","file":str(details),"pointer":pointer,"offset":0,"limit":20})
+        trimmed.add(key);protected.add(key+"_total")
+    return result
+
+
 def main(argv=None):
     started=time.perf_counter()
     engine.PERFORMANCE.update(requests=0,worker_calls=0,cache_hits=0,worker_seconds=0.0)
@@ -2110,41 +2235,28 @@ def main(argv=None):
         elif args.command == "route": result = route_command(args)
         elif args.command == "view": result=view_json(args)
         else: result=workflow_status(args)
-        if args.command=="edit" and len(json.dumps(result,ensure_ascii=False))>12000:
-            result={k:v for k,v in result.items() if k in {"kind","file","receipt_file","revision","status","replayed","scope","counts","facts_summary","artifacts"}}
-            result.update(output_scope="终端摘要；完整标识和 input_contract 已保存 receipt_file。按 view 读取，无须重算。",next_actions=[{"action":"view","file":result["receipt_file"],"pointer":"/handles","keys":True}]+([{"action":"view","file":result["receipt_file"],"pointer":"/stage_instances","limit":10}] if result["kind"]=="route" else [])+[{"action":"view","file":result["receipt_file"],"pointer":"/input_contract"}])
-        if args.command in {"evaluate","route","export"} and len(json.dumps(result,ensure_ascii=False))>12000:
-            details=(Path(args.out).resolve().with_suffix(".evidence.json") if args.command=="route" else
-                     Path(args.run).resolve()/("candidates" if args.command=="evaluate" else "output")/args.name/("evaluation.json" if args.command=="evaluate" else "final-assessment.json"))
-            concise={"status","file_exported","files","candidate","review_file","review_token","evaluation_file","xml","roundtrip_verified","name","stages","stage_summary","delivery_brief","facts_summary","budget_status","scope","next","next_actions","reply_policy","errors","pending","warnings"}
-            result={k:v for k,v in result.items() if k in concise}
-            for field in ("errors","pending","warnings"):
-                if field in result:
-                    result[field+"_total"]=len(result[field]);result[field]=[v[:160] if isinstance(v,str) else v for v in result[field][:12]]
-            for field in ("facts_summary","next","reply_policy","scope"):
-                if field in result and isinstance(result[field],str): result[field]=result[field][:1800]
-            result.update(details_file=str(details),output_scope="终端摘要；完整数值、条件和全部缺口已保存在 details_file，请按字段读取。")
-            if args.command in {"evaluate","route"}:
-                actions=result.get("next_actions",[])
-                result["next_actions"]=[{k:v for k,v in action.items() if k!="diagnostics"} for action in actions]
-                total=len(actions)
-                while len(json.dumps(result,ensure_ascii=False))>10500 and result["next_actions"]: result["next_actions"].pop()
-                if len(result["next_actions"])<total:
-                    result["next_actions"].append({"action":"view","file":str(details),"pointer":"/next_actions","offset":len(result["next_actions"]),"limit":5})
-                result["next_actions_total"]=total
         result["entrypoint"]=execution_entrypoint()
         result["runtime"]={**engine.PERFORMANCE,"elapsed_seconds":round(time.perf_counter()-started,4)}
+        result=bound_reply(result,args)
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, allow_nan=False))
         return 0
     except (ValueError, OSError, KeyError, TypeError, IndexError) as exc:
-        diagnostic=dict(exc.diagnostic) if getattr(exc,"diagnostic",None) else {"code":"io_error" if isinstance(exc,OSError) else "invalid_input","message":str(exc),"action":"inspect_error","retryable":False}
+        diagnostic=dict(exc.diagnostic) if getattr(exc,"diagnostic",None) else {"code":"io_error" if isinstance(exc,OSError) else "adapter_contract_failure" if isinstance(exc,(KeyError,TypeError,IndexError)) else "invalid_input","message":str(exc),"action":"inspect_error" if isinstance(exc,(KeyError,TypeError,IndexError)) else "check_io" if isinstance(exc,OSError) else "edit_input","retryable":isinstance(exc,OSError) and transient_io(exc),"location":"/","expected":"valid input and available interface","actual":type(exc).__name__}
+        if diagnostic["code"]=="input_revision_stale": diagnostic["action"]="read_current_revision"
         source=getattr(args,"plan",None) or getattr(args,"file",None) or getattr(args,"input",None)
-        if source: diagnostic["input_file"]=str(Path(source).resolve())
+        if source:
+            path=Path(source).resolve();diagnostic.setdefault("input_file",str(path))
+            try:
+                if path.is_file() and path.stat().st_size<=JSON_LIMITS["artifact"]: diagnostic["input_revision"]=bx.digest(path.read_bytes())
+            except OSError: pass
         if isinstance(exc,json.JSONDecodeError): diagnostic.update(line=exc.lineno,column=exc.colno,action="edit_input")
         try: record_command_failure(args,exc)
         except (ValueError,OSError,KeyError) as state_error: diagnostic["state_save_error"]=str(state_error)
         if args.command=="route": diagnostic["state_file"]=str(Path(args.out).resolve().with_suffix(".state.json"))
-        print(json.dumps({"ok": False, "error": str(exc),"diagnostic":diagnostic,"entrypoint":execution_entrypoint()}, ensure_ascii=False), file=sys.stderr)
+        for key,value in list(diagnostic.items()):
+            if len(json.dumps(value,ensure_ascii=False,default=str))>2000:
+                diagnostic[key]={"type":type(value).__name__,"preview":str(value)[:500],"truncated":True}
+        print(json.dumps({"ok": False, "error": str(exc)[:2000],"diagnostic":diagnostic,"entrypoint":execution_entrypoint()}, ensure_ascii=False), file=sys.stderr)
         return 2
 
 

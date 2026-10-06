@@ -15,6 +15,7 @@ GEM_FIELDS = {"skill_id": "skillId", "level": "level", "quality": "quality", "en
 GROUP_FIELDS = {"enabled": "enabled", "slot": "slot", "label": "label", "include_in_full_dps": "includeInFullDPS", "main_active_skill": "mainActiveSkill", "group_count": "groupCount"}
 PLAN_FIELDS={"schema_version", "name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "inventory", "assumptions", "migration_steps", "legality_notes", "scenario", "claims", "usage", "timeline", "assessment", "evidence"}
 OPERATION_FIELDS={"gems", "groups", "replace_skills", "items", "equip", "tree", "level", "main_group", "config", "weapon_set"}
+TREE_FIELDS={"nodes", "nodes_add", "nodes_remove", "class_id", "ascendancy_id", "secondary_ascendancy_id", "masteries", "masteries_add"}
 _UNSET = object()
 
 
@@ -39,6 +40,126 @@ def require_keys(value, allowed, location, message="包含未知字段。"):
     unknown = sorted(set(value) - set(allowed))
     require(not unknown, message + " 未知：" + ", ".join(unknown), location=location,
             expected=sorted(allowed), actual=unknown)
+
+
+def game_version_shape(value):
+    require(value is None or isinstance(value,str) and re.fullmatch(r"3\.\d+",value),
+            "game_version 使用已确认的机制版本；未知用 null，说明另写 notes/version_source。",
+            location="/game_version",expected="3.<integer> or null",actual=value)
+
+
+def gem_shape(values, location, *, allowed=None, auto=False):
+    require_keys(values,allowed if allowed is not None else set(GEM_FIELDS)|{"group","index"},location)
+    for key,value in values.items():
+        path=location+"/"+key
+        if key in {"skill_id","instance_id","skill_minion","level_selection"}:
+            require(isinstance(value,str) and value.strip(),key+" 应为非空文字。",location=path,expected="nonempty string",actual=value)
+        if key in {"level","count","skill_part","group","index"}:
+            require(type(value) is int and value>0 or key=="level" and auto and value=="auto",key+" 应为正整数。",location=path,expected="positive integer or auto" if key=="level" and auto else "positive integer",actual=value)
+        if key in {"quality","skill_stage_count"}:
+            require(type(value) is int and value>=0,key+" 应为非负整数。",location=path,expected="nonnegative integer",actual=value)
+        if key in {"enabled","enable_global1","enable_global2"}:
+            require(type(value) is bool,key+" 应为布尔值。",location=path,expected="boolean",actual=value)
+
+
+def group_shape(values, location, *, allowed=None):
+    require_keys(values,allowed if allowed is not None else set(GROUP_FIELDS)|{"index","gems"},location)
+    for key,value in values.items():
+        path=location+"/"+key
+        if key in {"enabled","include_in_full_dps"}:
+            require(type(value) is bool,key+" 应为布尔值。",location=path,expected="boolean",actual=value)
+        if key in {"slot","label","name","use"}:
+            require(isinstance(value,str) and (key in {"slot","label"} or value.strip()),key+" 应为文字。",location=path,expected="string" if key in {"slot","label"} else "nonempty string",actual=value)
+        if key in {"index","main_active_skill"}:
+            require(type(value) is int and value>0,key+" 应为正整数。",location=path,expected="positive integer",actual=value)
+        if key=="group_count":
+            require(type(value) in (int,float) and math.isfinite(value) and value>0,key+" 应为有限正数。",location=path,expected="finite positive number",actual=value)
+        if key=="gems": require(isinstance(value,list),"gems 应为数组。",location=path,expected="array",actual=value)
+
+
+def tree_shape(data, location):
+    require_keys(data,TREE_FIELDS,location,"tree 包含未知字段；版本沿用输入 XML。")
+    require(not ("nodes" in data and ("nodes_add" in data or "nodes_remove" in data)),"完整替换 nodes 不能与增量操作混用。",location=location,expected="nodes OR nodes_add/nodes_remove",actual=sorted(data))
+    require(not ("masteries" in data and "masteries_add" in data),"完整替换 masteries 不能与增量操作混用。",location=location,expected="masteries OR masteries_add",actual=sorted(data))
+    for key,value in data.items():
+        path=location+"/"+key
+        if key.startswith("nodes"):
+            require(isinstance(value,list) and all(type(v) is int and v>0 for v in value),key+" 应为正整数节点数组。",location=path,expected="positive integer array",actual=value)
+            require(len(set(value))==len(value),key+" 不能重复节点。",location=path,expected="distinct node IDs",actual=value)
+        elif key in {"class_id","ascendancy_id","secondary_ascendancy_id"}:
+            require(type(value) is int and value>=0,key+" 应为非负整数。",location=path,expected="nonnegative integer",actual=value)
+        else:
+            require(isinstance(value,dict) and all(isinstance(k,str) and k.isdigit() and int(k)>0 and type(v) is int and v>0 for k,v in value.items()),key+" 应为正整数节点到专精效果映射。",location=path,expected="positive node ID keys and positive integer effect IDs",actual=value)
+            require(len({int(k) for k in value})==len(value),"专精节点的不同写法不能指向同一节点。",location=path,expected="distinct numeric node IDs",actual=value)
+    overlap=set(data.get("nodes_add",[])) & set(data.get("nodes_remove",[]))
+    require(not overlap,"同一节点不能同时添加和移除。",location=location,expected="disjoint add/remove",actual=sorted(overlap))
+
+
+def config_shape(values, location):
+    require(isinstance(values,dict),"配置应为对象。",location=location,expected="object",actual=values)
+    for key,value in values.items():
+        require(isinstance(key,str),"配置字段名应为文字。",location=location,expected="string key",actual=key)
+        path=location+"/"+key.replace("~","~0").replace("/","~1")
+        require(key and key not in {"customMods","customModsExtra"},"使用真实配置字段和装备，不接受自定义数值补丁。",location=path,expected="nonempty native config key excluding customMods/Extra",actual=key)
+        require(value is None or type(value) in (str,int,float,bool),"配置值为文本、数值、布尔或 null。",location=path,expected="scalar or null",actual=value)
+        require(type(value) is not float or math.isfinite(value),"配置数值应有限。",location=path,expected="finite number",actual=value)
+
+
+def item_shape(item, location, *, complete=True):
+    require_keys(item,{"id","text","craft"},location)
+    require(not ("text" in item and "craft" in item),"craft 配方不能混入 text。",location=location,expected="text OR craft",actual=sorted(item))
+    if complete or "id" in item: require(type(item.get("id")) is int and item["id"]>0,"装备需要正整数 id。",location=location+"/id",expected="positive integer",actual=item.get("id"))
+    if "text" in item: require(isinstance(item["text"],str) and 0<len(item["text"])<=40000,"装备 text 不能为空或过长。",location=location+"/text",expected="string length 1..40000",actual=item["text"])
+    if "craft" in item:
+        path=location+"/craft";spec=item["craft"]
+        require_keys(spec,{"base","ilvl","quality","sockets","affixes"},path)
+        if complete or "base" in spec: require(isinstance(spec.get("base"),str) and spec["base"].strip(),"base 使用本机完整基底名。",location=path+"/base",expected="nonempty string",actual=spec.get("base"))
+        for key,minimum in (("ilvl",1),("quality",0)):
+            if key in spec or complete and key=="ilvl": require(type(spec.get(key)) is int and spec[key]>=minimum,key+" 使用整数。",location=path+"/"+key,expected="positive integer" if minimum else "nonnegative integer",actual=spec.get(key))
+        if "sockets" in spec: require(isinstance(spec["sockets"],str) and (not spec["sockets"] or re.fullmatch(r"[RGBW](?:[- ][RGBW])*",spec["sockets"])),"sockets 为普通孔色和连线。",location=path+"/sockets",expected="ordinary socket specification or empty string",actual=spec["sockets"])
+        if complete or "affixes" in spec:
+            affixes=spec.get("affixes");require(isinstance(affixes,list),"affixes 为数组，空数组生成普通基底。",location=path+"/affixes",expected="array",actual=affixes)
+            for index,affix in enumerate(affixes):
+                loc=path+f"/affixes/{index}";require_keys(affix,{"id","roll"},loc)
+                if complete or "id" in affix: require(isinstance(affix.get("id"),str) and affix["id"].strip(),"词缀 id 使用本机值。",location=loc+"/id",expected="nonempty string",actual=affix.get("id"))
+                if "roll" in affix: require(type(affix["roll"]) in (int,float) and math.isfinite(affix["roll"]) and 0<=affix["roll"]<=1,"roll 是范围位置 0–1。",location=loc+"/roll",expected="finite number 0..1",actual=affix["roll"])
+    if complete: require("text" in item or "craft" in item,"装备需要 text 或 craft。",location=location,expected="text OR craft",actual=sorted(item))
+
+
+def operations_shape(operations, *, complete=True):
+    require_keys(operations,OPERATION_FIELDS,"/operations","operations 包含未知操作。")
+    for key in ("level","main_group","weapon_set"):
+        if key in operations: require(type(operations[key]) is int and (operations[key] in (1,2) if key=="weapon_set" else operations[key]>0),key+" 值无效。",location="/operations/"+key,expected=[1,2] if key=="weapon_set" else "positive integer",actual=operations[key])
+    if "tree" in operations: tree_shape(operations["tree"],"/operations/tree")
+    if "config" in operations: config_shape(operations["config"],"/operations/config")
+    for key in ("gems","groups","replace_skills","items","equip"):
+        if key not in operations: continue
+        values=operations[key];path="/operations/"+key
+        require(isinstance(values,list),key+" 应为数组。",location=path,expected="array",actual=values)
+        if key=="replace_skills" and complete: require(values,"replace_skills 至少一组。",location=path,expected="nonempty array",actual=values)
+        seen=set()
+        for index,row in enumerate(values):
+            location=path+"/"+str(index)
+            if key=="items": item_shape(row,location,complete=complete)
+            elif key=="gems":
+                gem_shape(row,location)
+                if complete:
+                    for field in ("group","index"): require(field in row,"修改宝石需要索引。",location=location+"/"+field,expected="positive integer",actual=row.get(field))
+            elif key in {"groups","replace_skills"}:
+                group_shape(row,location,allowed=set(GROUP_FIELDS)|({"index"} if key=="groups" else {"gems"}))
+                if complete:
+                    field="index" if key=="groups" else "gems";require(field in row,"技能组缺少 "+field,location=location+"/"+field,expected="positive integer" if key=="groups" else "array",actual=row.get(field))
+                for n,gem in enumerate(row.get("gems",[])):
+                    loc=location+f"/gems/{n}";gem_shape(gem,loc,allowed=set(GEM_FIELDS))
+                    if complete: require("skill_id" in gem,"新宝石需要 skill_id。",location=loc+"/skill_id",expected="nonempty string",actual=gem.get("skill_id"))
+            else:
+                require_keys(row,{"slot","item_id","active"},location)
+                if complete or "slot" in row: require(isinstance(row.get("slot"),str) and row["slot"],"slot 使用本机槽位名。",location=location+"/slot",expected="nonempty string",actual=row.get("slot"))
+                if complete or "item_id" in row: require(type(row.get("item_id")) is int and row["item_id"]>=0,"item_id 应为非负整数。",location=location+"/item_id",expected="nonnegative integer",actual=row.get("item_id"))
+                if "active" in row: require(type(row["active"]) is bool,"active 应为布尔值。",location=location+"/active",expected="boolean",actual=row["active"])
+            fields={"items":("id",),"equip":("slot",),"gems":("group","index"),"groups":("index",)}.get(key,())
+            if fields and all(f in row for f in fields):
+                identity=tuple(row[f] for f in fields);require(identity not in seen,fields[-1]+" 不能重复操作同一对象。",location=location+"/"+fields[-1],expected="unique operation selector",actual=list(identity));seen.add(identity)
 
 
 def digest(data: bytes | str) -> str:
@@ -149,13 +270,9 @@ def active_config(root):
 
 
 def set_config(root, values):
-    require(isinstance(values, dict), "config/scenario 应是对象。")
+    config_shape(values,"/operations/config")
     config = active_config(root)
     for key, value in values.items():
-        require(isinstance(key, str) and key, "配置名称应为本机返回的非空字段。")
-        require(key not in {"customMods", "customModsExtra"}, "请使用真实装备和技能；适配器不接受自定义数值补丁。")
-        require(value is None or isinstance(value, (str, int, float, bool)), "配置值只能是文本、数值、布尔值或 null。")
-        require(not isinstance(value, float) or math.isfinite(value), "配置数值必须有限。")
         for element in list(config):
             if element.tag == "Input" and element.get("name") == key:
                 config.remove(element)
@@ -168,52 +285,35 @@ def attr(value):
     return str(value).lower() if isinstance(value, bool) else str(value)
 
 
-def index_one(sequence, number, label):
-    require(isinstance(number, int) and not isinstance(number, bool) and 1 <= number <= len(sequence), f"{label} 索引不存在：{number}；请先 inspect。")
+def index_one(sequence, number, label, *, location="/"):
+    require(type(number) is int and 1 <= number <= len(sequence), f"{label} 索引不存在：{number}；请先 inspect。",location=location,expected={"minimum":1,"maximum":len(sequence)},actual=number)
     return sequence[number - 1]
 
 
 def update_gem(gem, values, *, location="/gems"):
-    require_keys(values,set(GEM_FIELDS)|{"group","index"},location,"宝石修改包含未知字段。")
+    gem_shape(values,location)
     if "skill_id" in values:
-        require(isinstance(values["skill_id"], str) and values["skill_id"], "skill_id 不能为空。")
         for key in ("gemId", "variantId", "nameSpec"):
             gem.attrib.pop(key, None)
     for key, value in values.items():
         if key in GEM_FIELDS:
-            if key in {"level", "count"}: require(type(value) is int and value > 0, key + " 应为正整数；合法规格由原生数据和获取依据核对。")
-            if key == "quality": require(type(value) is int and value >= 0, "宝石品质应为非负整数。")
-            if key in {"enabled","enable_global1","enable_global2"}: require(type(value) is bool,key+" 应为布尔值。")
-            if key == "skill_part": require(type(value) is int and value>0,"skill_part 应为正整数索引，实际选项由原生核对。")
-            if key == "skill_stage_count": require(type(value) is int and value>=0,"skill_stage_count 应为非负整数，实际阶段范围由原生核对。")
-            if key == "skill_minion": require(isinstance(value,str) and value,"skill_minion 使用本机名称。")
             gem.set(GEM_FIELDS[key], attr(value))
 
 
-def update_group(group, values):
+def update_group(group, values, *, location="/groups"):
+    group_shape(values,location)
     for key,value in values.items():
         if key not in GROUP_FIELDS: continue
-        if key in {"enabled","include_in_full_dps"}: require(type(value) is bool,key+" 应为布尔值。")
-        if key in {"slot","label"}: require(isinstance(value,str),key+" 应为文本。")
-        if key == "main_active_skill": require(type(value) is int and value>0,"main_active_skill 应为正整数。")
-        if key == "group_count": require(type(value) in (int,float) and math.isfinite(value) and value>0,"group_count 应为正的有限数值。")
         group.set(GROUP_FIELDS[key],attr(value))
 
 
 def plan_shape(plan, *, complete=True):
     require_keys(plan,PLAN_FIELDS,"/","计划包含未知字段。")
-    if complete or "mode" in plan: require(plan.get("mode") in {"refine","rebuild"},"mode 应为 refine 或 rebuild。",location="/mode",expected=["refine","rebuild"],actual=plan.get("mode"))
-    if complete: require(isinstance(plan.get("summary"),str) and plan["summary"].strip(),"请说明方案目的。",location="/summary",expected="nonempty string",actual=plan.get("summary"))
-    operations=plan.get("operations",{})
-    require_keys(operations,OPERATION_FIELDS,"/operations","operations 包含未知操作。")
-    for key in ("tree","config"):
-        if key in operations: require(isinstance(operations[key],dict),key+" 应为对象。",location="/operations/"+key,expected="object",actual=type(operations[key]).__name__)
-    for key in ("level","main_group","weapon_set"):
-        if key in operations: require(type(operations[key]) is int and operations[key]>0,key+" 应为正整数。",location="/operations/"+key,expected="positive integer",actual=operations[key])
-    for key in ("gems","groups","replace_skills","items","equip"):
-        if key in operations:
-            require(isinstance(operations[key],list),key+" 应为数组。",location="/operations/"+key,expected="array",actual=type(operations[key]).__name__)
-            for index,row in enumerate(operations[key]): require(isinstance(row,dict),"操作条目需要对象。",location=f"/operations/{key}/{index}",expected="object",actual=type(row).__name__)
+    if complete or "mode" in plan: require(isinstance(plan.get("mode"),str) and plan["mode"] in {"refine","rebuild"},"mode 应为 refine 或 rebuild。",location="/mode",expected=["refine","rebuild"],actual=plan.get("mode"))
+    for key in ("name","summary","template_xml"):
+        if key in plan or complete and key=="summary": require(isinstance(plan.get(key),str) and plan[key].strip(),key+" 应为非空文字。",location="/"+key,expected="nonempty string",actual=plan.get(key))
+    operations_shape(plan.get("operations",{}),complete=complete)
+    if "scenario" in plan: config_shape(plan["scenario"],"/scenario")
     for key in ("claims","usage","evidence","inventory","shopping"):
         if key in plan: require(isinstance(plan[key],list),key+" 应为数组。",location="/"+key,expected="array",actual=type(plan[key]).__name__)
     return plan
@@ -225,40 +325,30 @@ def apply_plan(source, plan, native=None):
     operations = plan.get("operations", {})
     build = root.find("Build")
     if "level" in operations:
-        require(type(operations["level"]) is int and operations["level"] > 0, "level 应为正整数。")
         build.set("level", str(operations["level"]))
     build.set("characterLevelAutoMode", "false")
     if "replace_skills" in operations:
         new_groups = operations["replace_skills"]
-        require(isinstance(new_groups, list) and new_groups, "replace_skills 需要至少一组技能。")
         parent = active_set(root, "Skills", "SkillSet", "activeSkillSet")
         for element in parent.findall("Skill"):
             parent.remove(element)
         for group_index,data in enumerate(new_groups):
             path=f"/operations/replace_skills/{group_index}"
-            require_keys(data,set(GROUP_FIELDS)|{"gems"},path,"技能组包含未知字段。")
             group = ET.SubElement(parent, "Skill", {"enabled": "true", "includeInFullDPS": "false", "mainActiveSkill": "1"})
-            update_group(group,data)
-            require(isinstance(data.get("gems"),list), "技能组的 gems 应为数组；空组使用 []。",location=path+"/gems",expected="array")
+            update_group(group,data,location=path)
             for gem_index,values in enumerate(data["gems"]):
-                require(isinstance(values,dict) and values.get("skill_id"), "新宝石需要 skill_id。",location=path+f"/gems/{gem_index}/skill_id")
                 gem = ET.SubElement(group, "Gem", {"level": "1", "quality": "0", "enabled": "true", "enableGlobal1": "true", "enableGlobal2": "false"})
                 update_gem(gem, values,location=path+f"/gems/{gem_index}")
     for group_index,data in enumerate(operations.get("groups", [])):
-        require_keys(data,set(GROUP_FIELDS)|{"index"},f"/operations/groups/{group_index}","技能组修改包含未知字段。")
-        group = index_one(groups(root), data.get("index"), "技能组")
-        update_group(group,data)
+        path=f"/operations/groups/{group_index}"
+        group = index_one(groups(root), data.get("index"), "技能组",location=path+"/index")
+        update_group(group,data,location=path)
     for gem_index,data in enumerate(operations.get("gems", [])):
-        group = index_one(groups(root), data.get("group"), "技能组")
-        gem = index_one(group.findall("Gem"), data.get("index"), "宝石")
+        group = index_one(groups(root), data.get("group"), "技能组",location=f"/operations/gems/{gem_index}/group")
+        gem = index_one(group.findall("Gem"), data.get("index"), "宝石",location=f"/operations/gems/{gem_index}/index")
         update_gem(gem, data,location=f"/operations/gems/{gem_index}")
-    changed_item_ids = set()
-    for data in operations.get("items", []):
-        require(set(data) <= {"id", "text"}, "装备包含未知字段。")
-        require(type(data.get("id")) is int and data["id"] > 0, "装备需要正整数 id。")
-        require(data["id"] not in changed_item_ids, "同一计划中装备 id 不能重复，避免覆盖已核对的目标装备。")
-        changed_item_ids.add(data["id"])
-        require(isinstance(data.get("text"), str) and 0 < len(data["text"]) <= 40000, "装备 text 不能为空或过长。")
+    for index,data in enumerate(operations.get("items", [])):
+        require("text" in data,"先用本机配方接口物化 craft，再应用 XML。",code="unsupported_operation",location=f"/operations/items/{index}/craft",expected="materialized native item text",actual="unmaterialized craft")
         parent = root.find("Items")
         item = next((node for node in parent.findall("Item") if node.get("id") == str(data["id"])), None)
         if item is None: item = ET.SubElement(parent, "Item", {"id": str(data["id"])})
@@ -266,14 +356,11 @@ def apply_plan(source, plan, native=None):
             item.clear()
             item.set("id", str(data["id"]))
         item.text = "\n" + data["text"].strip() + "\n"
-    for data in operations.get("equip", []):
-        require(set(data) <= {"slot", "item_id", "active"}, "插槽包含未知字段。")
+    for index,data in enumerate(operations.get("equip", [])):
         name = data.get("slot", "")
         known_slots = {slot["name"] for slot in (native or {}).get("slots", [])}
         known_slots.update(slot.get("name") for slot in active_set(source, "Items", "ItemSet", "activeItemSet").findall("Slot"))
-        require(name in known_slots or re.fullmatch(r"Jewel \d+", name), f"当前已读数据中没有装备插槽：{name}；请先 catalog rules/inspect。")
-        require(type(data.get("item_id")) is int and data["item_id"] >= 0, "item_id 应为非负整数。")
-        if "active" in data: require(type(data["active"]) is bool,"装备 active 应为布尔值。")
+        require(name in known_slots or re.fullmatch(r"Jewel \d+", name), f"当前已读数据中没有装备插槽：{name}；请先 catalog rules/inspect。",location=f"/operations/equip/{index}/slot",expected=sorted(known_slots),actual=name)
         if name.startswith("Jewel "):
             spec = active_spec(root)
             parent = spec.find("Sockets")
@@ -287,45 +374,34 @@ def apply_plan(source, plan, native=None):
         element.set("itemId", str(data["item_id"]))
         if "active" in data: element.set("active", attr(data["active"]))
     if "weapon_set" in operations:
-        require(type(operations["weapon_set"]) is int and operations["weapon_set"] in (1, 2), "weapon_set 只能为 1 或 2。")
         active_set(root, "Items", "ItemSet", "activeItemSet").set("useSecondWeaponSet", attr(operations["weapon_set"] == 2))
     if "tree" in operations:
         data = operations["tree"]
-        require(not (set(data) - {"nodes", "nodes_add", "nodes_remove", "class_id", "ascendancy_id", "secondary_ascendancy_id", "masteries", "masteries_add"}), "tree 包含未知字段；天赋版本沿用输入文件。")
         spec = active_spec(root)
         prior_masteries = {int(node): int(effect) for node, effect in re.findall(r"\{(\d+),(\d+)\}", spec.get("masteryEffects", ""))}
-        require(not ("masteries" in data and "masteries_add" in data), "masteries 完整替换不能与 masteries_add 局部修改混用。")
-        require(not ("nodes" in data and ("nodes_add" in data or "nodes_remove" in data)), "tree.nodes 完整替换不能与 nodes_add/nodes_remove 增量调整混用。")
         if "nodes_add" in data or "nodes_remove" in data:
             current = {int(n) for n in spec.get("nodes", "").split(",") if n}
-            for key in ("nodes_add", "nodes_remove"):
-                require(isinstance(data.get(key, []), list) and all(type(n) is int and n > 0 for n in data.get(key, [])), key + " 应为正整数节点 ID 数组。")
             added, removed = set(data.get("nodes_add", [])), set(data.get("nodes_remove", []))
-            require(not (added & removed), "同一个节点不能同时添加和移除。")
-            require(removed <= current, "nodes_remove 包含原方案未分配的节点。")
+            require(removed <= current, "nodes_remove 包含原方案未分配的节点。",location="/operations/tree/nodes_remove",expected=sorted(current),actual=sorted(removed))
             data = {**data, "nodes": sorted((current - removed) | added)}
         if "nodes" in data:
             nodes = data["nodes"]
-            require(isinstance(nodes, list) and all(type(n) is int and n > 0 for n in nodes), "nodes 应为天赋节点 ID 数组。")
-            require(len(set(nodes)) == len(nodes), "nodes 包含重复节点。")
             spec.set("nodes", ",".join(map(str, nodes)))
             for node in spec.findall("URL"): spec.remove(node)
         if "class_id" in data:
             selected = next((entry for entry in (native or {}).get("classes", []) if type(data["class_id"]) is int and entry["id"] == data["class_id"]), None)
-            require(selected is not None, "职业编号不在当前原生职业目录；先读取 classes。")
+            require(selected is not None, "职业编号不在当前原生职业目录；先读取 classes。",location="/operations/tree/class_id",expected=[c["id"] for c in (native or {}).get("classes",[])],actual=data["class_id"])
             spec.set("classId", str(data["class_id"]))
             build.set("className", selected["name"])
         for key, xml_key in (("ascendancy_id", "ascendClassId"), ("secondary_ascendancy_id", "secondaryAscendClassId")):
             if key in data:
-                require(type(data[key]) is int and data[key] >= 0, "升华编号应为非负整数；归属由当前原生职业核对。")
                 spec.set(xml_key, str(data[key]))
         if any(key in data for key in ("nodes", "masteries", "masteries_add")):
             allocated = {int(node) for node in spec.get("nodes", "").split(",") if node}
             field = "masteries" if "masteries" in data else "masteries_add"
             updates = data.get(field, {})
-            require(isinstance(updates, dict) and all(str(node).isdigit() and int(node) > 0 and type(effect) is int and effect > 0 for node, effect in updates.items()), field + " 应为正整数节点 ID 到正整数专精效果 ID 的映射。")
             updates = {int(node): effect for node, effect in updates.items()}
-            require(set(updates) <= allocated, "专精效果指向未分配的节点；先用 nodes_add 加入相应节点与连接路径。")
+            require(set(updates) <= allocated, "专精效果指向未分配的节点；先用 nodes_add 加入相应节点与连接路径。",location="/operations/tree/"+field,expected=sorted(allocated),actual=sorted(updates))
             if field == "masteries":
                 missing = (set(prior_masteries) & allocated) - set(updates)
                 require(not missing, "masteries 是完整替换，会清除仍保留节点的其他专精：" + ",".join(map(str, sorted(missing))) + "。局部修改请改用 masteries_add，程序会保留其他专精；退点使用 nodes_remove。不能把专精丢失当作普通天赋断路。")
@@ -334,7 +410,7 @@ def apply_plan(source, plan, native=None):
                 selected = {**prior_masteries, **updates}
             spec.set("masteryEffects", ",".join("{%d,%d}" % (node, effect) for node, effect in sorted(selected.items()) if node in allocated))
     if "main_group" in operations:
-        index_one(groups(root), operations["main_group"], "主技能组")
+        index_one(groups(root), operations["main_group"], "主技能组",location="/operations/main_group")
         build.set("mainSocketGroup", str(operations["main_group"]))
     if "config" in operations: set_config(root, operations["config"])
     parse(serialise(root))

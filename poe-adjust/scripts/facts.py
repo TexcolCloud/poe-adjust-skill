@@ -150,6 +150,7 @@ def evidence_shape(declarations, *, complete=True):
     fields={"evidence_id", "kind", "subject", "text", "url", "path", "excerpt", "context", "checked_at", "message_ref", "source", "line", "count", "content_sha256"}
     kinds={"user_statement", "web", "artifact", "local_data"}
     bx.require(isinstance(declarations,list),"evidence 应为数组。",location="/evidence",expected="array",actual=type(declarations).__name__)
+    seen=set()
     for index,entry in enumerate(declarations):
         location=f"/evidence/{index}"
         bx.require_keys(entry,fields,location,"证据字段无效；status/digest/origin 由程序生成。")
@@ -160,9 +161,14 @@ def evidence_shape(declarations, *, complete=True):
             if complete or key in entry:
                 bx.require(isinstance(entry.get(key),str) and entry[key].strip(),"证据需要具体 "+key,location=location+"/"+key,expected="nonempty string",actual=entry.get(key))
         if "kind" in entry: bx.require(entry["kind"] in kinds,"证据 kind 无效。",location=location+"/kind",expected=sorted(kinds),actual=entry["kind"])
+        if "evidence_id" in entry:
+            key=entry["evidence_id"]
+            bx.require(key not in seen and "#" not in key and not key.startswith("native:"),"evidence_id 需要唯一普通标识。",location=location+"/evidence_id",expected="unique identifier without # or native: prefix",actual=key)
+            seen.add(key)
         if "context" in entry: bx.require(isinstance(entry["context"],dict),"证据 context 应为对象。",location=location+"/context",expected="object",actual=entry["context"])
         for key in ("line","count"):
             if key in entry: bx.require(type(entry[key]) is int and entry[key]>0,key+" 应为正整数。",location=location+"/"+key,expected="positive integer",actual=entry[key])
+        bx.require(isinstance(entry.get("evidence_id"),str) and entry["evidence_id"].strip(),"证据需要稳定 evidence_id。",location=location+"/evidence_id",expected="nonempty identifier",actual=entry.get("evidence_id"))
 
 
 def load_evidence(declarations, folder, context, *, root=None):
@@ -173,7 +179,6 @@ def load_evidence(declarations, folder, context, *, root=None):
     for index,entry in enumerate(declarations):
         location=f"/evidence/{index}"
         key, kind = entry.get("evidence_id"), entry.get("kind")
-        bx.require("#" not in key and not key.startswith("native:") and key not in result, "evidence_id 需要唯一普通标识，native: 留给计算结果。",location=location+"/evidence_id",expected="unique ordinary identifier without # or native: prefix",actual=key)
         bx.require(kind == "local_data" or not set(entry) & {"source", "line", "count", "content_sha256"}, "source/line/count/content_sha256 仅用于 local_data。",location=location,expected="local_data for source fields",actual=kind)
         record = {"evidence_id": key, "kind": kind, "subject": entry["subject"], "context": entry.get("context", {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         if entry.get("checked_at"):
@@ -236,11 +241,16 @@ def model_shape(document, *, complete=True):
         bx.require(key.startswith("/") and isinstance(value,str) and value.strip(),"约束映射的键为字段路径，值为单个 evidence_id。",location=location,expected="nonempty evidence_id string",actual=value)
     objectives=document.get("objectives",[])
     bx.require(isinstance(objectives,list),"objectives 应为数组。",location="/objectives",expected="array",actual=type(objectives).__name__)
+    seen=set()
     for index,entry in enumerate(objectives):
         location=f"/objectives/{index}"
         bx.require_keys(entry,{"objective_id","text","evidence_refs"},location)
         for field in ("objective_id","text"):
-            if complete or field in entry: bx.require(isinstance(entry.get(field),str) and entry[field].strip(),field+" 应为非空文字。",location=location+"/"+field,expected="nonempty string",actual=entry.get(field))
+            if complete or field=="objective_id" or field in entry: bx.require(isinstance(entry.get(field),str) and entry[field].strip(),field+" 应为非空文字。",location=location+"/"+field,expected="nonempty string",actual=entry.get(field))
+        if "objective_id" in entry:
+            key=entry["objective_id"]
+            bx.require(key not in seen,"objective_id 需要唯一标识。",location=location+"/objective_id",expected="unique objective identifier",actual=key)
+            seen.add(key)
         if complete or "evidence_refs" in entry:
             refs=entry.get("evidence_refs")
             bx.require(isinstance(refs,list) and all(isinstance(ref,str) and ref for ref in refs),"目标依据为 evidence_id 数组。",location=location+"/evidence_refs",expected="string array",actual=refs)

@@ -42,6 +42,8 @@ start 返回原始 overview 与检查文件路径；`inspect --calculate` 返回
 
 方向确认后先保存小草案，再补当前阶段或操作。edit 只维护输入与标识，不调用计算、代替模型选配装或确认游戏合法性。intent 仍使用 intent 命令，模型最终完整输入可直接 evaluate/route。
 
+草稿允许缺少尚未确定的字段，已填写值仍必须满足接口格式；set/replace/remove 都校验最终文档。game_version 只接收已确认的 `3.<整数>` 或未知 `null`；版本说明写 notes/version_source，不能从混合文本提取数字冒充确认。职业、宝石、天赋、专精、插槽和词缀选项由当前原生数据核对。集合保留唯一稳定 ID，整表 replace 也不能重复或遗漏标识。
+
 ```powershell
 python '<技能目录>/scripts/poe.py' edit --invoked --kind route --file '<工作区>/route.json' --changes '<工作区>/change.json'
 python '<技能目录>/scripts/poe.py' edit --invoked --kind route --file '<工作区>/route.json' --changes '<工作区>/change.json' --if-sha256 '<上次revision>'
@@ -51,7 +53,7 @@ plan 使用 `--kind plan`。change.json 的四种操作共用一个入口：
 
 - `set`：对象逐字段合并，null 保留为未知值。stages/claims/evidence/objectives 按 *_id 合并；operations 的 items/equip/groups/gems 按 id/slot/index/(group,index) 合并，适用于 snapshot.operations。新字段可直接写入数组。
 - `replace`：现有 JSON pointer 到新值的映射，用于精确字段修改或明确替换整数组。例如 `{"replace":{"/stages/1/skill_groups/0/use":"遇到危险时使用"}}`。先用 view 核对实际位置并取得 revision。改变已有非空普通数组必须使用 replace，避免把局部内容当整数组保存。
-- `remove`：明确删除的 JSON pointer 数组；路径必须存在。
+- `remove`：明确删除的 JSON pointer 数组；全部路径定位同一份 set/replace 后、删除前的文档。例如删除 `/stages/0` 和 `/stages/1` 删除原来的第0、1项。拒绝重复目标或父子路径混删；先核对返回的稳定 stage_id，再取本次索引与 revision。
 - `review_claims`：核对当前对象后的 claim_id 数组，如 `{"review_claims":["explain-stage"]}`。程序刷新这些判断的依赖摘要；新增或实质修改判断也会绑定当次对象。
 
 新增顶层记录省略标识时程序生成，返回 handles；路线省略宝石 instance_id 时返回 stage_instances。跨阶段复用同一颗宝石必须沿用返回的实例 ID，同名多颗不会自行合并。已有记录使用该标识更新；省略标识的另一内容视为新增。required_items 宝石省略实例仅在同阶段唯一同 skill_id 时补入，有歧义则报位置错误。
@@ -63,6 +65,8 @@ plan 使用 `--kind plan`。change.json 的四种操作共用一个入口：
 artifacts 标注文件用途：source 是可编辑方案，persistent_state 是持久状态与重放凭证，temporary 是程序可清理的临时文件清单。`.edit.json` 属于 persistent_state，交付与恢复期间保留；程序自行处理内部临时文件。按 facts_summary 报告结果，直接使用 counts，不重新猜数量。
 
 保存采用完整文件原子替换；版本摘要是乐观检查，多个写入方仍须顺序修改同一源文件。凭证缺失、损坏或写入失败时，重新 view 源文件取得当前 revision，再用 edit 恢复；旧重放信息可能已经丢失，不能承诺原请求已被去重。
+
+输入 JSON 和修改请求上限 8 MiB，按合并后实际 UTF-8 编码字节检查再提交；程序证据/状态 JSON 上限 64 MiB，view 可读相同范围。所有派生输出先按实际路径检查与输入、模板、引用资料、收据和其他输出的冲突，不能借换后缀覆盖源文件。源文件和收据各自原子写入，两个文件不是跨文件原子事务；失败 diagnostic 的 source_committed/receipt_committed/current_revision 如实报告当前状态。先 view 恢复，不用旧 revision 重试覆盖新源方案。
 
 ## 采用原生候选
 
@@ -80,8 +84,12 @@ XML 由当前 PoECharm `Build.SaveDB` 在内存中保存，再由程序写入任
 
 失败返回 error 与 diagnostic；有 location 时按 expected/actual 修对应 JSON 路径，input_file 指出源文件。共用的证据、判断、目标、约束映射和评审结构在写入/原生查询前检查；约束映射值是单个 evidence_id 字符串。actual:null 表示字段缺失或值为空。输入错误修源文件；inspect_capability 的能力缺口先核对 doctor/publication 的 capabilities，再由模型选择方案或保留条件。
 
+input_revision 指出出错时的源修订。invalid_input/input_too_large 修输入；input_revision_stale/proposal_context_stale 重读并重新绑定；unsupported_context/unsupported_operation 需匹配当前能力或改变操作；io_error 检查文件状态。retryable=false 表示原样重试无用，允许修正后提交；仅已识别的临时 I/O 故障可原样重试。adapter_contract_failure 是未预期的接口异常，记录完整位置交维护者，不能改游戏数值绕过。
+
 最终复核单独提交：完成方案与未解决项修改，重算取得当前 review.json，再仅写 assessment.review。同一请求同时改方案和提交复核会被拒绝，避免旧 token 混入新输入。review_claims 是对象判断的重新评审，assessment.review 是完整结果的最终复核，两者用途不同。
 
 大结果用现有 --out 保存到任务工作区，再用 view 按需读字段、字段名或文本缺口，具体示例见资料协议。delivery_brief 汇总全部缺口；next_actions 指向完整文件和具体路径，按实际错误、目标/依赖、最终复核处理，不因文件已导出而跳过。stage_summary 和 errors 不能因为摘要只显示部分 pending 而略过。
+
+完整终端回复包含 entrypoint/runtime 后仍受 12,000 字符限制，continuations 给出每个缩略字段的完整凭证路径。view 的 page_unit 是 items（数组）、fields（对象）、characters（字符串）或 scalar；沿用 next_offset 继续同一 pointer，offset 按该单位计数。数组/对象 limit=1–100，长字符串可用 limit=4000（最多12000，自动收缩到可返回大小）。单条记录仍过大时，deferred_values/next_actions 指向其子 pointer；读取子字段，再继续父字段的 next_offset。嵌套字段名通过 JSON pointer 转义；无需读取平台内部工具缓存。
 
 配装使用 `status --run`，读取 candidate_records 的完整性、待办及源 plan/review 文件路径，按 next_actions 继续。last_operation 记录最新评估或导出；成功重试更新旧失败，重新评估使同候选旧交付凭证失效，原产物保留供追溯，须重新 export。失败导出不保留成功交付身份。开荒使用 `status --route-state <输出名.state.json>`，失败记录 phase:failed、failure 和具体修复动作；检查输入/输出/引擎是否一致，变更后不把旧阶段算成本次完成。恢复重跑同一 route，有效计算缓存自动复用，资料与模型判断重新核对。

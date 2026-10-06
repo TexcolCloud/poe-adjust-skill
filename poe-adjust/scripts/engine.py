@@ -291,12 +291,12 @@ def require_data_version(info):
 
 def validate_game_version(game_version, league, data_version=None, version_source=None):
     """The installed gem/mechanics data is not selected by the XML's tree version."""
+    import buildxml as bx
+    bx.game_version_shape(game_version)
     if game_version is None:
         return  # Unknown target remains a delivery gap, not a catalog failure.
-    if not isinstance(game_version, str) or not re.fullmatch(r"3\.\d+", game_version):
-        raise EngineError("请联网确认目标赛季的 game_version（如 3.29），不能从 S29 或 XML 的 treeVersion 推断。")
     if data_version is not None and game_version != data_version:
-        raise EngineError(f"目标游戏版本 {game_version} 与本机机制/宝石数据 {data_version} 不一致。仅切换旧天赋树不能还原旧版规则，需要维护者提供经过验证的对应引擎。")
+        raise EngineError(f"目标游戏版本 {game_version} 与本机机制/宝石数据 {data_version} 不一致。仅切换旧天赋树不能还原旧版规则，需要维护者提供经过验证的对应引擎。",diagnostic={"code":"unsupported_context","location":"/game_version","expected":data_version,"actual":game_version,"action":"select_matching_engine","retryable":False})
 
 
 def validate_contract(result, *, catalog_only=False):
