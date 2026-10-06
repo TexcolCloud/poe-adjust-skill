@@ -1,3 +1,31 @@
+# 2.8.6同任务恢复46分，核心未通过；离线232项通过（2026-10-06）
+
+新版恢复17:42:48完成，先[冻结120文件](.work/live-286-leveling-recovery/manifest.json)/16879993字节，再读取[完整公开说明](.work/live-286-leveling-recovery/ui-final-observations.json)和做[两个实际引用阶段的冷复算/回读](.work/live-286-leveling-recovery/rechecks/summary.json)：全部原生指标、节点与收据一致。人工[恢复评分46/100](.work/live-286-leveling-recovery/review.json)，事实19/35、目标8/25、可执行8/20、一致性6/10、效率5/10，核心未通过。已知力量错误从5变0，但112待办20类；两XML普通天赋仍0，资源时间线未落实，八目标七项未完成。此为保留旧任务上下文的恢复，不能替换首份43分或用于盲测准确率对比。
+
+针对“引擎无法保留空角色路径”的解释，[仅重放实际树输入](.work/287-path-diagnosis/summary.json)：三目标节点仍丢失；原生当次路径补入四连接点后普通天赋7点，全部请求保留，回读全部指标和节点一致。查询能力原已存在，原因是请求未含连接点，不能再新增一套同类路径接口。最终复核虽覆盖已有10条claim，但没有逐项覆盖八个用户目标；后续只改善已有诊断的可执行修订和复核目标覆盖，构筑取舍仍交模型，不内置此路线答案。
+
+新动态任务16:48:57交付，先[冻结84文件](.work/live-285-leveling-first/manifest.json)/10073199字节，16源/测试、15安装和原XML保持。[公开首份答复](.work/live-285-leveling-first/ui-final-observations.json)完整读取后，[两阶段冷原生及回读](.work/live-285-leveling-first/rechecks/summary.json)全部指标一致，收据与源摘要也吻合；[首次独立评分43/100](.work/live-285-leveling-first/review.json)：事实19/35、目标8/25、可执行7/20、一致性5/10、效率4/10，核心未通过。接口和文件可靠，不等于路线可用。一次客户端正常重开仅发“继续”，无调试/配装提示，不扣客户端故障分；没有权限扩大请求。
+
+实际blocked有5个力量需求错误、111待办20类；两XML普通天赋均0，文字仍承诺约33/70+点。首试炼实际生命固定回复0，地图7.2/秒，无法支持文字约3%/秒；缺usage/共同时间线，耐力球实际0，战吼未装入却被用作恢复依据。首试炼进度与-60配置不一致，取得奖励选择、宝石倒退和物资替代仍未落实；八目标仅一项评审。公开列7条件、draft称通过，未完整采用程序事实。只评价当次目标及证据，不指定职业解法、阶段数量、等级门槛或数值答案，非与64/66/60/73的准确率比较。
+
+有效最小输入对仍安装的2.8.5[重放红测](.work/286-red-minimized-valid-input.log)得到1错误1失败：路线缺已有原生天赋路径接口、目标关联等源诊断未进入修订待办。最早夹具缺技能组/职业名，未进入目标路径，已纠正，不计作有效复现。2.8.6提取角色查询共用于路线，按当前XML/指纹提供路径成本及源位置；不自动分配天赋、不内置流派答案。模型关联及结论修订复用repair_input，实际节点/天赋点数/固定回复进入事实出版。仍15交付文件、6Python+2Lua、单CLI及标准库；清理被提取的角色内联查询，无并行旧实现。
+
+[30项接口检查](.work/286-fast-interface.log)0.614秒、[真实路线节点路径补全](.work/286-native-route-diagnosis.log)40.190秒及[原有角色路径](.work/286-native-role-diagnosis.log)41.419秒通过：当前数据选节点，旧请求未保留→返回原生path→补路径→节点保留；独立未知装备仍blocked，未以路径修复抹去其他错误。
+
+提交017415e，[完整回归](.work/286-final-regression.log)232项701.797秒全部通过，含48真实引擎、无跳过；[测试前](.work/286-final-source-before.json)/[测试后](.work/286-final-source-after.json)16文件摘要一致。[15文件包](dist/poe-adjust-2.8.6.zip)165386字节，SHA256 883a20458c43854f3c825c79243e0769f4655840447ea0b31fcd32a24d20147d；[目标格式/包校验](.work/286-format-package-verification.json)通过，通用Codex validator缺PyYAML未运行通过，无新依赖。17:27:31先核旧15文件再[安装2.8.6](.work/286-install-manifest.json)，只清理5个确认可重建pyc，源/ZIP/安装一致。[已安装doctor](.work/286-installed-doctor.json)4.532秒四项通过、无安装写入；实际引擎2.67.2、数据3.29，适配器指纹变为262275584037803fe3f849e816ae4d6da656a1fc1d7997897ea4e287759c03e3，旧缓存和绑定须按当前内容重新核验，不代表固定版本。
+
+完整检查及安装后才准备[同任务恢复](.work/live-286-manifest.json)，仅要求读取当前协议和继续原玩家目标，未提供构筑、数字、节点路径或修订答案。保留旧任务历史/失败计划，因此明确不是新任务盲测。Computer Use曾连续提示窗口最小化/用户输入冲突；用户恢复前台后，17:33:17核对92字符公开提交精确且仅一次。没有改客户端设置或诊断稳定性。提交后约9.5分钟完成，恢复评分46分，原首份43分不替换。
+
+# 2.8.5 离线228项通过、安装与首次任务准备（2026-10-06）
+
+依据下节真实首份结果修改，不替换旧分：[诊断原数据重放](.work/285-diagnosis-before.json)中，仅将副技能频率改为本机原生Cooldown公式，周期支付unknown→supported；8条具体评审诊断在next_actions丢失；finite声明被旧接口拒绝。[当前本机源码依据](.work/285-native-rate-primary-source.json)只读保存，未限定版本。
+
+[绑定红测](.work/285-red-bindings.log)、[有限窗口红测](.work/285-red-finite.log)、[漏排动作红测](.work/285-red-unscheduled.log)、[原生冷却红测](.work/285-red-native-cooldown.log)为1失败3错误；[路线红测](.work/285-red-route-handoff.log)复现另一条路径的交接缺失。修复后[四项定向](.work/285-targeted-contract.log)20.934秒通过，[真实路线](.work/285-route-handoff.log)34.695秒通过，[180项快速回归](.work/285-fast-regression.log)1.320秒通过。提交c86227c，[完整回归](.work/285-final-regression.log)228项580.999秒全部通过，无跳过、含48项真实引擎；[16源/测试前摘要](.work/285-final-source-before.json)与[后摘要](.work/285-final-source-after.json)一致。
+
+[当前接口冷重放](.work/285-frozen-interface-replay.json)确认原生全部指标不变、冷却技能两次支付可测、有限生命窗口结束1066、缺失动作仍列为输入待办、8条判断给出直接修订行动；此为接口修复证据，不是模型新成绩。15文件包164107字节，[格式/包校验](.work/285-format-package-verification.json)通过；15:37:01保护核对旧15文件后[安装2.8.5](.work/285-install-manifest.json)，清理5个已确认可重建pyc，源码/ZIP/安装字节一致。[已安装doctor](.work/285-installed-doctor.json)3.605秒，启动/目录/保存/回读均通过，writes_to_installation=false。通用Codex validator缺PyYAML未通过，目标平面元数据及184链接直接校验通过，没有新增依赖。
+
+随后才选择[新动态开荒任务](.work/live-285-manifest.json)：无XML、野蛮人SSF从零到普通异界初期、操作与资源目标；空目录仅玩家需求，无配装答案或诊断提示。537字符实际提交全文一致、仅一次，任务“POE野蛮人S30开荒路线”。后续先冻结再固定43分，结果见首节；原64/66/60/73保持。
+
 # 2.8.4 动态短时遭遇首测64/100，核心未通过（2026-10-06）
 
 14:25新任务只提交原XML与玩家需求；精确目录单次授权，无配装/数字/调试答案。一次客户端中断后正常重开，仅发“继续”，未诊断客户端。14:54:29完成，14:55:17先[冻结19文件](.work/live-284-encounter-first/manifest.json)、4775573字节，源码/测试、安装、原XML不变，再保存[完整公开回复](.work/live-284-encounter-first/ui-final-observations.json)并评分。独立[九项原生及保留检查](.work/live-284-encounter-first/rechecks/summary.json)全通过；[首评分64](.work/live-284-encounter-first/review.json)为事实26/35、目标16/25、可执行14/20、一致性3/10、效率5/10，核心未通过。单一动态任务、同账户历史隔离未证明，非通用准确率或与66分的A/B比较，旧73/60/66原分保留。
