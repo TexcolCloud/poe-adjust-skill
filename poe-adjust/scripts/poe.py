@@ -937,6 +937,7 @@ def native_tree_diagnostics(root,document,result,location="/operations/tree",*,t
     for node_id,row in zip(missing,queried["catalog_batch"]):
         node=next((entry for entry in row["entries"] if entry["id"]==node_id),None)
         details.append({"id":node_id,"found":node is not None,**({key:node[key] for key in ("name","ascendancy_name","reachable","points_to_allocate","path") if key in node} if node else {})})
+    details.extend({"id":node_id,"found":False,"query_returned":False} for node_id in missing[len(details):])
     diagnostic={"code":"native_tree_nodes_unretained","action":"edit_input","location":location,
                 "expected":sorted(requested),"actual":sorted(result["nodes"]),"tree_diagnostics":details,
                 "native_context":{"xml_sha256":bx.digest(result["xml"]),"engine_fingerprint":result["engine_fingerprint"],

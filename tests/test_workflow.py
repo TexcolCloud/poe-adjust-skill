@@ -1386,6 +1386,13 @@ class WorkflowInterfaceTests(unittest.TestCase):
         with patch.object(poe,'native_queries',return_value={'engine_fingerprint':'fixture','catalog_batch':[variants[-1]]}):
             _,diagnostics=poe.native_tree_diagnostics(Path('.'),document,result)
         self.assertNotIn('connection_proposal',diagnostics[0])
+        for batch in ([],[variants[-1]]):
+            bx.active_spec(document).set('nodes','1,2,42,43')
+            with patch.object(poe,'native_queries',return_value={'engine_fingerprint':'fixture','catalog_batch':batch}):
+                details,diagnostics=poe.native_tree_diagnostics(Path('.'),document,result,tree_operations={'nodes_add':[42,43]})
+            self.assertEqual([row['id'] for row in details],[42,43])
+            self.assertFalse(details[-1]['query_returned'])
+            self.assertNotIn('connection_proposal',diagnostics[0])
 
     def test_final_review_action_points_to_actual_user_goals_and_template(self):
         observations={'objective_coverage':[{'objective_id':'dynamic','text':'Actual requirement','claim_ids':[],'status':'unresolved'}],
@@ -2980,6 +2987,14 @@ class RealEngineTests(unittest.TestCase):
         with patch.object(facts,"gem_facts",return_value={}):
             response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         reviewed=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        self.assertEqual(reviewed["final_review"]["status"],"unresolved")
+        self.assertEqual(reviewed["final_review"]["coverage"]["missing_objective_ids"],[row["objective_id"] for row in route["objectives"]])
+        template=poe.read_json(output.with_suffix(".review.json"))["review_template"]
+        route["assessment"]["review"]["objectives"]=[{**row,"scope":"Current fixture requirement only", "findings":"Current entry check remains unmet; no gameplay guarantee."} for row in template["objectives"]]
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):
+            response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        reviewed=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         self.assertEqual(reviewed["final_review"]["status"],"model_reviewed")
         self.assertTrue(any("entry_check:" in p for p in response["pending"]))
         self.assertTrue(poe.read_json(output.with_suffix(".state.json"))["file_exported"])
@@ -3137,13 +3152,17 @@ class RealEngineTests(unittest.TestCase):
         plan["claims"]=[{"claim_id":"review","text":"Fixture conclusion; remaining gaps are retained.","subjects":["goal"],"evidence_refs":["artifact","native:candidate#/stats/Life"]}]
         plan["assessment"]={"goal_claim_ids":["review"],"scope":"Fixture, not a player build"}
         first=self.evaluate_plan(plan,"reviewed")
-        plan["assessment"]["review"]={"token":first["review_token"],"findings":"Checked current facts, object, conditions and limited conclusion.","unresolved":[],"conclusions":[{"claim_id":"review","scope":"Fixture only; remaining gaps retained","findings":"Artifact is a local record, not an independent gameplay measurement."}]}
+        template=poe.read_json(self.run_dir/"candidates/reviewed/review.json")["review_template"]
+        plan["assessment"]["review"]={"token":first["review_token"],"findings":"Checked current facts, object, conditions and limited conclusion.","unresolved":[],
+            "objectives":[{**row,"scope":"Current fixture requirement","findings":"Remaining dependencies retained; not a gameplay certification."} for row in template["objectives"]],
+            "conclusions":[{"claim_id":"review","scope":"Fixture only; remaining gaps retained","findings":"Artifact is a local record, not an independent gameplay measurement."}]}
         second=self.evaluate_plan(plan,"reviewed")
         self.assertEqual(first["review_token"],second["review_token"])
         self.assertNotIn("final_review:stale",second["pending"])
         result=poe.export(args(run=str(self.run_dir),name="reviewed"))
         final=poe.read_json(self.run_dir/"output/reviewed/final-assessment.json")
         self.assertEqual(final["review_packet"]["status"],"model_reviewed")
+        self.assertTrue(any(value.startswith('objective:') for value in final['pending']))
         self.assertIsNone(final["evidence"]["artifact"]["url"])
         self.assertTrue(result["file_exported"])
         manifest=poe.read_json(self.run_dir/"output/reviewed/delivery.json")
