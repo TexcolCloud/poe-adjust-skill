@@ -16,12 +16,15 @@ python $entry probe --run '<工作区>/会话' --name proposal-a --group 1 --ind
 python $entry export --run '<工作区>/会话' --name proposal-a
 python $entry status --run '<工作区>/会话'
 python $entry inspect --input '<角色.xml>' --calculate --out '<工作区>/diagnosis.json'
+python $entry probe --input '<已有角色.xml>' --variants '<工作区>/variants.json' --metrics '<实际指标>' --out '<工作区>/probe.json'
 python $entry decode --input '<实际纯分享码.txt>' --out '<工作区>/template.xml'
 ```
 
 所有子命令接受 `--pob '<PoECharm/内部PoB目录或程序>'`，正常自动发现。start 已做运行自检，目录须为空或不存在，之后始终使用同一 run。inspect/decode 不覆盖输入。网址与 HTML 不是纯分享码；有需要才从实际公开来源取得完整分享码，不抄写或拼接被截断内容。
 
 start 返回原始 overview 与检查文件路径；`inspect --calculate` 返回完整 calculation，保存到文件时终端只显示诊断摘要。inspection 的原 XML 字段是 `skill_groups[].gems[].skillId`；计算结果是 `gems[].id`。数字以实际 stats 为准，Build/PlayerStat 只是缓存。CountAllocNodes 的 points/ascendancy_points 已含连接小点，不能从已分配量反推已完成的任务。
+
+probe 的来源二选一：已有 evaluate 候选用 --run/--name，已有角色只读实验用 --input，后者不指定 --run/--name。两者沿用同一 variants.operations，输出实际效果状态及指标，均不改输入。source_mode 明示来源；只读观察不等于交付达标。格式与复核方法见角色配装协议。
 
 旧 schema 会话只读追溯。请用新空目录 start，从旧记录提取有依据的意图，以新格式重建；不可直接 export。未确认偏好不从旧默认 false 迁移。
 

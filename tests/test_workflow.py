@@ -1267,6 +1267,71 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_input_xml_probe_reuses_variant_operations_without_writing_the_role(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'supplied.xml';poe.write_text(source,SAMPLE)
+            variants=Path(folder)/'variants.json';poe.write_json(variants,{'variants':[{'id':'observed-switch','operations':{'config':{'future-switch':True}}}]})
+            native={'xml':SAMPLE,'stats':{'CombinedDPS':100},'engine_fingerprint':'fixture','main_skill':'fixture-main',
+                    'points':1,'ascendancy_points':0,'secondary_ascendancy_points':0,'active_skills':[],
+                    'config_controls':{'future-switch':{'type':'check','value':False}}}
+            def calculate(*pos,**kw):
+                if 'xml_batch' in kw:
+                    changed=copy.deepcopy(native);changed['config_controls']['future-switch']['value']=True
+                    return {'calculations':[{**changed,'request_id':engine.batch_id('xml',i,xml),'input_xml_sha256':bx.digest(xml)} for i,xml in enumerate(kw['xml_batch'])]}
+                return native
+            before=source.read_bytes()
+            with patch.object(poe,'read_candidate',side_effect=AssertionError('Read-only input must not need a candidate session')),patch.object(engine,'resolve_root',return_value=Path(folder)),patch.object(engine,'check',return_value={'engine_fingerprint':'fixture'}),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',return_value={'errors':[],'pending':[],'warnings':[]}):
+                response=poe.probe(args(input=str(source),variants=str(variants)))
+                self.assertEqual(response['source_mode'],'input_xml')
+                self.assertIs(response['baseline_effect_state']['config_switches']['future-switch'],False)
+                self.assertIs(response['alternatives'][0]['effect_state']['config_switches']['future-switch'],True)
+                self.assertEqual(response['alternatives'][0]['operations'],{'config':{'future-switch':True}})
+                with self.assertRaises(bx.ContractError):poe.probe(args(input=str(source),run=str(Path(folder)/'run'),variants=str(variants)))
+            self.assertEqual(source.read_bytes(),before)
+            self.assertEqual({row.name for row in Path(folder).iterdir()},{'supplied.xml','variants.json'})
+
+    def test_input_probe_output_cannot_overwrite_xml_or_parameter_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'role.xml';poe.write_text(source,SAMPLE)
+            variants=Path(folder)/'variants.json';poe.write_json(variants,{'variants':[]})
+            for output in (source,variants):
+                with self.subTest(output=output),patch.object(poe,'probe',return_value={'status':'screened','alternatives':[],'next':'fixture'}),redirect_stderr(io.StringIO()):
+                    self.assertEqual(poe.main(['probe','--input',str(source),'--variants',str(variants),'--out',str(output)]),2)
+            self.assertEqual(source.read_text(encoding='utf-8'),SAMPLE)
+            self.assertEqual(poe.read_json(variants),{'variants':[]})
+
+    def test_effect_state_preserves_false_unknown_and_each_native_variant(self):
+        calculation={'config_controls':{'future-item-switch':{'id':'future-item-switch','type':'check','label':'Future item effect','value':False,'value_basis':'native_unchecked_default'},
+                                        'future-stacks':{'id':'future-stacks','type':'count','value':None,'default':7,'value_basis':'unknown','if_option':'future-item-switch'}},
+                     'gems':[{'group':2,'index':3,'id':'future-combined-gem','enabled':True,'group_enabled':True,'slot_enabled':True,
+                              'granted_effects':[{'id':'future-burst','name':'Future burst','has_global_effect':True,'global_enabled':False,'active_skill_present':False},
+                                                 {'id':'future-steady','name':'Future steady','has_global_effect':True,'global_enabled':True,'active_skill_present':True}]}],
+                     'equipped':[{'slot':'Flask 1','active':False}],'stats':{'GuardSkillActive':False}}
+        state=engine.effect_state(calculation)
+        self.assertIs(state['config_switches']['future-item-switch'],False)
+        self.assertNotIn('future-stacks',state['config_switches'])
+        self.assertEqual([(row['id'],row['global_enabled']) for row in state['global_effects']], [('future-burst',False),('future-steady',True)])
+        self.assertEqual(state['flasks'],{'Flask 1':False});self.assertIs(state['guard_active'],False)
+        observed=facts.resolve_reference('native:candidate#/config_controls/future-stacks/value',{}, {'candidate':calculation})
+        self.assertIsNone(observed['value']);self.assertEqual(facts.check_value(observed['value'],'eq',7),'unknown')
+        self.assertEqual(observed['context']['effect_state']['config_switches'],state['config_switches'])
+        ref='native:candidate#/config_controls/future-item-switch/value'
+        claim={'claim_id':'active-item','claim_type':'comparison','text':'Item is active','subjects':['configuration:candidate'],'checks':[{'reference':ref,'op':'eq','value':True}]}
+        assessed=facts.assess_claims([claim],{}, {'candidate':calculation})[0]
+        self.assertEqual(assessed['checks'][0]['status'],'refuted')
+        self.assertTrue(facts.configuration_reviewed([{'status':'model_assessed','subjects':['configuration:candidate'],'evidence_refs':[ref]}],'candidate'))
+
+    def test_publication_exposes_current_switches_and_effects_once_per_calculation(self):
+        native={'stats':{'Observed':12,'GuardSkillActive':True},'config_controls':{'future-condition':{'type':'check','value':False}},
+                'gems':[{'group':1,'index':1,'id':'future-gem','enabled':True,'group_enabled':True,'slot_enabled':True,
+                         'granted_effects':[{'id':'future-guard','name':'Future guard','has_global_effect':True,'global_enabled':True,'active_skill_present':True}]}],
+                'equipped':[]}
+        result=poe.publication('draft',[],[],{'status':'unknown'}, {'candidate':native},keys=['Observed'])
+        rows=[row for row in result['statements'] if row['kind']=='effect_state']
+        self.assertEqual(len(rows),1);self.assertIs(rows[0]['values']['config_switches']['future-condition'],False)
+        self.assertIn('future-guard',result['facts_summary']);self.assertIn('future-condition=false',result['facts_summary'])
+        self.assertIs(poe.calculation_facts(native)['config_controls']['future-condition']['value'],False)
+
     def test_common_measurement_cannot_hide_a_locked_main_skill_change(self):
         before={'level':86,'tree_version':'future','class':'fixture','ascendancy':'fixture','main_skill':'changed-by-control','gems':[],'equipped':[],
                 'measurement_audit':{'selected_main_before':{'main_skill':'original-main'}}}
@@ -1781,6 +1846,66 @@ class ResourceRegressionTests(unittest.TestCase):
 
 
 class TimelineTests(unittest.TestCase):
+    def automatic_fixture(self):
+        result,timeline=self.fixture();timeline['repeat']=False
+        costs={'ManaCost':10,'ManaPerSecondCost':5,'LifeCost':0,'LifePerSecondCost':0,'ESCost':0,'ESPerSecondCost':0,'SkillTriggerRate':.5}
+        result['active_skills'].append({'skill_ref':'future-auto','actor':'player','trigger':'Native trigger description','costs':costs,
+                                        'usage_rate':{'value':.5,'metric':'SkillTriggerRate','basis':'native_action_rate'}})
+        timeline['events'] += [{'skill_ref':'future-auto','at':0},{'skill_ref':'future-auto','at':2}]
+        return result,timeline
+
+    def test_declared_native_trigger_payments_share_clock_without_certifying_execution(self):
+        result,timeline=self.automatic_fixture();audit=resources.assess(result,{}, {'timeline':timeline})
+        self.assertEqual(audit['timeline']['status'],'supported')
+        mana=audit['timeline']['resources'][0]
+        self.assertEqual([row['payment'] for row in mana['trace'] if row['skill_ref']=='future-auto'],[10,10])
+        self.assertEqual(audit['timeline']['automatic_schedules']['future-auto']['event_count'],2)
+        self.assertEqual(audit['execution_coverage']['trigger_realization'],'unmeasured')
+        self.assertEqual(audit['sustained_use']['status'],'unknown')
+        result['stats']['Mana']=25
+        self.assertEqual(resources.timeline_assessment(result,timeline)['resources'][0]['status'],'refuted')
+
+    def test_missing_trigger_rate_incomplete_schedule_and_non_discrete_fee_stay_unknown(self):
+        original,timeline=self.automatic_fixture()
+        for case in ('native-rate','missing','sparse','non-discrete'):
+            result=copy.deepcopy(original);schedule=copy.deepcopy(timeline);skill=result['active_skills'][-1]
+            if case=='native-rate':
+                skill['usage_rate']['metric']='Speed';del skill['costs']['SkillTriggerRate'];skill['costs']['Speed']=.5
+            elif case=='missing':schedule['events']=[row for row in schedule['events'] if row['skill_ref']!='future-auto']
+            elif case=='sparse':schedule['events']=[row for row in schedule['events'] if row.get('at')!=2]
+            else:skill['costs']['ManaPerSecondCost']=9
+            with self.subTest(case=case):
+                audit=resources.timeline_assessment(result,schedule)
+                self.assertEqual(audit['resources'][0]['status'],'unknown')
+                self.assertEqual(audit['resources'][1]['status'],'supported')
+                if case in ('missing','sparse'):
+                    self.assertTrue(any(row['code']=='timeline_automatic_schedule_incomplete' and row['action']=='edit_input' for row in audit['diagnostics']))
+
+    def test_trigger_phase_and_repeating_seam_must_cover_the_declared_pattern(self):
+        result,timeline=self.automatic_fixture()
+        for event in timeline['events']:
+            if event['skill_ref']=='future-auto':event['at']+=.5
+        self.assertEqual(resources.timeline_assessment(result,timeline)['resources'][0]['status'],'supported')
+        timeline['duration_seconds']=4;timeline['repeat']=True
+        self.assertEqual(resources.timeline_assessment(result,timeline)['status'],'supported')
+        timeline['duration_seconds']=3
+        self.assertEqual(resources.timeline_assessment(result,timeline)['status'],'refuted')
+        timeline.update(duration_seconds=4,repeat=False)
+        timeline['events']=[row for row in timeline['events'] if row['skill_ref']!='future-auto']+[{'skill_ref':'future-auto','at':2},{'skill_ref':'future-auto','at':3.99}]
+        self.assertEqual(resources.timeline_assessment(result,timeline)['resources'][0]['status'],'unknown')
+
+    def test_trigger_payments_use_native_shield_routing_and_zero_fee_needs_no_schedule(self):
+        result,timeline=self.automatic_fixture();result['resource_rules']['energy_shield_protects_mana']=True
+        for skill in result['active_skills']:
+            skill['costs']['ESPerSecondCost']=skill['costs']['ManaPerSecondCost'];skill['costs']['ManaPerSecondCost']=0
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit['status'],'supported')
+        self.assertTrue(all(row['payment']==0 for row in audit['resources'][0]['trace']))
+        self.assertEqual([row['payment'] for row in audit['resources'][2]['trace'] if row['skill_ref']=='future-auto'],[10,10])
+        skill=result['active_skills'][-1];skill['no_cost']=True;skill['costs']={};skill['usage_rate']={}
+        timeline['events']=[row for row in timeline['events'] if row['skill_ref']!='future-auto']
+        self.assertEqual(resources.timeline_assessment(result,timeline)['status'],'supported')
+
     def test_finite_window_keeps_payment_and_execution_scopes_separate(self):
         result,timeline=self.fixture();timeline['repeat']=False
         audit=resources.assess(result,{}, {'timeline':timeline})
@@ -1792,6 +1917,9 @@ class TimelineTests(unittest.TestCase):
         resource=next(row for row in packet['statements'] if row['kind']=='resource' and row['subject']=='Mana')
         self.assertEqual(resource['window']['final'],audit['timeline']['resources'][0]['final'])
         self.assertEqual(resource['window']['at'],timeline['duration_seconds'])
+        scopes=[row for row in packet['statements'] if row['kind']=='timeline_scope']
+        self.assertEqual(len(scopes),1)
+        self.assertIn(audit['timeline']['scope'],packet['facts_summary'])
 
     def fixture(self):
         result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":False}
@@ -1842,7 +1970,8 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(audit["resources"][0]["status"],"supported")
         self.assertFalse(audit["resources"][0]["repeatable"]);self.assertEqual(audit["status"],"unknown")
         packet=poe.publication("draft",[],audit["pending"],{"status":"unknown"},{},readiness={"timeline":audit})
-        self.assertEqual(packet["statements"][2]["status"],"unknown")
+        mana=next(row for row in packet['statements'] if row['kind']=='resource' and row['subject']=='Mana')
+        self.assertEqual(mana['status'],'unknown')
 
     def test_finite_window_does_not_require_pool_restoration_or_loop_seam(self):
         result,timeline=self.fixture();result["stats"]["ManaRegenRecovery"]=1
@@ -2755,6 +2884,62 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
 
 
 class RealEngineTests(unittest.TestCase):
+    def test_native_input_probe_uses_current_control_values_without_xml_rewriting(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        control=next(row for row in current['config_controls'].values() if row['type']=='check' and row['value'] is False and row.get('if_skill'))
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'角色.xml';source.write_bytes(self.sample.read_bytes());before=source.read_bytes()
+            variants=Path(folder)/'variants.json';poe.write_json(variants,{'variants':[{'id':'toggle-observation','operations':{'config':{control['id']:True}}}]})
+            arguments=args(input=str(source),variants=str(variants),metrics='LifeRegenRecovery,MaximumFortification');arguments.pob=str(self.pob)
+            result=poe.probe(arguments)
+            self.assertEqual(result['source_mode'],'input_xml');self.assertEqual(result['calculated_variants'],1)
+            self.assertIs(result['baseline_effect_state']['config_switches'][control['id']],False)
+            self.assertIs(result['alternatives'][0]['effect_state']['config_switches'][control['id']],True)
+            self.assertEqual(source.read_bytes(),before);self.assertFalse((Path(folder)/'run.json').exists())
+
+    def test_native_trigger_fee_pattern_uses_observed_rates_and_preserves_combat_unknowns(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        effects=[{'skill_id':effect['id'],'enabled':False} for gem in current['gems'] for effect in gem['granted_effects']
+                 if effect['has_global_effect'] and ('Guard' in effect['skill_types'] or len(gem['granted_effects'])>1 and all(row['has_global_effect'] for row in gem['granted_effects']))]
+        _,native=poe.measured_calculation(self.pob,self.original,{'flasks_enabled':False,'effects':effects})
+        skill=next(row for row in native['active_skills'] if row.get('trigger') and row['usage_rate']['metric']=='SkillTriggerRate'
+                   and row['usage_rate']['value']>0 and any((row['costs'].get(key) or 0)>0 for key in ('ManaCost','LifeCost','ESCost')))
+        selected=copy.deepcopy(native);selected['active_skills']=[skill]
+        interval=1/skill['usage_rate']['value']
+        timeline={'duration_seconds':3*interval,'repeat':False,'events':[{'skill_ref':skill['skill_ref'],'at':i*interval} for i in range(3)]}
+        audit=resources.assess(selected,{}, {'timeline':timeline})
+        self.assertEqual(audit['timeline']['automatic_schedules'][skill['skill_ref']]['status'],'supported')
+        for row,key in zip(audit['timeline']['resources'],('Mana','Life','ES')):
+            self.assertIn(row['status'],('supported','refuted'))
+            cost=resources.payment(skill['costs'],key,native['resource_rules']['energy_shield_protects_mana'],skill.get('no_cost') is True)
+            self.assertEqual([payment['payment'] for payment in row['trace']],[cost]*3)
+        self.assertEqual(audit['execution_coverage']['trigger_realization'],'unmeasured')
+        self.assertEqual(audit['execution_coverage']['status'],'unknown')
+        self.assertEqual(selected['stats'],native['stats'])
+
+    def test_native_configuration_controls_expose_unchecked_values_and_related_options(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original),cache=False)
+        self.assertTrue(current['capabilities']['native_config_controls'])
+        controls=current['config_controls'];self.assertTrue(controls)
+        unchecked=[row for row in controls.values() if row['type']=='check' and row['value'] is False and row.get('if_skill')]
+        self.assertTrue(unchecked)
+        selected=unchecked[0]
+        query=engine.calculate(self.pob,bx.serialise(self.original),catalog='config',query=selected['id'],limit=30,cache=False)
+        option=next(row for row in query['catalog'] if row['var']==selected['id'])
+        self.assertIs(option['current_control']['value'],False)
+        saved=engine.calculate(self.pob,current['xml'],cache=False)
+        self.assertIs(saved['config_controls'][selected['id']]['value'],False)
+        changed=bx.apply_plan(self.original,{'mode':'refine','summary':'Native configuration control test','operations':{'config':{selected['id']:True}}},native=current)
+        enabled=engine.calculate(self.pob,bx.serialise(changed),cache=False)
+        self.assertIs(enabled['config_controls'][selected['id']]['value'],True)
+        related=[row for row in controls.values() if row.get('if_option')]
+        self.assertTrue(related)
+        for row in related:
+            parents=row['if_option'] if isinstance(row['if_option'],list) else [row['if_option']]
+            self.assertTrue(any(parent in controls for parent in parents))
+        unknown=[row for row in controls.values() if row['value_basis']=='unknown']
+        self.assertTrue(unknown);self.assertTrue(all(row['value'] is None for row in unknown))
+
     def test_native_named_effects_common_measurement_and_jewel_activity(self):
         current=engine.calculate(self.pob,bx.serialise(self.original))
         multiple=next(gem for gem in current['gems'] if len(gem['granted_effects'])>1 and all(effect['has_global_effect'] for effect in gem['granted_effects']))

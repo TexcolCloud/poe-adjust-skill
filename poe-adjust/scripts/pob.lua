@@ -174,6 +174,7 @@ result.capabilities = {
   node_screening = type(build.calcsTab.GetNodeCalculator) == "function",
   native_tree_allocation = type(build.spec.AllocNode) == "function" and type(build.spec.BuildAllDependsAndPaths) == "function",
   native_xml_save = type(build.SaveDB) == "function",
+  native_config_controls = type(build.configTab.varControls) == "table" and type(build.configTab.GetDefaultState) == "function",
 }
 result.classes = {}
 for id, class in pairs(build.spec.tree.classes) do
@@ -322,9 +323,32 @@ for key, value in pairs(result.config_values) do
   if value ~= default then result.config_saved_values[key] = value end
 end
 result.config_labels = {}
+local configControls, includedControls = {}, {}
+result.config_controls = setmetatable({}, {__jsontype = "object"})
 for _, entry in ipairs(configOptions) do
   if entry.var then
     table.insert(result.config_keys, entry.var)
+    local control = build.configTab.varControls and build.configTab.varControls[entry.var]
+    local ok, shown = false, nil
+    if control and type(control.IsShown) == "function" then ok, shown = pcall(control.IsShown, control) end
+    local value, default = result.config_values[entry.var], build.configTab:GetDefaultState(entry.var)
+    local row = {id=entry.var, type=entry.type, label=entry.label, value=value == nil and json.null or value,
+      default=default == nil and json.null or default, raw_present=value~=nil,
+      shown=ok and shown or json.null, value_basis=value~=nil and "current_mainEnv.configInput" or "unknown",
+      scope="Current native configuration and control visibility; not effect applicability or duration coverage"}
+    if ok then row.shown = shown end
+    if value == nil and entry.type == "check" and type(default) == "boolean" then
+      row.value, row.value_basis = default, "native_unchecked_default"
+    end
+    if type(entry.tooltip) == "string" then row.tooltip=entry.tooltip end
+    for field, name in pairs({ifSkill="if_skill", ifOption="if_option", ifFlag="if_flag", ifCond="if_cond", ifEnemyCond="if_enemy_cond"}) do
+      if type(entry[field]) == "table" then
+        row[name] = setmetatable({}, {__jsontype = "array"})
+        for _, item in ipairs(entry[field]) do if type(item)=="string" then table.insert(row[name],item) end end
+      elseif type(entry[field])=="string" then row[name]=entry[field] end
+    end
+    configControls[entry.var] = row
+    includedControls[entry.var] = ok and shown or value~=nil and value~=default
     if entry.type == "list" then
       local values = setmetatable({}, {__jsontype = "array"})
       if type(entry.list) == "table" then
@@ -338,6 +362,22 @@ for _, entry in ipairs(configOptions) do
     end
   end
 end
+-- Include current controls and their native ifOption dependencies in both
+-- directions, so disabling an effect does not hide its associated stack rules.
+local added = true
+while added do
+  added = false
+  for key, row in pairs(configControls) do
+    local parents = type(row.if_option)=="table" and row.if_option or {row.if_option}
+    for _, parent in ipairs(parents) do
+      if configControls[parent] and (includedControls[key] or includedControls[parent]) then
+        if not includedControls[key] or not includedControls[parent] then added = true end
+        includedControls[key], includedControls[parent] = true, true
+      end
+    end
+  end
+end
+for key, include in pairs(includedControls) do if include then result.config_controls[key]=configControls[key] end end
 result.points, result.ascendancy_points, result.secondary_ascendancy_points = build.spec:CountAllocNodes()
 result.mastery_selections = setmetatable({}, {__jsontype = "object"})
 for id, effect in pairs(build.spec.masterySelections) do result.mastery_selections[tostring(id)] = effect end
@@ -633,6 +673,7 @@ local function queryCatalog(kind, query, limit, offset)
     for _, section in ipairs(configOptions) do
       if section.var and (matches(section.var) or matches(section.label) or matches(type(section.tooltip) == "string" and section.tooltip or "")) then
         local option = scalarTable(section)
+        if hasTreeContext then option.current_control = configControls[section.var] end
         if type(section.list) == "table" then
           option.options = {}
           for _, value in ipairs(section.list) do table.insert(option.options, scalarTable(value)) end

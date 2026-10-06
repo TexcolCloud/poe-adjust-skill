@@ -19,6 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import buildxml as bx
+import engine
 
 HOSTS = {"poedb.tw", "poe.qq.com", "www.pathofexile.com", "pathofexile.com"}
 
@@ -385,6 +386,7 @@ def resolve_reference(reference, evidence, native=None):
                   "context": {"engine_fingerprint": calculation.get("engine_fingerprint"), "xml_sha256": calculation.get("xml_sha256") or calculation.get("input_xml_sha256") or (bx.digest(calculation["xml"]) if calculation.get("xml") else None),
                               "character_identity":calculation.get("character_identity"),
                               "config_values":calculation.get("config_values",{}),"class_id":calculation.get("class_id"),"ascendancy_id":calculation.get("ascendancy_id"),"main_skill":calculation.get("main_skill"),
+                              "effect_state":engine.effect_state(calculation),
                               "main_skill_ref":main.get("skill_ref"),"main_skill_name":main.get("name") or calculation.get("main_skill_name"),"main_group":calculation.get("main_group")},
                   "meaning":reference_meaning(calculation,locator)}
         record["formatted_fact"]=format_observation(record)
@@ -397,6 +399,12 @@ def reference_meaning(calculation, locator):
     """Keep current native labels, qualified identities and uncertainty together."""
     tokens=locator.split("/")[1:]
     metric=tokens[-1] if tokens else ""
+    if len(tokens)>=3 and tokens[0]=='config_controls':
+        control=calculation.get('config_controls',{}).get(tokens[1],{})
+        return {'label':control.get('label') or tokens[1],'unit':None,'unit_status':'not_applicable','display_multiplier':1,
+                'object_identity':{key:control[key] for key in ('id','type','label','if_skill','if_option') if key in control},
+                'actor':None,'status':'native_configuration_observed','value_basis':control.get('value_basis'),
+                'scope':control.get('scope','Native current configuration only; applicability and effect coverage are not measured.')}
     if locator in {"/character_identity/digest","/input_xml_sha256","/xml_sha256"}:
         meanings={"/character_identity/digest":("原生角色状态摘要","native_active_character"),
                   "/input_xml_sha256":("本次输入 XML 字节摘要","input_transport_bytes"),
@@ -418,7 +426,7 @@ def reference_meaning(calculation, locator):
         try: parent=pointer(calculation,"/"+"/".join(tokens[:end]))
         except ValueError: continue
         if isinstance(parent,dict) and any(key in parent for key in ("id","skill_id","skill_ref","stage_id")):
-            identity={key:parent[key] for key in ("id","skill_id","skill_ref","stage_id","name","qualified_name","owner_class_id","owner_class_name","ascendancy_internal_name","type","is_ascendancy_start","actor") if key in parent}
+            identity={key:parent[key] for key in ("id","skill_id","skill_ref","stage_id","name","label","qualified_name","owner_class_id","owner_class_name","ascendancy_internal_name","type","is_ascendancy_start","actor") if key in parent}
             break
     multipliers={e.get("display_multiplier",1) for e in meanings}
     unambiguous=len(units)==1 and len(multipliers)==1
@@ -526,9 +534,9 @@ def claim_diagnostics(claims):
 
 
 def configuration_reviewed(claims, calculation_name):
-    reference="native:"+calculation_name+"#/config_values"
+    references=["native:"+calculation_name+"#/"+field for field in ("config_values","config_controls")]
     return any(c["status"]=="model_assessed" and "configuration:"+calculation_name in c["subjects"] and
-               any(ref==reference or ref.startswith(reference+"/") for ref in c["evidence_refs"]) for c in claims)
+               any(ref==prefix or ref.startswith(prefix+"/") for ref in c["evidence_refs"] for prefix in references) for c in claims)
 
 
 def configuration_diagnostics(claims, calculations):
@@ -536,6 +544,7 @@ def configuration_diagnostics(claims, calculations):
     return [{"code":"configuration_review_missing","location":"/claims","action":"review_configuration",
              "required_subject":"configuration:"+name,"reference":"native:"+name+"#/config_values",
              "actual":value.get("config_values"),"category":"input","status":"unknown",
+             "controls_reference":"native:"+name+"#/config_controls",
              "message":"核对当前实际配置与用户场景，修改对应计算输入并重算，再用具体引用评审此场景。"}
             for name,value in calculations.items() if not configuration_reviewed(claims,name)]
 

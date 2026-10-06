@@ -20,7 +20,7 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项明确达到/未达到并解释当前对象、依据、条件、代价与未解决项。用户要求的技能、天赋、装备和操作必须在最终方案落实；旧计划文字或关联一个数值不能证明已实现。objective_coverage 只核对来源与关联，不证明目标完整或已经达到。整体 goal 判断说明总体取舍；修复改了组成后重新判断，不继承旧结论。
 
-计算场景也关联当前事实：配装判断使用 subjects:`["configuration:candidate"]`，阶段使用 `["configuration:stage:<stage_id>"]`，引用对应 `native:<计算名>#/config_values` 或其中的具体字段。核对当前本机配置原文、进度与实际解析值，决定显式覆盖或明示假设。缺少当前场景评审会保留 config:scenario；存在引用不自动证明场景选择正确。
+计算场景也关联当前事实：配装判断使用 subjects:`["configuration:candidate"]`，阶段使用 `["configuration:stage:<stage_id>"]`，引用对应 `native:<计算名>#/config_values`、`config_controls` 或具体字段。config_controls 的 value、default 与 value_basis 分开；false 是关闭，null 是未知。核对当前本机配置原文、进度与实际解析值，决定显式覆盖或明示假设。涉及某效果开关的结论同时声明该实际值的 eq/true 或 eq/false 检查；计数、主体和持续覆盖另找依据，不能由装备存在推定。effect_state 给出护卫、药剂、各实际宝石效果及布尔配置快照，原生观察的 context 同时携带它。缺少当前场景评审会保留 config:scenario；存在引用不自动证明场景选择正确。
 
 决定性排除理由区分使用门槛、属性不足、取得渠道与效果适配；优先用当前原文或最小变体对照核验。局部限制能否通过装备、等级或条件解决，由模型结合实际数据判断，程序不添加职业/宝石专用禁令。
 
@@ -46,7 +46,7 @@ readiness.single_payments 列出所有当前启用技能对三资源的独立单
 
 共同时间线为 `timeline:{duration_seconds:时长秒数,repeat:false,events:[{skill_ref:"当前引用",at:窗口内秒数}]}`。模型按目标选择：repeat=false 检查一次有限窗口；repeat=true 检查重复周期，省略时保留已有周期输入的语义。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，核对同技能动作间隔；重复周期另查循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
 
-时间线检查范围只有离散费用和固定净回复：不计吸取、能盾充能、药剂补充、动作互斥或条件变化。非线性/按秒费用、带费用的自动触发、缺支付规则或回复量保持 unknown。未安排的有费用技能返回具体 edit_input 诊断，模型补动作或调整源方案并重算，不把输入遗漏说成能力限制。usage_rate 可由当前原生速度或零速度技能的冷却倒数得到，并核对原生每秒费用；读取 basis/metric/repeats，不按技能名猜频率。有限窗口支付通过只证明所列储量、固定回复和动作；sustained_use 仍保持 unknown。重复周期还需接缝合法且结束恢复起始储量；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
+时间线检查范围只有离散费用和固定净回复，未计敌人伤害、额外资源损失、吸取、能盾充能、药剂补充、动作互斥或条件变化；缺项可能使实际更好或更差。自动技能可投影声明的固定原生频率支付：读取 SkillTriggerRate 与每秒费用，模型选相位并在 events 安排完整窗口，程序检查相邻间隔、首尾缺口和重复接缝，同时核对每秒费用等于单次费用×该频率。automatic_schedules 说明所验证的支付安排；实际触发、启动、目标和效果变化仍未测得。缺安排为 edit_input，缺原生触发频率/支付规则、非离散费用或回复量为 unknown；零费用自动技能无需虚构支付。手动技能频率可由当前原生速度或零速度技能的冷却倒数得到，读取 usage_rate.basis/metric/repeats，不按技能名猜。有限窗口支付通过只证明所列储量、固定回复和动作；sustained_use 仍保持 unknown。重复周期还需接缝合法且结束恢复起始储量；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
 
 原生 `equipped[].flask_local` 是单件药剂参数，`flask_scope` 明示不包括角色修正、当前充能、补充事件或实际覆盖。开启药剂的快照若声明 continuous，程序会保留 `capability:flask_coverage:<槽位>`；当前适配没有完整覆盖时序测量。可以研究具体有限窗口与缺口，但不能只写“有药剂”就宣称无限续航。
 

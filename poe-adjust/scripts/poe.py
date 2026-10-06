@@ -23,7 +23,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.11"
+VERSION = "2.8.12"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
@@ -435,6 +435,7 @@ def diagnosis_summary(result):
         rows.append(f"另有次级升华已分配 {result['secondary_ascendancy_points']} 点，不能混入普通天赋或主升华点数。")
     rows += [f"{METRICS[key]}：{stats[key]:g}" for key in (damage, hit, "Life", "EnergyShield", "ChaosResist", "ManaUnreserved") if key in stats]
     rows.append("DPS 已包含引擎的命中计算，不再乘命中率。其他技能是否计入总输出以 damage_sources 的实际分项为准，不能根据装备着召唤宝石推断。")
+    rows.append(effect_statement(result,'当前角色')['text'])
     if stats.get("ManaUnreserved", 0) < 0:
         rows.append("原文件的保留配置超出可用魔力，需要调整同时开启的保留技能。各技能可能支付魔力、生命或能盾，不能据此断言所有技能都不能使用。")
     rows.append("这是原文件当前配置的诊断，未证明续航可持续，也不能直接用它承诺改装后的实战提升；后续候选会核对常态条件与资源。")
@@ -952,6 +953,17 @@ def materialize_items(plan, root):
     return resolved, audit
 
 
+def effect_statement(calculation, name):
+    state=engine.effect_state(calculation)
+    switches=[key+"="+json.dumps(value,ensure_ascii=False) for key,value in state["config_switches"].items()]
+    effects=[row['id']+"="+json.dumps(row['global_enabled'])+"/技能存在="+json.dumps(row['active_skill_present'])+
+             f"（组 {row['group']}、宝石 {row['index']}）" for row in state['global_effects']]
+    text=(name+" · 当前效果开关：护卫="+json.dumps(state['guard_active'])+"；药剂="+json.dumps(state['flasks'],ensure_ascii=False)+
+          "；全局效果="+("、".join(effects) or "无原生条目")+"；配置="+("、".join(sorted(switches)) or "见 config_controls")+
+          "。null 为未知；开关仅记录当前配置，启用、装备存在和界面可见均不证明持续覆盖。")
+    return {"kind":"effect_state","subject":name,"status":"observed" if state['config_controls_available'] else "unknown","values":state,"text":text}
+
+
 def calculation_facts(result, claims=()):
     referenced = set()
     for claim in claims:
@@ -964,6 +976,7 @@ def calculation_facts(result, claims=()):
             "points":result.get("points"),"nodes":result.get("nodes"),"ascendancy_points":result.get("ascendancy_points"),"secondary_ascendancy_points":result.get("secondary_ascendancy_points"),
             "main_skill": result.get("main_skill"), "main_skill_name": result.get("main_skill_name"),
             "config_values": result.get("config_values", {}), "config_labels": result.get("config_labels", {}),
+            "config_controls":result.get("config_controls",{}),"effect_state":engine.effect_state(result),
             "stats": {k: v for k, v in result.get("stats", {}).items() if k in set(METRICS) | referenced},
             "available_stat_keys":sorted(result.get("stats",{})),
             "stat_metadata":{k:v for k,v in result.get("stat_metadata",{}).items() if k in set(METRICS)|referenced},
@@ -994,6 +1007,7 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         statements.append({"kind":"declared_checks","status":"refuted" if totals["refuted"] else "unknown" if totals["unknown"] else "supported" if verified else "not_requested",
                            "text":f"所列可比较检查：满足 {totals['supported']} 项、不满足 {totals['refuted']} 项、未测得 {totals['unknown']} 项。其余模型解释不构成可比较命题的证明。"})
     for name,calculation in calculations.items():
+        statements.append(effect_statement(calculation,name))
         fields={key:calculation.get(key) for key in ("level","points","ascendancy_points")}
         if any(value is not None for value in fields.values()):
             values={key:str(value) if value is not None else "未知" for key,value in fields.items()}
@@ -1005,6 +1019,9 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                                "text":name+" · 当前主技能主体："+str(main.get("actor","未知"))+"；伤害、吸取与回复按该主体和资源账目分别读取，面板值不能互相借用。"})
     audits=resource_audits if resource_audits is not None else {"candidate":readiness} if readiness else {}
     for name,audit in audits.items():
+        if audit.get("timeline"):
+            statements.append({"kind":"timeline_scope","subject":name,"status":"observed",
+                               "text":name+" · 时间线测量范围："+audit["timeline"]["scope"]})
         execution=audit.get("execution_coverage")
         if execution:
             statements.append({"kind":"execution_coverage","subject":name,**execution,
@@ -1513,9 +1530,21 @@ def damage_observation(calculation, name):
 
 
 def probe(args):
-    run,state,outcome,xml,root=read_candidate(args)
+    input_file=getattr(args,'input',None)
+    if input_file:
+        bx.require(not getattr(args,'run',None) and not getattr(args,'name',None),'--input 的只读探针不能同时指定 --run/--name。',location='/input')
+        original=bx.read_document(Path(input_file));xml=bx.serialise(original)
+        root=engine.resolve_root(args.pob);state={'intent':{}}
+        outcome={'plan':{'mode':'refine'},'engine_fingerprint':engine.check(root)['engine_fingerprint']}
+    else:
+        bx.require(getattr(args,'run',None) and getattr(args,'name',None),'候选探针同时需要 --run/--name，已有 XML 只读探针用 --input。',location='/name')
+        run,state,outcome,xml,root=read_candidate(args)
+        original=bx.read_document(run/'original.xml')
     source=bx.parse(xml)
     baseline=engine.calculate(root,xml)
+    if input_file:
+        outcome['baseline']=baseline
+        bx.require(baseline['engine_fingerprint']==outcome['engine_fingerprint'],'探针读取期间引擎变化，请重算。')
     if getattr(args,"node_ids",None):
         ids=[int(v) for v in args.node_ids.split(",")]
         bx.require(ids and len(set(ids))==len(ids) and all(v>0 for v in ids),"--node-ids 使用不同的正整数节点 ID。")
@@ -1547,7 +1576,6 @@ def probe(args):
     metrics=getattr(args,"metrics",None)
     metrics=metrics.split(",") if metrics else list(METRICS)
     bx.require(all(k and isinstance(k,str) for k in metrics),"metrics 使用本次数值输出中的指标名。")
-    original=bx.read_document(run/"original.xml")
     rows=[]
     for offset in range(0,len(variants),12):
         prepared_variants=[]
@@ -1589,11 +1617,12 @@ def probe(args):
             rows.append({"id":variant["id"],**({"skill_id":variant["id"]} if not getattr(args,"variants",None) else {}),"status":"blocked" if errors+ce+audit["errors"] else "screened",
                          "engine_fingerprint":result["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"operations":variant["operations"],"crafted_items":crafts,
                          "stats":{k:result["stats"].get(k) for k in metrics},"comparison":{k:v for k,v in comparison.items() if k in metrics},"context_changes":context_changes,
+                         "effect_state":engine.effect_state(result),
                          "dps_metric":dps_metric,"dps_delta":comparison.get(dps_metric,{}).get("delta"),"damage_observation":damage,"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
                          "errors":errors+ce+audit["errors"],"pending":pending+cp+audit["pending"],"warnings":warnings+audit["warnings"],"readiness":audit})
     computed=sum('stats' in row for row in rows)
     status='screened' if computed==len(variants) else 'partial' if computed else 'failed' if any(row['status']=='failed' for row in rows) else 'blocked'
-    return {"status":status,"requested_variants":len(variants),"calculated_variants":computed,"baseline_damage_observation":damage_observation(baseline,"baseline"),"alternatives":rows,"next":"逐变体列出结果或明确失败；有 stats 的变体才通过本次原生实算及请求选择核对。比较前核对 damage_observation 的技能/主体、XML、实际场景与目标。组合必须单列变体，不能相加单项收益。未继承旧操作/证据判断，不改候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
+    return {"status":status,"source_mode":"input_xml" if input_file else "evaluated_candidate","source_xml_sha256":bx.digest(xml),"requested_variants":len(variants),"calculated_variants":computed,"baseline_effect_state":engine.effect_state(baseline),"baseline_damage_observation":damage_observation(baseline,"baseline"),"alternatives":rows,"next":"逐变体列出结果或明确失败；有 stats 的变体才通过本次原生实算及请求选择核对。比较前核对实际效果开关、damage_observation 的技能/主体、XML、场景与目标。组合必须单列变体，不能相加单项收益。--input 仅观察已有角色，不建立交付认证。未继承旧操作/证据判断，不改输入或候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
 
 
 def export(args):
@@ -2147,7 +2176,11 @@ def parser():
         cmd = sub.add_parser(name)
         cmd.add_argument("--pob", help="PoECharm 文件夹、PoB 文件夹或可执行文件；默认自动发现")
         if name in {"inspect", "decode", "start"}: cmd.add_argument("--input", required=True)
-        if name in {"start", "intent", "evaluate", "probe", "export"}: cmd.add_argument("--run", required=True)
+        if name in {"start", "intent", "evaluate", "export"}: cmd.add_argument("--run", required=True)
+        if name=='probe':
+            source=cmd.add_mutually_exclusive_group(required=True)
+            source.add_argument('--run',help='已 evaluate 的候选会话，配合 --name')
+            source.add_argument('--input',help='已有角色 XML 的只读变体观察，不建立候选或交付认证')
         if name=="status":
             context=cmd.add_mutually_exclusive_group(required=True)
             context.add_argument("--run")
@@ -2171,7 +2204,7 @@ def parser():
             cmd.add_argument("--query",default="",help="筛选 keys 字段名或文本数组，忽略大小写")
             cmd.add_argument("--limit",type=int,default=10)
             cmd.add_argument("--offset",type=int,default=0)
-        if name in {"evaluate", "probe", "export"}: cmd.add_argument("--name", required=True)
+        if name in {"evaluate", "probe", "export"}: cmd.add_argument("--name", required=name!='probe')
         if name == "evaluate": cmd.add_argument("--plan", required=True)
         if name == "probe":
             cmd.add_argument("--group", type=int)
@@ -2293,7 +2326,7 @@ def main(argv=None):
             result = probe(args)
             if args.out:
                 output=Path(args.out).resolve()
-                bx.require(output.suffix.lower()==".json" and not output.is_relative_to(Path(args.run).resolve()) and (not args.variants or output!=Path(args.variants).resolve()),"probe --out 使用会话目录外的独立 JSON，不能覆盖候选或变体输入。")
+                bx.require(output.suffix.lower()==".json" and (not args.run or not output.is_relative_to(Path(args.run).resolve())) and all(output!=Path(value).resolve() for value in (args.input,args.variants) if value),"probe --out 使用会话目录外的独立 JSON，不能覆盖角色、候选或变体输入。")
                 write_json(output,result)
                 result={"status":result["status"],"probe_file":str(output),"alternatives":[{"id":v.get("id",v.get("nodes")),"status":v["status"]} for v in result["alternatives"]],"next":result["next"]}
             else:

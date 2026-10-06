@@ -310,6 +310,20 @@ def character_state(result):
                         for item in sorted(result.get("equipped",[]),key=lambda row:row.get("slot",""))]}
 
 
+def effect_state(result):
+    """Compact current switches; never infer duration from names or visibility."""
+    controls=result.get("config_controls",{})
+    return {"config_controls_available":isinstance(result.get("config_controls"),dict) and result.get("capabilities",{}).get("native_config_controls",True),
+            "config_switches":{key:row.get("value") for key,row in controls.items() if row.get("type")=="check"},
+            "global_effects":[{**{key:effect.get(key) for key in ("id","name","global_enabled","active_skill_present")},
+                               "gem_id":gem.get("id"),"group":gem.get("group"),"index":gem.get("index"),
+                               **{key:gem.get(key) for key in ("enabled","group_enabled","slot_enabled")}}
+                              for gem in result.get("gems",[]) for effect in gem.get("granted_effects",[]) if effect.get("has_global_effect") is True],
+            "flasks":{item["slot"]:item.get("active") for item in result.get("equipped",[]) if item.get("slot","").startswith("Flask ")},
+            "guard_active":result.get("stats",{}).get("GuardSkillActive"),
+            "scope":"Current native switches and skill instances only; enabled flags, control visibility and equipment presence do not measure effect coverage."}
+
+
 def validate_contract(result, *, catalog_only=False):
     """Check the requested interface, not unrelated gameplay capabilities."""
     if catalog_only:
@@ -319,7 +333,7 @@ def validate_contract(result, *, catalog_only=False):
     required = {"stats": dict, "resource_rules": dict, "gems": list, "equipped": list,
                 "active_skills": list, "damage_sources": list, "classes": list, "excluded_guard_checks": list,
                 "nodes": list, "granted_passives": list, "config_keys": list, "config_lists": dict, "config_values": dict, "config_labels": dict,
-                "config_defaults": dict, "config_saved_values": dict,
+                "config_defaults": dict, "config_saved_values": dict, "config_controls":dict,
                 "warnings": list, "xml": str,
                 "tree_version": str, "latest_tree_version": str, "tree_context": dict, "socket_limits": dict, "capabilities": dict,
                 "skill_selections":list}
@@ -524,6 +538,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         calculation.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
         calculation["character_identity"]={"digest":bx.digest(json.dumps(character_state(calculation),ensure_ascii=False,sort_keys=True,allow_nan=False)),
             "basis":"current_native_active_state","scope":"当前原生配置、天赋、技能效果开关与装备规格；不等于输入 XML 字节摘要，不证明机制或实战可行。"}
+        calculation["effect_state"]=effect_state(calculation)
         if info["available_tree_versions"] and calculation.get("latest_tree_version") and calculation["latest_tree_version"] not in info["available_tree_versions"]:
             raise EngineError("运行中的天赋数据与安装元数据不一致，请等更新完成后重试。")
         entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("secondary_ascendancies", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", []) + calculation.get("granted_passives", [])
@@ -561,7 +576,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
                         ascendancy_path_names=[selected[key].get("display_name", selected[key]["name"]) for key in path])
     result["input_xml_sha256"] = hashlib.sha256(xml.encode("utf-8")).hexdigest() if xml else None
     for row in result.get("breakdowns",[]):
-        row["context"]={"engine_fingerprint":info["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"config_values":result.get("config_values",{})}
+        row["context"]={"engine_fingerprint":info["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"config_values":result.get("config_values",{}),"effect_state":effect_state(result)}
     if cache and not health_probe:
         temporary = None
         try:

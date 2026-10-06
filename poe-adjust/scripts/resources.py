@@ -63,6 +63,11 @@ def native_rate(skill):
     return number(costs,"SkillTriggerRate") or number(costs,"Speed")
 
 
+def native_trigger_rate(skill):
+    observed=skill.get("usage_rate",{})
+    return number(observed,"value") if observed.get("metric")=="SkillTriggerRate" else number(skill.get("costs",{}),"SkillTriggerRate")
+
+
 def available_pool(stats, resource):
     pool=number(stats,resource+"Unreserved")
     if pool is None: pool=number(stats,resource)
@@ -116,26 +121,27 @@ def timing(rows):
 
 def capabilities():
     """Describe the projection this adapter actually implements."""
-    return {"timeline":{"supported":["discrete_native_skill_payments","constant_native_net_regeneration"],
+    return {"timeline":{"supported":["discrete_native_skill_payments","constant_native_net_regeneration","declared_fixed_native_trigger_payments"],
             "schedule_modes":{"finite_window":"repeat=false","repeating_cycle":"repeat=true (default)"},
             "excluded_recovery":["leech","recharge","flask"],
-            "unsupported":["action_exclusion","changing_conditions","non_discrete_payments","automatic_cost_schedules"],
+            "unsupported":["action_exclusion","changing_conditions","non_discrete_payments","trigger_realization"],
             "event_reference":"current active_skills[].skill_ref",
-            "scope":"当前配置固定净回复下的离散费用时间线；不含命中吸取、充能、药剂补充、动作互斥或条件效果变化，也不改变原生 DPS。"}}
+            "scope":"当前配置固定净回复下的离散费用时间线；未计敌人伤害、额外资源损失、命中吸取、充能、药剂补充、动作互斥或条件变化，也不改变原生 DPS。未测量部分可能使实际结果更好或更差。"}}
 
 
 def timeline_assessment(result, timeline):
     """Replay discrete payments on one clock using constant native net regen.
 
     This bounded projection excludes leech, recharge and flask refills. Channels
-    and automatic effects that cannot be reduced to discrete payments stay unknown.
+    and automatic effects without a complete declared native-rate payment pattern
+    stay unknown. A payment projection never certifies the trigger actually fires.
     """
     input_shape({"timeline":timeline})
     duration=number(timeline,"duration_seconds")
     repeating=timeline.get("repeat",True)
     events=timeline.get("events")
     skills={s["skill_ref"]:s for s in result.get("active_skills",[]) if s.get("skill_ref") and not s.get("disabled")}
-    rows=[]; diagnostics=[]; pending=[]; errors=[]; previous={}
+    rows=[]; diagnostics=[]; pending=[]; errors=[]; previous={}; automatic_schedules={}
     for index,event in enumerate(events):
         path=f"/timeline/events/{index}"
         ref,at=event.get("skill_ref"),number(event,"at")
@@ -144,20 +150,31 @@ def timeline_assessment(result, timeline):
     rows.sort(key=lambda row:(row["at"],row["source_index"]))
     for event in rows:
         ref,at=event["skill_ref"],event["at"]
-        rate=native_rate(skills[ref])
-        if skills[ref].get("trigger"):
-            pending.append("capability:timeline:trigger:"+ref)
-        elif rate is None or rate<=0: pending.append("capability:timeline:frequency:"+ref)
+        rate=native_trigger_rate(skills[ref]) if skills[ref].get("trigger") else native_rate(skills[ref])
+        if rate is None or rate<=0: pending.append("capability:timeline:frequency:"+ref)
         elif ref in previous and at-previous[ref]<1/rate-1e-8:
             message="时间线同技能动作间隔短于当前原生频率："+ref
             errors.append(message);diagnostics.append({"code":"timeline_frequency_exceeded","location":f"/timeline/events/{event['source_index']}/at","expected":{"minimum_interval_seconds":1/rate},"actual":at-previous[ref],"message":message,"action":"edit_input"})
         previous[ref]=at
     # The wraparound interval is also part of a claimed repeating cycle.
     for ref,last in previous.items() if repeating else []:
-        first=next(e["at"] for e in rows if e["skill_ref"]==ref);rate=native_rate(skills[ref])
+        first=next(e["at"] for e in rows if e["skill_ref"]==ref)
+        rate=native_trigger_rate(skills[ref]) if skills[ref].get("trigger") else native_rate(skills[ref])
         if rate and rate>0 and duration-last+first<1/rate-1e-8:
             errors.append("时间线重复周期的同技能间隔不足："+ref)
             diagnostics.append({"code":"timeline_repeat_interval","location":"/timeline/duration_seconds","skill_ref":ref,"expected":{"minimum_duration_seconds":last-first+1/rate},"actual":duration,"action":"edit_input","message":"重复周期需要核对末次到下周期首次动作的间隔。"})
+    for ref,skill in skills.items():
+        if not skill.get("trigger"): continue
+        rate=native_trigger_rate(skill)
+        times=[row['at'] for row in rows if row['skill_ref']==ref]
+        interval=1/rate if rate is not None and rate>0 else None
+        complete=bool(times) and interval is not None and times[0]<interval and duration-times[-1]<=interval+1e-8
+        if complete:
+            complete=all(math.isclose(after-before,interval,rel_tol=1e-7,abs_tol=1e-8) for before,after in zip(times,times[1:]))
+        if complete and repeating: complete=math.isclose(duration-times[-1]+times[0],interval,rel_tol=1e-7,abs_tol=1e-8)
+        automatic_schedules[ref]={'status':'supported' if complete else 'unknown','native_rate':rate,'interval_seconds':interval,
+                                  'event_count':len(times),'first_payment_at':times[0] if times else None,
+                                  'scope':'Declared fixed native SkillTriggerRate payment pattern and phase only; startup, targets, trigger realization and changing rates are unmeasured.'}
     eb=result.get("resource_rules",{}).get("energy_shield_protects_mana")
     records=[]
     for resource,cost_key in (("Mana","Mana"),("Life","Life"),("EnergyShield","ES")):
@@ -167,11 +184,18 @@ def timeline_assessment(result, timeline):
         payments={ref:payment(s.get("costs",{}),cost_key,eb,s.get("no_cost") is True) for ref,s in skills.items()}
         gaps=[]
         for ref,skill in skills.items():
-            single=payments[ref];full=number(skill.get("costs",{}),cost_key+"PerSecondCost");rate=native_rate(skill)
+            single=payments[ref];full=number(skill.get("costs",{}),cost_key+"PerSecondCost")
+            rate=native_trigger_rate(skill) if skill.get("trigger") else native_rate(skill)
             if skill.get("no_cost") is True and full is None: full=0
             if single is not None and single<0 or full is not None and full<0: gaps.append("negative_payment:"+ref)
             if eb is None and resource in {"Mana","EnergyShield"} and (number(skill.get("costs",{}),"ManaCost") or 0)>0: gaps.append("payment_rule:"+ref)
-            if skill.get("trigger") and full!=0: gaps.append("automatic:"+ref)
+            if skill.get("trigger") and (single!=0 or full!=0) and automatic_schedules[ref]['status']!='supported':
+                gaps.append("automatic:"+ref)
+                code='timeline_automatic_rate_unavailable' if rate is None or rate<=0 else 'timeline_automatic_schedule_incomplete'
+                pending.append(('capability:timeline:trigger:' if code.endswith('unavailable') else 'resource:'+resource+':timeline_schedule:')+ref)
+                diagnostics.append({'code':code,'location':'/timeline/events','skill_ref':ref,'resource_id':resource,'actual':automatic_schedules[ref],
+                                    'action':'inspect_capability' if code.endswith('unavailable') else 'edit_input',
+                                    'message':'带费用的自动技能需要当前原生 SkillTriggerRate 和完整声明的固定频率支付安排；模型确定相位、补事件或修改源方案后重算。此投影不证明实际触发或条件覆盖。'})
             if any(e["skill_ref"]==ref for e in rows) and (single is None or full is None or (single!=0 or full!=0) and (rate is None or not math.isclose(full,single*rate,rel_tol=1e-5,abs_tol=1e-5))): gaps.append("payment_projection:"+ref)
             if single and single>0 and not any(e["skill_ref"]==ref for e in rows) and not skill.get("trigger"):
                 gaps.append("unscheduled:"+ref)
@@ -195,7 +219,7 @@ def timeline_assessment(result, timeline):
             elif repeating and not record["repeatable"]: pending.append("resource:"+resource+":timeline_repeat")
         elif pool is None or pool<0 or regen is None or any(not gap.startswith("unscheduled:") for gap in gaps): pending.append("capability:timeline:"+resource)
         records.append(record)
-    return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
+    return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"automatic_schedules":automatic_schedules,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
             "scope":capabilities()["timeline"]["scope"]}
 
 

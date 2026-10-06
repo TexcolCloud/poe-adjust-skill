@@ -97,4 +97,10 @@ Calcs 使用输入角色的主技能状态、EFFECTIVE 模式与战斗配置。`
 
 `--out` 的比较文件放在会话目录外的普通任务工作区，避免覆盖候选。模型读取需要的行，勿一次输出大矩阵导致平台转存到内部目录。
 
+## 复核已有交付
+
+用户提供原角色、待复核 XML 与作者说明时，先分别 inspect --calculate 保存当前原生观察；作者说明是待验证主张。依次核对实际对象与开关、数字是否可复现、因果是否成立、用户各项要求是否满足。相同数字或 XML 可回读不替代后两项。用当前 config_controls 和原文区分物品授予技能、配置实际开启与效果覆盖；某个技能探针无变化不能直接判为“引擎未实现”。击杀时间还需要对应敌人生命、伤害阶段等依据，不能仅由 DPS 宣称。
+
+已有 XML 的受控实验直接用 `probe --input '<待复核.xml>' --variants '<工作区>/variants.json' --metrics '<本次指标>' --out '<工作区>/probe.json'`。它复用同一 operations、原生批量计算和费用检查，不写源 XML、不建立新候选或认证交付；按返回 baseline_effect_state 与各变体 effect_state 核对实验实际改变了哪个开关。不要自行拼接 Config/Calcs、正则改 XML 或另写临时变体生成器。候选会话仍用 probe --run/--name；两种来源进入同一实算路径。需要改进交付时，用完整 plan/evaluate/export，由原生 SaveDB 生成 XML；仅审阅通过可保留原 XML，并明确其已核对范围与未解决项。
+
 引擎查询/计算自动缓存到当前用户临时目录 `poe-adjust-cache`，仅含可丢弃 JSON、总量受控；不用用户维护。键包括安装位置、所有相关引擎/适配器内容指纹、完整 XML 和参数。命中前检查结果摘要；损坏、缺失或内容更新时重算。最终导出、回读和 doctor 跳过结果缓存重新启动原生引擎。命令的 `runtime` 分别报告 requests、worker_calls、cache_hits、worker_seconds、elapsed_seconds；缓存命中不算新一次原生计算，也不刷新网页或市场报价的真实查阅日期。
