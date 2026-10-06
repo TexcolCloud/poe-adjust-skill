@@ -44,9 +44,9 @@ readiness.single_payments 列出所有当前启用技能对三资源的独立单
 
 每行 mean_use 给出当前技能原生满速 cost_per_second、fixed_net_regeneration_per_second 及相减后的 net_drain_per_second。固定净回复优先用当前 Net<Resource>Regen，否则要求同时读到回复和持续伤害；缺值不填零。mean_pool_depletion_seconds 仅在正净消耗下给平均储量耗尽估算，生命保留正储量；非正净消耗或缺值为 null，不宣称无限续航。它是独立平均投影，不模拟离散扣费、其他动作、命中吸取、充能、药剂或效果变化；准确动作支付与混合节奏用 timeline。
 
-共同时间线为 `timeline:{duration_seconds:周期秒数,events:[{skill_ref:"当前引用",at:周期内秒数}]}`。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。模型选择有依据的节奏，程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，并核对同技能动作间隔及循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
+共同时间线为 `timeline:{duration_seconds:时长秒数,repeat:false,events:[{skill_ref:"当前引用",at:窗口内秒数}]}`。模型按目标选择：repeat=false 检查一次有限窗口；repeat=true 检查重复周期，省略时保留已有周期输入的语义。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，核对同技能动作间隔；重复周期另查循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
 
-时间线检查范围只有离散费用和固定净回复：不计吸取、能盾充能、药剂补充、动作互斥或条件变化。非线性/按秒费用、带费用的自动触发、未安排的有费用技能、缺支付规则或回复量保持 unknown，不能填零。一次周期能支付且结束恢复到起始储量才支持重复；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
+时间线检查范围只有离散费用和固定净回复：不计吸取、能盾充能、药剂补充、动作互斥或条件变化。非线性/按秒费用、带费用的自动触发、缺支付规则或回复量保持 unknown。未安排的有费用技能返回具体 edit_input 诊断，模型补动作或调整源方案并重算，不把输入遗漏说成能力限制。usage_rate 可由当前原生速度或零速度技能的冷却倒数得到，并核对原生每秒费用；读取 basis/metric/repeats，不按技能名猜频率。有限窗口支付通过只证明所列储量、固定回复和动作；sustained_use 仍保持 unknown。重复周期还需接缝合法且结束恢复起始储量；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
 
 原生 `equipped[].flask_local` 是单件药剂参数，`flask_scope` 明示不包括角色修正、当前充能、补充事件或实际覆盖。开启药剂的快照若声明 continuous，程序会保留 `capability:flask_coverage:<槽位>`；当前适配没有完整覆盖时序测量。可以研究具体有限窗口与缺口，但不能只写“有药剂”就宣称无限续航。
 

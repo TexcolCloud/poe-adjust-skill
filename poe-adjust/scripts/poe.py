@@ -22,7 +22,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.4"
+VERSION = "2.8.5"
 SCHEMA_VERSION = 2
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
@@ -867,10 +867,16 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         if sustained:
             state=sustained["status"]
             statements.append({"kind":"sustained_use","subject":name,"status":state,"text":name+" · "+{"supported":"所列离散时间线可在固定净回复下重复；范围不含吸取、充能、药剂补充、动作互斥及条件变化。","refuted":"所列时间线有无法支付、耗尽或频率矛盾，不能作持续使用保证。","unknown":"持续使用尚未测得；资源快照的正余额或独立单次支付不能证明启动、连续动作及效果覆盖。"}[state]})
+        finite=audit.get("timeline") is not None and not audit["timeline"].get("repeat",True)
+        resource_messages={"supported":"所列离散动作可在当前固定净回复下重复；未计吸取、充能与药剂补充。",
+                           "refuted":"时间线中有无法支付或耗尽的时点。","unknown":"持续重复尚未证实，具体费用/窗口缺口见时间线。"}
+        if finite:
+            resource_messages.update(supported="所列有限窗口的逐次支付通过；未验证重复接缝，不作持续使用保证。未计吸取、充能与药剂补充。",
+                                     unknown="所列窗口支付尚未证实，具体费用/窗口缺口见时间线。")
         for resource in audit.get("timeline",{}).get("resources",[]) if audit.get("timeline") else []:
-            state="supported" if resource["status"]=="supported" and resource["repeatable"] else "refuted" if resource["status"]=="refuted" else "unknown"
+            state=resource["status"] if finite else "supported" if resource["status"]=="supported" and resource["repeatable"] else "refuted" if resource["status"]=="refuted" else "unknown"
             statements.append({"kind":"resource","calculation":name,"subject":resource["resource_id"],"status":state,
-                               "text":name+" · "+resource["resource_id"]+"："+{"supported":"所列离散动作可在当前固定净回复下重复；未计吸取、充能与药剂补充。","refuted":"时间线中有无法支付或耗尽的时点。","unknown":"持续重复尚未证实，具体费用/窗口缺口见时间线。"}[state]})
+                               "text":name+" · "+resource["resource_id"]+"："+resource_messages[state]})
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
             "facts_summary":"\n\n".join([s["text"] for s in statements]+[m["text"] for m in measurements]),
             "scope":"仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
@@ -879,8 +885,12 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
 def delivery_actions(outcome,input_file,details_file,review_file,details_pointer=""):
     """Expose work from observed errors and dependencies, without choosing game policy."""
     shared={"input_file":str(input_file),"details_file":str(details_file)}
+    if Path(input_file).is_file(): shared["input_revision"]=bx.digest(Path(input_file).read_bytes())
     actions=[]
-    repairs=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="edit_input" and row.get("location")]
+    claim_reviews=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="review_claims" and row.get("claim_id")]
+    ids=list(dict.fromkeys(row["claim_id"] for row in claim_reviews))
+    repairs=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="edit_input" and row.get("location")
+             and not (row.get("code")=="goal_claim_unresolved" and isinstance(row.get("actual"),dict) and row["actual"].get("claim_id") in ids)]
     if outcome["errors"] or repairs:
         actions.append({**shared,"action":"repair_input","pointer":details_pointer+("/errors" if outcome["errors"] else "/diagnostics"),
                         "total":len(outcome["errors"]) if outcome["errors"] else len(repairs),"diagnostics":repairs,
@@ -892,6 +902,9 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     if scenes:
         actions.append({**shared,"action":"review_configuration","diagnostics":scenes,
                         "instruction":"先将用户目标场景落到计算输入；按实际配置与当前本机配置原文选择条件，确认重算结果后再评审。"})
+    if claim_reviews:
+        actions.append({**shared,"action":"review_claims","claim_ids":ids,"changes":{"review_claims":ids},"diagnostics":claim_reviews,
+                        "instruction":"先逐条核对这些判断与当前事实，修正源文字，再用 edit 提交 changes 并重算。绑定由程序生成；完整结果的最终复核在此后单独提交。"})
     unsupported=[value for value in outcome["pending"] if value.startswith(("capability:","native:"))]
     dependencies=[value for value in outcome["pending"] if not value.startswith(("final_review:","capability:","native:"))]
     if dependencies:
@@ -1001,9 +1014,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
          "pending": list(dict.fromkeys(pending)), "errors": errors}, assessment)
     pending += review_pending
     errors, pending = list(dict.fromkeys(errors)), list(dict.fromkeys(pending))
-    diagnostics=list(audit.get("diagnostics",[]))+goal_diagnostics+scene_diagnostics
-    for claim in claims:
-        diagnostics.extend({**row,"claim_id":claim["claim_id"],"category":"input","status":"unknown"} for row in claim["diagnostics"])
+    diagnostics=list(audit.get("diagnostics",[]))+goal_diagnostics+scene_diagnostics+facts.claim_diagnostics(claims)
     for objective in coverage:
         diagnostics.extend({**row,"subject":objective["required_subject"],"category":"input","status":"unknown"} for row in objective["diagnostics"])
     for category,messages in (("mechanical",mechanical_errors),("user_constraint",constraint_errors),("usage",audit["errors"]),("budget",["已知采购成本下界超过用户预算。"] if budget["over_budget"] else [])):
@@ -1654,6 +1665,12 @@ def calculate_route(args):
     final_checked,final_warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
     checked["pending"]=[p for p in checked["pending"] if p not in validation_pending]+final_checked["pending"]
     checked["claims"]=claims;checked["objective_coverage"]=final_checked["objective_coverage"];checked["diagnostics"]=final_checked["diagnostics"]
+    for index,stage in enumerate(checked["stages"]):
+        for row in stage.get("calculation",{}).get("readiness",{}).get("diagnostics",[]):
+            diagnostic={**row,"stage_id":stage["stage_id"]}
+            if row.get("location","").startswith(("/timeline","/usage")):
+                diagnostic["location"]=f"/stages/{index}/snapshot"+row["location"]
+            checked["diagnostics"].append(diagnostic)
     for old,final in zip(checked["stages"],final_checked["stages"]): old["instance_transitions"]=final["instance_transitions"]
     checked["pending"] += ["claim_check:"+c["claim_id"] for c in claims if c["check_status"] in {"refuted","unknown"}]
     checked["pending"] += ["claim_revision:"+c["claim_id"] for c in claims if any(d["code"] in {"claim_binding_stale","claim_binding_missing"} for d in c["diagnostics"])]

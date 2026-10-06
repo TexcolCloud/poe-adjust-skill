@@ -1286,6 +1286,18 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(actions[1]['pointer'],'/checked_route/pending')
         self.assertEqual(poe.delivery_actions({'status':'scoped_result','errors':[],'pending':[]},'a','b','c'),[])
 
+    def test_missing_claim_bindings_return_direct_review_action_before_final_review(self):
+        diagnostics=[{"code":"claim_binding_missing","action":"review_claims","claim_id":"future-id","location":"/claims/0/bindings"},
+                     {"code":"claim_binding_stale","action":"review_claims","claim_id":"other-id","location":"/claims/1/bindings"}]
+        outcome={"status":"draft","errors":[],"pending":["claim_revision:future-id","claim_revision:other-id","final_review:missing"],"diagnostics":diagnostics}
+        actions=poe.delivery_actions(outcome,'source.json','result.json','review.json','/checked_route')
+        action=next(row for row in actions if row["action"]=="review_claims")
+        self.assertEqual(action["claim_ids"],["future-id","other-id"])
+        self.assertEqual(action["changes"],{"review_claims":["future-id","other-id"]})
+        self.assertEqual(action["input_file"],"source.json")
+        self.assertEqual(action["diagnostics"],diagnostics)
+        self.assertLess(actions.index(action),next(i for i,row in enumerate(actions) if row["action"]=="review_current_result"))
+
     def test_calculation_facts_exposes_current_keys_without_inventing_values(self):
         result={'stats':{'SeasonSpecificObservation':0,'SeasonSpecificFlag':False,'Life':1}}
         observed=poe.calculation_facts(result)
@@ -1597,6 +1609,34 @@ class TimelineTests(unittest.TestCase):
         self.assertFalse(audit["resources"][0]["repeatable"]);self.assertEqual(audit["status"],"unknown")
         packet=poe.publication("draft",[],audit["pending"],{"status":"unknown"},{},readiness={"timeline":audit})
         self.assertEqual(packet["statements"][2]["status"],"unknown")
+
+    def test_finite_window_does_not_require_pool_restoration_or_loop_seam(self):
+        result,timeline=self.fixture();result["stats"]["ManaRegenRecovery"]=1
+        timeline.update(repeat=False,events=[{"skill_ref":"main","at":0},{"skill_ref":"move","at":1},{"skill_ref":"main","at":2.9}])
+        audit=resources.assess(result,{}, {"timeline":timeline})
+        self.assertEqual(audit["timeline"]["status"],"supported")
+        self.assertFalse(audit["timeline"]["resources"][0]["repeatable"])
+        self.assertNotIn("resource:Mana:timeline_repeat",audit["pending"])
+        self.assertEqual(audit["sustained_use"]["status"],"unknown")
+        packet=poe.publication("draft",[],audit["pending"],{"status":"unknown"},{},readiness=audit)
+        resource=next(row for row in packet["statements"] if row["kind"]=="resource" and row["subject"]=="Mana")
+        self.assertEqual(resource["status"],"supported")
+        timeline["events"][2]["at"]=.1
+        self.assertTrue(resources.timeline_assessment(result,timeline)["errors"])
+        with self.assertRaises(bx.ContractError):resources.input_shape({"timeline":{**timeline,"repeat":0}})
+
+    def test_unscheduled_paid_skill_has_input_diagnostic_not_capability_label(self):
+        result,timeline=self.fixture();timeline["events"]=[e for e in timeline["events"] if e["skill_ref"]!="move"]
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit["status"],"unknown")
+        diagnostic=next(d for d in audit["diagnostics"] if d["code"]=="timeline_skill_unscheduled")
+        self.assertEqual(diagnostic["skill_ref"],"move")
+        self.assertEqual(diagnostic["resource_id"],"Mana")
+        self.assertEqual(diagnostic["location"],"/timeline/events")
+        self.assertEqual(diagnostic["action"],"edit_input")
+        self.assertNotIn("capability:timeline:Mana",audit["pending"])
+        del result["active_skills"][0]["costs"]["ManaCost"]
+        self.assertIn("capability:timeline:Mana",resources.timeline_assessment(result,timeline)["pending"])
 
     def test_missing_payment_rule_or_non_linear_or_automatic_cost_stays_unknown(self):
         original,timeline=self.fixture()
@@ -2354,6 +2394,25 @@ class RealEngineTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "适配器变化"):
                 poe.read_candidate(args(run=str(self.run_dir), name="fingerprint-after"))
 
+    def test_48_current_cooldown_supports_zero_speed_manual_payments(self):
+        plan=copy.deepcopy(self.rebuild)
+        plan["operations"]["replace_skills"].append({"slot":"Helmet","gems":[{"skill_id":"ImmortalCall","level":1,"enable_global1":False}]})
+        self.evaluate_plan(plan,"manual-cooldown")
+        result=poe.read_json(self.run_dir/"candidates/manual-cooldown/evaluation.json")["result"]
+        skill=next(s for s in result["active_skills"] if s["id"]=="ImmortalCall")
+        self.assertFalse(skill.get("trigger"));self.assertEqual(skill["costs"]["Speed"],0)
+        cooldown=skill["costs"]["Cooldown"]
+        self.assertGreater(cooldown,0)
+        self.assertAlmostEqual(resources.native_rate(skill),1/cooldown/skill["costs"].get("Repeats",1))
+        focused={**result,"active_skills":[skill]}
+        timeline={"duration_seconds":cooldown*1.5,"repeat":False,"events":[{"skill_ref":skill["skill_ref"],"at":0},{"skill_ref":skill["skill_ref"],"at":cooldown}]}
+        audit=resources.timeline_assessment(focused,timeline)
+        self.assertFalse(audit["errors"]);self.assertFalse(audit["pending"])
+        row=next(r for r in audit["resources"] if r["resource_id"]=="Mana")
+        self.assertEqual([t["payment"] for t in row["trace"]],[skill["costs"]["ManaCost"]]*2)
+        timeline["events"][1]["at"]=cooldown/2
+        self.assertTrue(resources.timeline_assessment(focused,timeline)["errors"])
+
     def test_29_excluded_guard_keeps_trigger_validation_and_resource_costs(self):
         plan = copy.deepcopy(self.rebuild)
         plan["operations"]["replace_skills"].append({"slot": "Helmet", "gems": [
@@ -2745,6 +2804,9 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(checked["reference_contract"]["stage:a"]["fields"]["stats"],"native:stage:a#/stats")
         self.assertEqual(checked["reference_contract"]["resources:stage:a"]["origin"],"program_assessment")
         self.assertTrue(any(a["action"]=="view" and a["pointer"]=="/checked_route/reference_contract" for a in response["next_actions"]))
+        claim_action=next(a for a in response["next_actions"] if a["action"]=="review_claims")
+        self.assertEqual(claim_action["claim_ids"],["stage"])
+        self.assertEqual(claim_action["input_revision"],bx.digest(path.read_bytes()))
         self.assertEqual(first["calculation"]["stats"]["Life"],checked["evidence"]["native:stage:a#/stats/Life"]["value"])
         self.assertEqual(checked["evidence"]["native:stage:a#/stats/Life"]["context"]["xml_sha256"],first["calculation"]["xml_sha256"])
         self.assertTrue(Path(first["calculation"]["xml_path"]).exists())
@@ -2753,6 +2815,17 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(checked["budget_assessment"]["status"],"user_declared")
         self.assertEqual(checked["budget_assessment"]["materials"][0]["quantity"],1)
         self.assertEqual(first["calculation"]["material_specs"][0]["spec_sha256"],held_item["spec_sha256"])
+        stage["snapshot"]["timeline"]={"duration_seconds":2,"repeat":False,"events":[]}
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):
+            missing_schedule=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        schedule_checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        schedule_diagnostic=next(d for d in schedule_checked["diagnostics"] if d["code"]=="timeline_skill_unscheduled")
+        self.assertEqual(schedule_diagnostic["location"],"/stages/0/snapshot/timeline/events")
+        self.assertEqual(schedule_diagnostic["stage_id"],"a")
+        repair=next(a for a in missing_schedule["next_actions"] if a["action"]=="repair_input")
+        self.assertIn(schedule_diagnostic,repair["diagnostics"])
+        stage["snapshot"].pop("timeline")
         stage["entry_checks"]=[{"check_id":"conditional-life","locator":"/stats/Life","op":"ge","value":first["calculation"]["stats"]["Life"]+1,"claim_id":"stage"}]
         route["assessment"]={"goal_claim_ids":["stage"],"scope":"Fixture only"}
         poe.write_json(path,route)

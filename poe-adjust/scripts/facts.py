@@ -482,6 +482,12 @@ def has_claim(claims, subject):
     return any(row["status"] == "model_assessed" and subject in row["subjects"] for row in claims)
 
 
+def claim_diagnostics(claims):
+    """Keep current per-claim repair instructions in both delivery paths."""
+    return [{**row,"claim_id":claim["claim_id"],"category":"input","status":"unknown"}
+            for claim in claims for row in claim.get("diagnostics",[])]
+
+
 def configuration_reviewed(claims, calculation_name):
     reference="native:"+calculation_name+"#/config_values"
     return any(c["status"]=="model_assessed" and "configuration:"+calculation_name in c["subjects"] and

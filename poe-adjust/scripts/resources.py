@@ -27,9 +27,10 @@ def input_shape(document, *, complete=True):
         if "timeline" in document: bx.require(not set(row)&{"casts_per_second","active_seconds","recovery_seconds","continuous"},"共同时间线已定义频率/窗口；usage 只关联技能和判断。",location=path,expected=["skill_ref","claim_id"],actual=sorted(row))
     if "timeline" not in document: return
     timeline=document["timeline"]
-    bx.require_keys(timeline,{"duration_seconds","events"},"/timeline")
+    bx.require_keys(timeline,{"duration_seconds","events","repeat"},"/timeline")
+    if "repeat" in timeline: bx.require(type(timeline["repeat"]) is bool,"repeat 应为布尔值；false 检查有限窗口，true 检查重复周期。",location="/timeline/repeat",expected="boolean",actual=timeline["repeat"])
     duration=number(timeline,"duration_seconds")
-    if complete or "duration_seconds" in timeline: bx.require(duration is not None and duration>0,"时间线需要有限正周期。",location="/timeline/duration_seconds",expected="positive seconds",actual=timeline.get("duration_seconds"))
+    if complete or "duration_seconds" in timeline: bx.require(duration is not None and duration>0,"时间线需要有限正时长。",location="/timeline/duration_seconds",expected="positive seconds",actual=timeline.get("duration_seconds"))
     if complete or "events" in timeline:
         events=timeline.get("events")
         bx.require(isinstance(events,list) and len(events)<=1000,"events 为至多1000次动作的数组。",location="/timeline/events",expected="array (engineering limit 1000)",actual=type(events).__name__)
@@ -116,6 +117,7 @@ def timing(rows):
 def capabilities():
     """Describe the projection this adapter actually implements."""
     return {"timeline":{"supported":["discrete_native_skill_payments","constant_native_net_regeneration"],
+            "schedule_modes":{"finite_window":"repeat=false","repeating_cycle":"repeat=true (default)"},
             "excluded_recovery":["leech","recharge","flask"],
             "unsupported":["action_exclusion","changing_conditions","non_discrete_payments","automatic_cost_schedules"],
             "event_reference":"current active_skills[].skill_ref",
@@ -130,6 +132,7 @@ def timeline_assessment(result, timeline):
     """
     input_shape({"timeline":timeline})
     duration=number(timeline,"duration_seconds")
+    repeating=timeline.get("repeat",True)
     events=timeline.get("events")
     skills={s["skill_ref"]:s for s in result.get("active_skills",[]) if s.get("skill_ref") and not s.get("disabled")}
     rows=[]; diagnostics=[]; pending=[]; errors=[]; previous={}
@@ -150,10 +153,11 @@ def timeline_assessment(result, timeline):
             errors.append(message);diagnostics.append({"code":"timeline_frequency_exceeded","location":f"/timeline/events/{event['source_index']}/at","expected":{"minimum_interval_seconds":1/rate},"actual":at-previous[ref],"message":message,"action":"edit_input"})
         previous[ref]=at
     # The wraparound interval is also part of a claimed repeating cycle.
-    for ref,last in previous.items():
+    for ref,last in previous.items() if repeating else []:
         first=next(e["at"] for e in rows if e["skill_ref"]==ref);rate=native_rate(skills[ref])
         if rate and rate>0 and duration-last+first<1/rate-1e-8:
             errors.append("时间线重复周期的同技能间隔不足："+ref)
+            diagnostics.append({"code":"timeline_repeat_interval","location":"/timeline/duration_seconds","skill_ref":ref,"expected":{"minimum_duration_seconds":last-first+1/rate},"actual":duration,"action":"edit_input","message":"重复周期需要核对末次到下周期首次动作的间隔。"})
     eb=result.get("resource_rules",{}).get("energy_shield_protects_mana")
     records=[]
     for resource,cost_key in (("Mana","Mana"),("Life","Life"),("EnergyShield","ES")):
@@ -169,7 +173,10 @@ def timeline_assessment(result, timeline):
             if eb is None and resource in {"Mana","EnergyShield"} and (number(skill.get("costs",{}),"ManaCost") or 0)>0: gaps.append("payment_rule:"+ref)
             if skill.get("trigger") and full!=0: gaps.append("automatic:"+ref)
             if any(e["skill_ref"]==ref for e in rows) and (single is None or full is None or (single!=0 or full!=0) and (rate is None or not math.isclose(full,single*rate,rel_tol=1e-5,abs_tol=1e-5))): gaps.append("payment_projection:"+ref)
-            if single and not any(e["skill_ref"]==ref for e in rows) and not skill.get("trigger"): gaps.append("unscheduled:"+ref)
+            if single and single>0 and not any(e["skill_ref"]==ref for e in rows) and not skill.get("trigger"):
+                gaps.append("unscheduled:"+ref)
+                pending.append("resource:"+resource+":timeline_schedule:"+ref)
+                diagnostics.append({"code":"timeline_skill_unscheduled","location":"/timeline/events","skill_ref":ref,"resource_id":resource,"payment":single,"action":"edit_input","message":"当前启用的有费用技能未安排到共同时间线；由模型补实际动作或调整源方案并重算。这是输入缺口，不是冷却技能一律无法测量。"})
         known=pool is not None and pool>=0 and regen is not None and not gaps
         record={"resource_id":resource,"duration_seconds":duration,"initial":pool,"net_regeneration_per_second":regen,
                 "included_recovery":"native_net_regen_only","excluded_recovery":capabilities()["timeline"]["excluded_recovery"],"status":"unknown","trace":[],"repeatable":None,"gaps":gaps}
@@ -185,10 +192,10 @@ def timeline_assessment(result, timeline):
             if (resource=="Life" and balance<=0) or (resource!="Life" and balance<0): failed=True
             record.update(final=balance,status="refuted" if failed else "supported",repeatable=not failed and balance>=pool-1e-8)
             if failed: errors.append("共同时间线中存在无法支付或耗尽的资源："+resource)
-            elif not record["repeatable"]: pending.append("resource:"+resource+":timeline_repeat")
-        else: pending.append("capability:timeline:"+resource)
+            elif repeating and not record["repeatable"]: pending.append("resource:"+resource+":timeline_repeat")
+        elif pool is None or pool<0 or regen is None or any(not gap.startswith("unscheduled:") for gap in gaps): pending.append("capability:timeline:"+resource)
         records.append(record)
-    return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"events":rows,"resources":records,"errors":errors,"pending":pending,"diagnostics":diagnostics,
+    return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
             "scope":capabilities()["timeline"]["scope"]}
 
 
@@ -368,7 +375,9 @@ def assess(result, intent, plan, claims=None):
             message=f"技能 {row['skill_ref']} 的 {row['resource_id']} 单次支付 {row['payment']:g} 超出可用储量 {row['pool']:g}（生命须支付后存活）。"
             errors.append(message);diagnostics.append({"code":"single_payment_unaffordable","location":row["cost_source"]["skill_pointer"],"subject":row["skill_ref"],"resource_id":row["resource_id"],"expected":{"pool":row["pool"],"life_must_remain_positive":row["resource_id"]=="Life"},"actual":row["payment"],"message":message,"action":"inspect_error"})
         elif row["status"]=="unknown": pending.append("native:single_payment:"+str(row["skill_ref"])+":"+row["resource_id"])
-    sustained={"status":timeline["status"] if timeline else "unknown","basis":"discrete_timeline_at_native_net_regen" if timeline else "no_common_timeline",
-               "scope":capabilities()["timeline"]["scope"] if timeline else "仅有资源快照与独立支付事实；连续动作、启动/中断和效果覆盖未测得。"}
+    finite=timeline is not None and not timeline["repeat"]
+    sustained={"status":timeline["status"] if timeline and (not finite or timeline["status"]=="refuted") else "unknown",
+               "basis":"finite_window_only" if finite else "discrete_timeline_at_native_net_regen" if timeline else "no_common_timeline",
+               "scope":"本次仅检查所列有限窗口；没有核对重复接缝，窗口支付通过不证明持续重复。" if finite else capabilities()["timeline"]["scope"] if timeline else "仅有资源快照与独立支付事实；连续动作、启动/中断和效果覆盖未测得。"}
     return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"timeline":timeline,"single_payments":payments,"sustained_use":sustained,
             "conditions":{"guard_active":guard,"active_flasks":flasks,"flask_facts":flask_facts,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。药剂局部数据不证明持续补充，无持续覆盖测量时保留 capability 缺口。"},"resources":resources,"additional_native_costs":extra_costs,"diagnostics":diagnostics}

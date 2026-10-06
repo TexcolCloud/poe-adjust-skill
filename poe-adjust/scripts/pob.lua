@@ -225,6 +225,12 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   local nativeOutput = cached and cached.Env.player.output or {}
   local rateKey = computed.skillFlags.trap and "TrapThrowingSpeed" or computed.skillFlags.mine and "MineLayingSpeed" or computed.skillFlags.totem and "TotemPlacementSpeed" or "Speed"
   local rate = nativeOutput.SkillTriggerRate or nativeOutput[rateKey]
+  local rateMetric = nativeOutput.SkillTriggerRate and "SkillTriggerRate" or rateKey
+  local rateBasis = "native_action_rate"
+  -- Native upfront-cost calculation falls back to cooldown for zero-speed casts.
+  if not computed.infoTrigger and nativeOutput.SkillTriggerRate == nil and rate == 0 and type(nativeOutput.Cooldown) == "number" and nativeOutput.Cooldown > 0 then
+    rate, rateMetric, rateBasis = 1 / nativeOutput.Cooldown, "Cooldown", "inverse_native_cooldown"
+  end
   local repeats = nativeOutput.Repeats or 1
   if type(rate) == "number" and type(repeats) == "number" and repeats > 0 then rate = rate / repeats else rate = nil end
   local requiredLevel = limit and instance and instance.gemData and assert(instance.reqLevel, "Native trigger target requirement is unavailable")
@@ -239,7 +245,7 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     trigger_level_limit = limit, trigger_target_required_level = requiredLevel,
     info = computed.infoMessage, info_secondary = computed.infoMessage2,
     generals_cry = computed.skillData.triggeredByGeneralsCry or false,
-    usage_rate = {value = rate, metric = nativeOutput.SkillTriggerRate and "SkillTriggerRate" or rateKey, repeats = repeats, scope = "Native action frequency; cost projection additionally checks the full native per-second cost."},
+    usage_rate = {value = rate, metric = rateMetric, basis = rateBasis, repeats = repeats, scope = "Actions per second from native rate or inverse native cooldown, divided by repeats; cost projection additionally checks the full native per-second cost. Dynamic effects and cross-skill action exclusion are not measured."},
     costs = scalarTable(costs)})
 end
 result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet

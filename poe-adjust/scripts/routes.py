@@ -296,8 +296,9 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     for key in ("allow_minions",):
         if key in route and not facts.has_claim(claims,"preference:"+key): pending.append("preference:"+key)
     assessment=route.get("assessment",{})
-    result["diagnostics"]=facts.goal_review_diagnostics(assessment,claims)
-    if result["diagnostics"]: pending.append("goal_assessment")
+    goal_diagnostics=facts.goal_review_diagnostics(assessment,claims)
+    result["diagnostics"]=goal_diagnostics+facts.claim_diagnostics(claims)
+    if goal_diagnostics: pending.append("goal_assessment")
     pending += ["assessment:"+v for v in assessment.get("unresolved",[])]
     result["pending"]=list(dict.fromkeys(pending))
     result["claims"]=claims
