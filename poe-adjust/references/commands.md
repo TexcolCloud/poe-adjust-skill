@@ -38,6 +38,8 @@ start 返回原始 overview 与检查文件路径；`inspect --calculate` 返回
 
 ## 增量保存方案
 
+保存返回 input_contract，top_level_fields 和 field_owners 直接来自当前验证器。按归属修改源文件：intent 保存配装用户目标，plan 保存配装操作/判断，route 保存路线目标与阶段。完整凭证保留此契约；大响应摘要通过 next_actions 指向它。契约只说明顶层字段，嵌套格式仍按对应协议。
+
 方向确认后先保存小草案，再补当前阶段或操作。edit 只维护输入与标识，不调用计算、代替模型选配装或确认游戏合法性。intent 仍使用 intent 命令，模型最终完整输入可直接 evaluate/route。
 
 ```powershell

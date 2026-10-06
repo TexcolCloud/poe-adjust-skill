@@ -156,7 +156,7 @@ result.rules = {
   {id = "ascendancy_points", status = "unsupported", meaning = "game_limit", reason = "CountAllocNodes gives usage, not completed trial rewards"},
   {id = "gem_base_quality_limit", status = "unsupported", meaning = "game_limit", reason = "Native calculation accepts quality input; it does not prove attainable gem quality"},
   {id = "gem_base_level", status = "observed", meaning = "native_fact", source = "data.gems.naturalMaxLevel", scope = "Natural trainable levels; corruption, variants and effective levels are separate"},
-  {id = "socket_quality", status = result.capabilities.matching_socket_quality and "observed" or "unsupported", meaning = "native_fact", value = result.matching_socket_quality_bonus, source = "data.misc.MatchingSocketQualityBonus"},
+  {id = "socket_quality", status = result.capabilities.matching_socket_quality and "observed" or "unsupported", meaning = "native_fact", value = result.matching_socket_quality_bonus, source = "data.misc.MatchingSocketQualityBonus", scope = "Current SkillsTab.UpdateSocketGroups matching and native GemSocketQuality contribution; inspect gems.matches_socket/socket_quality_bonus. This fact does not certify game insertion restrictions."},
 }
 local function socketCategory(base)
   local weapon = data.weaponTypeInfo[base.type]

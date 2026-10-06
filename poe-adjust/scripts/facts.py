@@ -246,12 +246,25 @@ def model_shape(document, *, complete=True):
     for field in ("goal_claim_ids","unresolved"):
         if field in assessment: bx.require(isinstance(assessment[field],list) and all(isinstance(v,str) and v.strip() for v in assessment[field]),field+" 应为文字数组。",location="/assessment/"+field,expected="string array",actual=assessment[field])
     if "scope" in assessment: bx.require(isinstance(assessment["scope"],str),"scope 应为文字。",location="/assessment/scope",expected="string",actual=assessment["scope"])
-    if "review" in assessment:
-        review=assessment["review"]
-        bx.require_keys(review,{"token","findings","unresolved"},"/assessment/review")
-        for field in ("token","findings"):
-            if complete or field in review: bx.require(isinstance(review.get(field),str) and review[field].strip(),field+" 应为非空文字。",location="/assessment/review/"+field,expected="nonempty string",actual=review.get(field))
-        if "unresolved" in review: bx.require(isinstance(review["unresolved"],list) and all(isinstance(v,str) and v.strip() for v in review["unresolved"]),"review.unresolved 应为文字数组。",location="/assessment/review/unresolved",expected="string array",actual=review["unresolved"])
+    if "review" in assessment: review_shape(assessment["review"],complete=complete)
+
+
+def review_shape(review, *, complete=True):
+    path="/assessment/review"
+    bx.require_keys(review,{"token","findings","unresolved","conclusions"},path)
+    for field in ("token","findings"):
+        if complete or field in review: bx.require(isinstance(review.get(field),str) and review[field].strip(),field+" 应为非空文字。",location=path+"/"+field,expected="nonempty string",actual=review.get(field))
+    if "unresolved" in review: bx.require(isinstance(review["unresolved"],list) and all(isinstance(v,str) and v.strip() for v in review["unresolved"]),"review.unresolved 应为文字数组。",location=path+"/unresolved",expected="string array",actual=review["unresolved"])
+    rows=review.get("conclusions",[])
+    bx.require(isinstance(rows,list),"conclusions 使用逐条结论评审数组。",location=path+"/conclusions",expected="array",actual=type(rows).__name__)
+    seen=set()
+    for index,row in enumerate(rows):
+        location=path+f"/conclusions/{index}"
+        bx.require_keys(row,{"claim_id","scope","findings"},location)
+        for key in ("claim_id","scope","findings"):
+            if complete or key in row: bx.require(isinstance(row.get(key),str) and row[key].strip(),key+" 应为非空文字。",location=location+"/"+key,expected="nonempty string",actual=row.get(key))
+        key=row.get("claim_id")
+        bx.require(key is None or key not in seen,"conclusions 不重复评审同一判断。",location=location+"/claim_id",expected="unique claim_id",actual=key);seen.add(key)
 
 
 def claim_shape(claims, *, complete=True):
@@ -547,17 +560,21 @@ def final_review(specification, evidence, claims, observations, assessment):
     payload = stable({"specification": specification, "evidence": evidence, "claims": claims, "facts": observations})
     token = bx.digest(json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False))
     review = assessment.get("review")
-    if review is not None:
-        bx.require(isinstance(review, dict) and set(review) <= {"token", "findings", "unresolved"}, "assessment.review 使用 token/findings/unresolved。")
-        bx.require(isinstance(review.get("token"), str), "review.token 使用本次返回的完整 token。")
-        bx.require(isinstance(review.get("findings"), str) and review["findings"].strip(), "review.findings 说明对数字/对象、因果、替代方案排除、切换条件和结论范围的实际复核结果。")
-        bx.require(isinstance(review.get("unresolved", []), list) and all(isinstance(v, str) and v.strip() for v in review.get("unresolved", [])), "review.unresolved 应为尚未解决的问题数组。")
+    if review is not None: review_shape(review)
     matches = review is not None and review["token"] == token
     pending = [] if matches else ["final_review:stale" if review else "final_review:missing"]
     if matches: pending += ["final_review:" + value for value in review.get("unresolved", [])]
+    required=[c["claim_id"] for c in claims]
+    conclusions=review.get("conclusions",[]) if matches else []
+    covered={row["claim_id"] for row in conclusions}
+    missing=[key for key in required if key not in covered]
+    unexpected=sorted(covered-set(required))
+    if matches: pending += ["final_review:claim:"+key for key in missing]+["final_review:unknown_claim:"+key for key in unexpected]
     packet = {"token": token, "status": "model_reviewed" if matches and not pending else "unresolved",
               "facts": observations, "claims": claims, "findings": review.get("findings") if matches else None,
-              "check": "逐条核对数字及主体/阶段、因果依据、排除替代方案的理由、切换进入条件与最终保证范围。修改后重新生成本包，再填写 assessment.review；不要自动回填 token。",
+              "conclusions":conclusions,"coverage":{"required_claim_ids":required,"missing_claim_ids":missing,"unknown_claim_ids":unexpected},
+              "review_template":{"token":token,"findings":"","unresolved":[],"conclusions":[{"claim_id":key,"scope":"","findings":""} for key in required]},
+              "check": "逐条记录 conclusions 的实际范围与核对结果，检查数字及主体/阶段、因果、排除理由、切换条件与最终保证，并核对各条说明是否相互矛盾。修改后重新生成本包，再填写 assessment.review；不要自动回填 token。",
               "scope": "摘要绑定防止旧复核沿用到新方案；同一模型自审，不能证明自由文字无误或等同独立模型/实战验证。"}
     return packet, pending
 

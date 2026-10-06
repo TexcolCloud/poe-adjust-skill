@@ -40,6 +40,8 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 简单频率/同一窗口用 usage，每行 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。skill_ref 来自本次 active_skills，对应 claim.subjects:`skill:<引用>`。频率为次/秒，窗口为秒，有限非负；未知省略。程序核对原生动作频率、单次支付和满速费用，只有费用符合单次支付乘频率时才线性投影。同一窗口可合并，不同窗口不会借用主技能窗口放行；混合动作使用下文 timeline。降频不沿用满速吸取，未重算的 DPS 仍为原生快照。资源缺口和启动前不足不能被 prose 消除。
 
+readiness.single_payments 列出所有当前启用技能对三资源的独立单次支付、可用储量、原生定位和三值状态，包括尚未声明 usage 的副技能。每项从满可用储量独立检查，不证明连续动作或任意时点都可支付；生命支付后须存活，EB 与能盾恢复上限从当前原生规则读取，缺字段保持 unknown。resources.snapshot_balance_nonnegative 只比较当前账目中的声明频率与假设回复。sustained_use 区分共同时间线测量与未测得；无共同时间线时，即使面板吸取大于消耗也不能写成已证实持续恢复。
+
 共同时间线为 `timeline:{duration_seconds:周期秒数,events:[{skill_ref:"当前引用",at:周期内秒数}]}`。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。模型选择有依据的节奏，程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，并核对同技能动作间隔及循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
 
 时间线检查范围只有离散费用和固定净回复：不计吸取、能盾充能、药剂补充、动作互斥或条件变化。非线性/按秒费用、带费用的自动触发、未安排的有费用技能、缺支付规则或回复量保持 unknown，不能填零。一次周期能支付且结束恢复到起始储量才支持重复；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
@@ -67,8 +69,10 @@ delivery_brief 从全部 errors/pending 生成状态和缺口类别；next_actio
 最终复核使用现有 TeleAgent 模型，不增加另一模型服务。先完成方案/claims 修订并 evaluate，再阅读 review.json 的 facts/claims：核对数字与技能/主体/阶段、因果证据、替代方案排除理由、切换进入条件以及 summary/迁移说明/最终回答的范围。发现问题就修改并重新 evaluate，直到可以如实记录本轮复核。填写源 plan 的 `assessment.review`，再 evaluate：
 
 ```json
-{"token":"本次 review.json 的完整 token","findings":"实际检查内容、发现和仍成立的取舍；不是照抄通过字样","unresolved":[]}
+{"token":"本次 review.json 的完整 token","findings":"整份方案的核对结果，包括各条说明是否一致","unresolved":[],"conclusions":[{"claim_id":"当前实际 claim_id","scope":"此条结论成立的对象、场景及范围","findings":"实际依据、条件、发现与取舍；解释和已测量部分分别说明"}]}
 ```
+
+review_template 由程序列出当次所有判断的 ID，scope/findings 留空供模型评审；conclusions 必须覆盖所有当前 claim_id 且不得重复，陌生 ID 及遗漏保留 draft，coverage 列出具体差异。旧的只有总评段落的复核仍可读取，但不能算完整复核。程序只检查覆盖与摘要，不判断这些文字的真实性。
 
 token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源/预算和数值；改变后旧复核失效。`final_review:missing/stale` 保留 draft，findings/unresolved 不改写机械矛盾或其他缺口。此步骤只证明模型复核针对这一版，不证明语言无误；不要用脚本自动填 token，不能以复核记录宣称全部机制验证。
 

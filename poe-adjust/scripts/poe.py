@@ -22,8 +22,9 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.1"
+VERSION = "2.8.2"
 SCHEMA_VERSION = 2
+INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -46,6 +47,13 @@ def now():
 
 def execution_entrypoint():
     return {"script":str(Path(__file__).resolve()),"python":str(Path(sys.executable).resolve()),"skill_version":VERSION}
+
+
+def input_contract(kind):
+    fields={"intent":INTENT_FIELDS,"plan":bx.PLAN_FIELDS,"route":routes.ROUTE_FIELDS}
+    return {"kind":kind,"top_level_fields":sorted(fields[kind]),
+            "field_owners":{key:[owner for owner,allowed in fields.items() if key in allowed] for key in sorted(set().union(*fields.values()))},
+            "scope":"来自当前验证器的顶层字段归属；嵌套格式与语义仍按对应协议。配装目标修改 intent，操作/判断修改 plan。"}
 
 
 def read_json(path):
@@ -163,8 +171,8 @@ def edit_document(args):
         try: old=read_json(receipt)
         except (ValueError,OSError): old={}
         if old.get("request_sha256")==request_hash and old.get("result_sha256")==stamp and old.get("engine_fingerprint")==engine.fingerprint(root):
-            if old.get("entrypoint")!=execution_entrypoint():
-                old["entrypoint"]=execution_entrypoint();write_json(receipt,old)
+            if old.get("entrypoint")!=execution_entrypoint() or old.get("input_contract")!=input_contract(args.kind):
+                old.update(entrypoint=execution_entrypoint(),input_contract=input_contract(args.kind));write_json(receipt,old)
             return {**old,"replayed":True,"file":str(path),"status":"saved_draft"}
     bx.require(existing is None or getattr(args,"if_sha256",None)==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",location="/if_sha256",expected=stamp,actual=getattr(args,"if_sha256",None))
     document=read_json(path) if existing is not None else {"schema_version":SCHEMA_VERSION}
@@ -231,7 +239,7 @@ def edit_document(args):
     revision=bx.digest(path.read_bytes())
     handles={key:[{field:row.get(field) for field in fields} for row in result.get(key,[])] for key,fields in EDIT_COLLECTIONS.items() if key in result}
     response={"kind":args.kind,"file":str(path),"receipt_file":str(receipt),"revision":revision,"request_sha256":request_hash,"result_sha256":revision,"engine_fingerprint":fingerprint,"entrypoint":execution_entrypoint(),"handles":handles,"status":"saved_draft",
-              "counts":document_counts(result),"actual_changes":document_changes(document,result),"invalidated_claims":invalidated,
+              "counts":document_counts(result),"actual_changes":document_changes(document,result),"invalidated_claims":invalidated,"input_contract":input_contract(args.kind),
               "artifacts":{"source":[{"path":str(path),"role":"editable_plan"}],"persistent_state":[{"path":str(receipt),"role":"revision_and_retry_receipt"}],"temporary":[]},
               "next_actions":[{"action":"edit_or_calculate","file":str(path),"revision":revision,"reference":"references/leveling.md" if args.kind=="route" else "references/build.md"}],
               "scope":"已保存输入草案及稳定标识；没有计算、确认游戏合法性或自动完成模型评审。"}
@@ -339,9 +347,8 @@ def begin(args):
 
 
 def validate_intent(value, original, native=None, folder=None):
-    allowed = {"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
     bx.require(value.get("schema_version") == SCHEMA_VERSION, "intent 使用 schema_version=2；旧默认策略字段需按 references/build.md 与 evidence.md 迁移。")
-    bx.require(not set(value) - allowed, "意图包含未知/弃用字段：" + ", ".join(sorted(set(value) - allowed)))
+    bx.require_keys(value,INTENT_FIELDS,"/","意图包含未知/弃用字段。")
     bx.require(value.get("confirmed") is True, "先归纳已表达的目标；confirmed 只记录流程，不代表程序独立验证用户表达。")
     for key in ("goal", "league"):
         bx.require(isinstance(value.get(key), str) and value[key].strip(), "需要明确的 " + key)
@@ -823,7 +830,7 @@ def calculation_facts(result, claims=()):
             "scope": "当前配置与所列主体的原生快照；参考技能必须用其 skill_ref，主技能面板不能代替副技能或阶段。"}
 
 
-def publication(status, errors, pending, budget, calculations, *, readiness=None, keys=None, claims=None):
+def publication(status, errors, pending, budget, calculations, *, readiness=None, resource_audits=None, keys=None, claims=None):
     """One current factual publication for HTML, receipts and the agent's reply."""
     brief=facts.delivery_brief(status,errors,pending)
     measurements=[]
@@ -849,11 +856,22 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         if main:
             statements.append({"kind":"damage_subject","subject":name,"skill_ref":main.get("skill_ref"),"actor":main.get("actor"),"status":"observed",
                                "text":name+" · 当前主技能主体："+str(main.get("actor","未知"))+"；伤害、吸取与回复按该主体和资源账目分别读取，面板值不能互相借用。"})
-    for resource in (readiness or {}).get("timeline",{}).get("resources",[]) if (readiness or {}).get("timeline") else []:
-        state="supported" if resource["status"]=="supported" and resource["repeatable"] else "refuted" if resource["status"]=="refuted" else "unknown"
-        statements.append({"kind":"resource","subject":resource["resource_id"],"status":state,
-                           "text":resource["resource_id"]+"："+{"supported":"所列离散动作可在当前固定净回复下重复；未计吸取、充能与药剂补充。","refuted":"时间线中有无法支付或耗尽的时点。","unknown":"持续重复尚未证实，具体费用/窗口缺口见时间线。"}[state]})
-    return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"capabilities":resources.capabilities(),
+    audits=resource_audits if resource_audits is not None else {"candidate":readiness} if readiness else {}
+    for name,audit in audits.items():
+        payments=audit.get("single_payments",[])
+        if payments:
+            counts=Counter(row["status"] for row in payments)
+            statements.append({"kind":"single_payment","subject":name,"status":"refuted" if counts["refuted"] else "unknown" if counts["unknown"] else "supported",
+                               "text":f"{name} · 独立单次支付：可支付 {counts['supported']} 项、不可支付 {counts['refuted']} 项、未测得 {counts['unknown']} 项。每项独立从满可用储量开始，不证明任意时点或连续动作可支付。"})
+        sustained=audit.get("sustained_use")
+        if sustained:
+            state=sustained["status"]
+            statements.append({"kind":"sustained_use","subject":name,"status":state,"text":name+" · "+{"supported":"所列离散时间线可在固定净回复下重复；范围不含吸取、充能、药剂补充、动作互斥及条件变化。","refuted":"所列时间线有无法支付、耗尽或频率矛盾，不能作持续使用保证。","unknown":"持续使用尚未测得；资源快照的正余额或独立单次支付不能证明启动、连续动作及效果覆盖。"}[state]})
+        for resource in audit.get("timeline",{}).get("resources",[]) if audit.get("timeline") else []:
+            state="supported" if resource["status"]=="supported" and resource["repeatable"] else "refuted" if resource["status"]=="refuted" else "unknown"
+            statements.append({"kind":"resource","calculation":name,"subject":resource["resource_id"],"status":state,
+                               "text":name+" · "+resource["resource_id"]+"："+{"supported":"所列离散动作可在当前固定净回复下重复；未计吸取、充能与药剂补充。","refuted":"时间线中有无法支付或耗尽的时点。","unknown":"持续重复尚未证实，具体费用/窗口缺口见时间线。"}[state]})
+    return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
             "facts_summary":"\n\n".join([s["text"] for s in statements]+[m["text"] for m in measurements]),
             "scope":"仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
 
@@ -1126,6 +1144,7 @@ def report_html(state, outcome):
     links=bullets([f"{gems[0].get('slot') or '未装备'} / {'参与计算' if gems[0].get('group_enabled') else '不参与计算但非空槽仍占孔'}："+" — ".join(str(g.get('display_name',g.get('name',g.get('id'))))+f" {g.get('level')}/{g.get('quality')}" for g in gems) for gems in groups.values()])
     detail=esc(json.dumps({"usage":plan.get("usage",[]),"resources":outcome["readiness"]["resources"],"config":result.get("config_values",{}),"assessment":plan.get("assessment",{}),"budget":budget,"crafted_items":outcome.get("crafted_items",[]),"xml_sha256":outcome["xml_sha256"],"engine_fingerprint":outcome["engine_fingerprint"]},ensure_ascii=False,indent=2))
     current_facts=bullets([s["text"] for s in outcome["publication"]["statements"]]+[m["text"] for m in outcome["publication"]["measurements"]])
+    detail+="\n"+esc(json.dumps({"single_payments":outcome["readiness"].get("single_payments",[]),"sustained_use":outcome["readiness"].get("sustained_use")},ensure_ascii=False,indent=2))
     timeline=outcome["readiness"].get("timeline")
     if timeline: detail+="\n"+esc(json.dumps(timeline,ensure_ascii=False,indent=2))
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(outcome['name'])}</title>
@@ -1626,12 +1645,12 @@ def calculate_route(args):
          "stages":[{"stage_id":s["stage_id"],"level":s.get("level"),"act":s.get("act"),"completed_act":s.get("completed_act"),
                     "entry_conditions":s.get("entry_conditions",[]),"calculation":s.get("calculation",{"status":"not_calculated"})} for s in checked["stages"]]},route.get("assessment",{}))
     checked["pending"]+=review_pending
-    checked["final_review"]={k:review[k] for k in ("token","status","findings","scope")}
+    checked["final_review"]={k:review[k] for k in ("token","status","findings","conclusions","coverage","scope")}
     checked["errors"]=list(dict.fromkeys(route_errors))
     checked["delivery_status"]="blocked" if route_errors else "draft" if checked["pending"] else "scoped_result"
     checked["delivery_brief"]=facts.delivery_brief(checked["delivery_status"],checked["errors"],checked["pending"])
     checked["publication"]=publication(checked["delivery_status"],checked["errors"],checked["pending"],budget,
-                                       {"stage:"+s["stage_id"]:s["calculation"]["facts"] for s in checked["stages"] if s.get("calculation",{}).get("facts")},claims=claims,keys=["Life","Armour","EnergyShield","CombinedDPS","ManaUnreserved","FireResist","ColdResist","LightningResist","ChaosResist"])
+                                       {"stage:"+s["stage_id"]:s["calculation"]["facts"] for s in checked["stages"] if s.get("calculation",{}).get("facts")},resource_audits={"stage:"+s["stage_id"]:s["calculation"]["readiness"] for s in checked["stages"] if s.get("calculation",{}).get("readiness")},claims=claims,keys=["Life","Armour","EnergyShield","CombinedDPS","ManaUnreserved","FireResist","ColdResist","LightningResist","ChaosResist"])
     stage_summary=[{"stage_id":s["stage_id"],"name":s["name"],"status":s.get("calculation",{}).get("status","not_calculated"),
                     "native_calculated":s.get("calculation",{}).get("native_calculated",False),
                     "errors_total":len(s.get("calculation",{}).get("errors",[])),"pending_total":len(s.get("calculation",{}).get("pending",[])),
@@ -1852,7 +1871,7 @@ def main(argv=None):
         else: result=workflow_status(args)
         if args.command=="edit" and len(json.dumps(result,ensure_ascii=False))>12000:
             result={k:v for k,v in result.items() if k in {"kind","file","receipt_file","revision","status","replayed","scope","counts","facts_summary","artifacts"}}
-            result.update(output_scope="终端摘要；完整标识已保存 receipt_file。按 view 读取，无须重算。",next_actions=[{"action":"view","file":result["receipt_file"],"pointer":"/handles","keys":True},{"action":"view","file":result["receipt_file"],"pointer":"/stage_instances","limit":10}] if result["kind"]=="route" else [{"action":"view","file":result["receipt_file"],"pointer":"/handles","keys":True}])
+            result.update(output_scope="终端摘要；完整标识和 input_contract 已保存 receipt_file。按 view 读取，无须重算。",next_actions=[{"action":"view","file":result["receipt_file"],"pointer":"/handles","keys":True}]+([{"action":"view","file":result["receipt_file"],"pointer":"/stage_instances","limit":10}] if result["kind"]=="route" else [])+[{"action":"view","file":result["receipt_file"],"pointer":"/input_contract"}])
         if args.command in {"evaluate","route","export"} and len(json.dumps(result,ensure_ascii=False))>12000:
             details=(Path(args.out).resolve().with_suffix(".evidence.json") if args.command=="route" else
                      Path(args.run).resolve()/("candidates" if args.command=="evaluate" else "output")/args.name/("evaluation.json" if args.command=="evaluate" else "final-assessment.json"))

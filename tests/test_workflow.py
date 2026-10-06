@@ -806,7 +806,7 @@ class EvidenceTests(unittest.TestCase):
         ref="native:candidate#/stats/X";claim={"claim_id":"c","text":"at least 10","subjects":["goal"],"checks":[{"reference":ref,"op":"ge","value":10}]}
         checked=facts.assess_claims([claim],{},{"candidate":{"stats":{}}})
         packet,_=facts.final_review({}, {},checked,{}, {})
-        _,pending=facts.final_review({}, {},checked,{}, {"review":{"token":packet["token"],"findings":"Reviewed current missing values."}})
+        _,pending=facts.final_review({}, {},checked,{}, {"review":{"token":packet["token"],"findings":"Reviewed current missing values.","conclusions":[{"claim_id":"c","scope":"Current missing metric","findings":"No supported check; unknown retained."}]}})
         self.assertFalse(pending);self.assertFalse(facts.has_claim(checked,"goal"));self.assertEqual(checked[0]["check_status"],"unknown")
 
     def test_removed_native_value_clears_old_rendering_in_reused_registry(self):
@@ -1009,6 +1009,63 @@ class ReadOnlyDataTests(unittest.TestCase):
 
 
 class FinalReviewTests(unittest.TestCase):
+    def test_single_payment_preserves_unknown_rules_life_survival_and_shield_cap(self):
+        result=resource_fixture();result["stats"].update(ManaCost=30,LifeCost=1000,ESCost=10,EnergyShieldRecoveryCap=35)
+        rows=resources.single_payments(result)
+        self.assertEqual([r["status"] for r in rows],["unknown","refuted","unknown"])
+        result["resource_rules"]={"energy_shield_protects_mana":True}
+        rows=resources.single_payments(result)
+        self.assertEqual((rows[0]["payment"],rows[0]["status"]),(0,"supported"))
+        self.assertEqual((rows[2]["payment"],rows[2]["pool"],rows[2]["status"]),(40,35,"refuted"))
+        result["active_skills"].append({"skill_ref":"unmeasured","costs":{}})
+        missing=[r for r in resources.single_payments(result) if r["skill_ref"]=="unmeasured"]
+        self.assertEqual([r["status"] for r in missing],["supported","unknown","unknown"])
+        result["active_skills"][-1]["no_cost"]=True
+        self.assertTrue(all(r["payment"]==0 and r["status"]=="supported" for r in resources.single_payments(result) if r["skill_ref"]=="unmeasured"))
+
+    def test_final_review_requires_each_current_claim_scope(self):
+        claims=[{"claim_id":"one","text":"A scoped observation"},{"claim_id":"two","text":"Another conclusion"}]
+        packet,_=facts.final_review({}, {}, claims, {}, {})
+        review={"token":packet["token"],"findings":"Reviewed everything.","unresolved":[]}
+        checked,pending=facts.final_review({}, {}, claims, {}, {"review":review})
+        self.assertEqual(checked["status"],"unresolved")
+        self.assertEqual(checked["coverage"]["missing_claim_ids"],["one","two"])
+        review["conclusions"]=[{"claim_id":"one","scope":"one snapshot only","findings":"Observed, no temporal promise."}]
+        self.assertEqual(facts.final_review({}, {}, claims, {}, {"review":review})[0]["coverage"]["missing_claim_ids"],["two"])
+        review["conclusions"].append({"claim_id":"two","scope":"user preference","findings":"Interpretation, not a measured guarantee."})
+        self.assertFalse(facts.final_review({}, {}, claims, {}, {"review":review})[1])
+        review["conclusions"].append({"claim_id":"unknown","scope":"unrelated","findings":"Cannot count this as current coverage."})
+        self.assertIn("final_review:unknown_claim:unknown",facts.final_review({}, {}, claims, {}, {"review":review})[1])
+        review["conclusions"].pop()
+        review["conclusions"].append(copy.deepcopy(review["conclusions"][0]))
+        with self.assertRaises(ValueError): facts.final_review({}, {}, claims, {}, {"review":review})
+
+    def test_all_active_skills_have_independent_single_payment_facts(self):
+        result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":False}
+        result["stats"].update(ManaUnreserved=50)
+        result["active_skills"].append({"skill_ref":"aux","costs":{"ManaCost":70,"LifeCost":0,"ESCost":0},"usage_rate":{"value":1}})
+        audit=resources.assess(result,{}, {})
+        row=next(r for r in audit["single_payments"] if r["skill_ref"]=="aux" and r["resource_id"]=="Mana")
+        self.assertEqual((row["payment"],row["pool"],row["status"]),(70,50,"refuted"))
+        self.assertTrue(audit["errors"])
+        result["stats"]["ManaUnreserved"]=100
+        audit=resources.assess(result,{}, {})
+        row=next(r for r in audit["single_payments"] if r["skill_ref"]=="aux" and r["resource_id"]=="Mana")
+        self.assertEqual(row["status"],"supported")
+        self.assertEqual(audit["sustained_use"]["status"],"unknown")
+        self.assertIn("usage:aux",audit["pending"])
+
+    def test_snapshot_positive_balance_does_not_prove_sustained_use(self):
+        result=resource_fixture();result["stats"].update(LifeCost=10,LifePerSecondCost=20,LifeLeechGainRate=30)
+        audit=resources.assess(result,{}, {})
+        row=next(r for r in audit["resources"] if r["resource_id"]=="Life")
+        self.assertTrue(row["snapshot_balance_nonnegative"])
+        self.assertNotIn("sustainable_while_hitting",row)
+        packet=poe.publication("draft",[],audit["pending"],{"status":"unknown"},{"candidate":result},readiness=audit)
+        statement=next(s for s in packet["statements"] if s["kind"]=="sustained_use")
+        self.assertEqual(statement["status"],"unknown")
+        self.assertIn("持续",statement["text"])
+
     def test_semantics_uses_native_save_defaults_without_dropping_all_false_values(self):
         common={"class":"fixture","ascendancy":"fixture","level":1,"tree_version":"future","nodes":[],"main_skill":"x","main_group":1,"gems":[],"equipped":[]}
         explicit={**common,"config_values":{"default_false":False,"default_true":False},"config_saved_values":{"default_true":False}}
@@ -1025,7 +1082,7 @@ class FinalReviewTests(unittest.TestCase):
         assessed=facts.assess_claims(claims,evidence,native)
         packet,pending=facts.final_review(spec,evidence,assessed,native,spec["assessment"])
         self.assertIn("final_review:missing",pending)
-        spec["assessment"]["review"]={"token":packet["token"],"findings":"Checked object, numbers, causality, alternatives, conditions and scope.","unresolved":[]}
+        spec["assessment"]["review"]={"token":packet["token"],"findings":"Checked object, numbers, causality, alternatives, conditions and scope.","unresolved":[],"conclusions":[{"claim_id":"c","scope":"Main skill snapshot only","findings":"Source, object and current values match; no temporal guarantee."}]}
         evidence["source"]["recorded_at"]="later"
         checked,pending=facts.final_review(spec,evidence,assessed,native,spec["assessment"])
         self.assertFalse(pending);self.assertEqual(checked["status"],"model_reviewed")
@@ -1056,7 +1113,7 @@ class FinalReviewTests(unittest.TestCase):
         result["active_skills"][0]["costs"]={"Speed":3,"ManaCost":20,"LifeCost":0,"ESCost":0}
         audit=resources.assess(result,{}, {"usage":[{"skill_ref":"main","casts_per_second":1}]})
         self.assertIn("capability:resource:Mana:paced_leech",audit["pending"])
-        self.assertIsNone(audit["resources"][0]["sustainable_while_hitting"])
+        self.assertIsNone(audit["resources"][0]["snapshot_balance_nonnegative"])
 
     def test_flask_prose_cannot_certify_continuous_coverage(self):
         result=resource_fixture();result["equipped"]=[{"slot":"Flask 1","id":1,"active":True,"flask_local":{"duration":5,"chargesMax":30,"chargesUsed":10}}]
@@ -1486,6 +1543,13 @@ class TimelineTests(unittest.TestCase):
 
 
 class EditAndRecoveryTests(unittest.TestCase):
+    def test_edit_receipt_lists_current_input_fields_and_their_owners(self):
+        result=self.edit({"set":{"summary":"draft","mode":"refine"}},kind="plan")
+        contract=result["input_contract"]
+        self.assertEqual(contract["top_level_fields"],sorted(bx.PLAN_FIELDS))
+        self.assertEqual(contract["field_owners"]["objectives"],["intent","route"])
+        self.assertEqual(poe.read_json(result["receipt_file"])["input_contract"],contract)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.folder=Path(self.temp.name)
         self.source=self.folder/"route.json";self.request=self.folder/"change.json"
@@ -2579,7 +2643,7 @@ class RealEngineTests(unittest.TestCase):
         changed=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         self.assertTrue(changed["stages"][0]["calculation"]["roundtrip_verified"])
         self.assertEqual(changed["stages"][0]["calculation"]["entry_checks"][0]["status"],"unmet")
-        route["assessment"]["review"]={"token":response["review_token"],"findings":"Fixture condition remains explicitly unmet.","unresolved":[]}
+        route["assessment"]["review"]={"token":response["review_token"],"findings":"Fixture condition remains explicitly unmet.","unresolved":[],"conclusions":[{"claim_id":c["claim_id"],"scope":"Fixture stage only; entry check remains unmet","findings":"Checked current fixture and retained missing prerequisites."} for c in route.get("claims",[])]}
         poe.write_json(path,route)
         with patch.object(facts,"gem_facts",return_value={}):
             response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
@@ -2701,7 +2765,7 @@ class RealEngineTests(unittest.TestCase):
         plan["claims"]=[{"claim_id":"review","text":"Fixture conclusion; remaining gaps are retained.","subjects":["goal"],"evidence_refs":["artifact","native:candidate#/stats/Life"]}]
         plan["assessment"]={"goal_claim_ids":["review"],"scope":"Fixture, not a player build"}
         first=self.evaluate_plan(plan,"reviewed")
-        plan["assessment"]["review"]={"token":first["review_token"],"findings":"Checked current facts, object, conditions and limited conclusion.","unresolved":[]}
+        plan["assessment"]["review"]={"token":first["review_token"],"findings":"Checked current facts, object, conditions and limited conclusion.","unresolved":[],"conclusions":[{"claim_id":"review","scope":"Fixture only; remaining gaps retained","findings":"Artifact is a local record, not an independent gameplay measurement."}]}
         second=self.evaluate_plan(plan,"reviewed")
         self.assertEqual(first["review_token"],second["review_token"])
         self.assertNotIn("final_review:stale",second["pending"])

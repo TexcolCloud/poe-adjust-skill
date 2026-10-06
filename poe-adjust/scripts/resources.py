@@ -62,6 +62,33 @@ def native_rate(skill):
     return number(costs,"SkillTriggerRate") or number(costs,"Speed")
 
 
+def available_pool(stats, resource):
+    pool=number(stats,resource+"Unreserved")
+    if pool is None: pool=number(stats,resource)
+    cap=number(stats,"EnergyShieldRecoveryCap") if resource=="EnergyShield" else None
+    return min(pool,cap) if pool is not None and cap is not None else pool
+
+
+def single_payments(result):
+    """Independent payments from a full pool, never a sequence or sustain proof."""
+    eb=result.get("resource_rules",{}).get("energy_shield_protects_mana")
+    rows=[]
+    for index,skill in enumerate(result.get("active_skills",[])):
+        if skill.get("disabled"): continue
+        data={**(result["stats"] if skill.get("is_main") else {}),**skill.get("costs",{})}
+        for resource,cost_key in (("Mana","Mana"),("Life","Life"),("EnergyShield","ES")):
+            cost=payment(data,cost_key,eb,skill.get("no_cost") is True)
+            pool=available_pool(result["stats"],resource)
+            rule_known=resource=="Life" or eb is not None or number(data,"ManaCost")==0 or skill.get("no_cost") is True
+            known=rule_known and cost is not None and cost>=0 and pool is not None and pool>=0
+            affordable=pool>cost if resource=="Life" and cost and known else pool>=cost if known else None
+            rows.append({"skill_ref":skill.get("skill_ref"),"actor":skill.get("actor"),"resource_id":resource,
+                         "payment":cost,"pool":pool,"status":"supported" if affordable is True else "refuted" if affordable is False else "unknown",
+                         "cost_source":{"skill_pointer":f"/active_skills/{index}/costs","main_fallback_pointer":"/stats" if skill.get("is_main") else None},
+                         "scope":"每项独立从当前满可用储量支付一次；不证明任意时点、连续动作、吸取启动或持续补充。"})
+    return rows
+
+
 def timing(rows):
     """A shared window is computable; independent schedules remain explicit gaps."""
     if not rows: return {},False
@@ -114,9 +141,7 @@ def timeline_assessment(result, timeline):
     records=[]
     for resource,cost_key in (("Mana","Mana"),("Life","Life"),("EnergyShield","ES")):
         stats=result["stats"]
-        pool=number(stats,resource+"Unreserved")
-        if pool is None: pool=number(stats,resource)
-        if resource=="EnergyShield" and pool is not None and number(stats,"EnergyShieldRecoveryCap") is not None: pool=min(pool,stats["EnergyShieldRecoveryCap"])
+        pool=available_pool(stats,resource)
         regen=number(stats,"Net"+resource+"Regen")
         if regen is None and number(stats,resource+"RegenRecovery") is not None and number(stats,resource+"Degen") is not None: regen=stats[resource+"RegenRecovery"]-stats[resource+"Degen"]
         payments={ref:payment(s.get("costs",{}),cost_key,eb,s.get("no_cost") is True) for ref,s in skills.items()}
@@ -215,8 +240,7 @@ def assess(result, intent, plan, claims=None):
         if main and main.get("no_cost") is True:
             if single is None: single=0
             if native_cost is None: native_cost=0
-        pool = number(stats,resource+"Unreserved")
-        if pool is None: pool = number(stats,resource)
+        pool = available_pool(stats,resource)
         raw_regen, degen = number(stats,resource+"RegenRecovery"), number(stats,resource+"Degen")
         regen = number(stats,"Net"+resource+"Regen")
         if regen is None and raw_regen is not None and degen is not None: regen = raw_regen-degen
@@ -227,9 +251,6 @@ def assess(result, intent, plan, claims=None):
         cost = native_cost + auto_cost if native_cost is not None and auto_cost is not None else None
         single_values = [single] + [payment(skill.get("costs",{}),cost_key,eb,skill.get("no_cost") is True) for skill in automatic]
         single = max(single_values) if all(value is not None for value in single_values) else None
-        if resource=="EnergyShield":
-            cap=number(stats,"EnergyShieldRecoveryCap")
-            if pool is not None and cap is not None: pool=min(pool,cap)
         # A paced main skill is projected only when native cost agrees with single-cost × rate.
         projection = "native_full_speed"
         rate = main_usage.get("casts_per_second")
@@ -294,7 +315,7 @@ def assess(result, intent, plan, claims=None):
                 "main_cost_scope":"not_applicable_by_native_flag" if main and main.get("no_cost") is True else "native_value_or_unknown",
                 "automatic_cost_per_second":auto_cost,"manual_cost_per_second":manual_cost,"regeneration":regen,"raw_regeneration":raw_regen,"degen":degen,
                 "native_leech_on_hit":native_leech,"leech_on_hit":leech,"recharge":recharge,"recharge_counted":recharge_counted,"net_cost":net,
-                "sustainable_while_hitting":net<=0.01 if net is not None else None,"projection":projection,"scope":"所列技能及条件下的支付账目；DPS 仍是原生快照，未按使用节奏重算的伤害不能当实际持续输出。"}
+                "snapshot_balance_nonnegative":net<=0.01 if net is not None else None,"projection":projection,"scope":"所列原生/声明频率及假设回复的快照账目；非吸取启动、任意时点支付或持续覆盖证明。DPS 未按使用节奏重算。"}
         if not known: pending.append("native:"+subject)
         elif net>0.01 and "timeline" not in plan:
             maximum=max(pool-(1 if resource=="Life" else 0),0)/net
@@ -326,5 +347,13 @@ def assess(result, intent, plan, claims=None):
             if row["status"]!="unknown":
                 target=next(r for r in resources if r["resource_id"]==row["resource_id"])
                 target["timeline_status"]=row["status"];target["repeatable_at_native_regen_only"]=row["repeatable"]
-    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"timeline":timeline,
+    payments=single_payments(result)
+    for row in payments:
+        if row["status"]=="refuted":
+            message=f"技能 {row['skill_ref']} 的 {row['resource_id']} 单次支付 {row['payment']:g} 超出可用储量 {row['pool']:g}（生命须支付后存活）。"
+            errors.append(message);diagnostics.append({"code":"single_payment_unaffordable","location":row["cost_source"]["skill_pointer"],"subject":row["skill_ref"],"resource_id":row["resource_id"],"expected":{"pool":row["pool"],"life_must_remain_positive":row["resource_id"]=="Life"},"actual":row["payment"],"message":message,"action":"inspect_error"})
+        elif row["status"]=="unknown": pending.append("native:single_payment:"+str(row["skill_ref"])+":"+row["resource_id"])
+    sustained={"status":timeline["status"] if timeline else "unknown","basis":"discrete_timeline_at_native_net_regen" if timeline else "no_common_timeline",
+               "scope":capabilities()["timeline"]["scope"] if timeline else "仅有资源快照与独立支付事实；连续动作、启动/中断和效果覆盖未测得。"}
+    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"timeline":timeline,"single_payments":payments,"sustained_use":sustained,
             "conditions":{"guard_active":guard,"active_flasks":flasks,"flask_facts":flask_facts,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。药剂局部数据不证明持续补充，无持续覆盖测量时保留 capability 缺口。"},"resources":resources,"additional_native_costs":extra_costs,"diagnostics":diagnostics}
