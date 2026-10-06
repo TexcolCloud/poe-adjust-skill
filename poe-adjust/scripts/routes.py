@@ -12,7 +12,7 @@ ATTRIBUTES = {"strength":"力量", "dexterity":"敏捷", "intelligence":"智慧"
 ROUTE_FIELDS={"schema_version","name","confirmed","goal","objectives","league","game_version","class_id","ascendancy","trade_mode","budget","version_source","scope","gems","stages","risks","notes","allow_minions","allow_mule","constraint_sources","evidence","claims","assessment","inventory","shopping"}
 STAGE_FIELDS={"stage_id","name","level","act","completed_act","entry_conditions","entry_checks","weapon_setup","bases","skill_groups","gear","passives","normal_points_available","ascendancy_points","secondary_ascendancy_points","ascendancy_nodes","resources","checks","transition","required_items","key_transition","snapshot"}
 GROUP_FIELDS={"name","slot","use","enabled","gems"}
-GEM_FIELDS={"instance_id","skill_id","level","quality","level_selection"}
+GEM_FIELDS={"instance_id","skill_id","level","quality","level_selection","enabled"}
 SNAPSHOT_FIELDS={"template_xml","operations","assumptions","usage","timeline","metrics"}
 SNAPSHOT_OPERATION_FIELDS={"items","equip","tree","config","main_group","weapon_set","gems","groups"}
 
@@ -63,7 +63,7 @@ def preflight(route, *, complete=True):
                     instances.add(identity)
         for item_index,item in enumerate(stage.get("required_items",[])):
             bx.require(isinstance(item,dict),"物资需要对象。",location=path+f"/required_items/{item_index}",expected="object",actual=type(item).__name__)
-            facts.material_ref(item)
+            facts.material_ref(item,location=path+f"/required_items/{item_index}",complete=complete)
         if "snapshot" in stage:
             snap=stage["snapshot"]
             bx.require_keys(snap,SNAPSHOT_FIELDS,path+"/snapshot")
@@ -336,7 +336,7 @@ def render(route,warnings,engine_version,tree_version,*,evidence_file=None):
         status=calculation.get("status","not_calculated")
         groups=[]
         for group in stage["skill_groups"]:
-            links=" — ".join(g["name"]+f" {g['level']}/{g.get('quality',0)} ["+g["instance_id"]+"]" for g in group["gems"])
+            links=" — ".join(g["name"]+f" {g['level']}/{g.get('quality',0)} ["+g["instance_id"]+"]"+('（关闭，保留孔位）' if g.get('enabled') is False else '') for g in group["gems"])
             groups.append(f"<h3>{esc(group['name'])} · {esc(group['slot'] or '未装备')}</h3><p>{esc(group['use'])}：{esc(links)}</p>")
         conditions=bullets([judgment(key) for key in stage["entry_conditions"]]) if stage.get("entry_conditions") else "<p>尚未评审进入条件。</p>"
         stats="".join(f"<tr><td>{esc(key)}</td><td>{esc(format(value,'.10g') if type(value) in (int,float) else value if value is not None else '未知')}</td></tr>" for key,value in calculation.get("stats",{}).items())

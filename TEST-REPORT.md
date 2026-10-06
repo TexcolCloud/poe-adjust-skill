@@ -1,6 +1,31 @@
+# 2.8.10 请求保真与恢复：完整离线269项通过
+
+最终[完整回归](.work/2810-final-regression.log)269项全部通过，含56项真实PoECharm、213项非原生、无跳过，耗时1410.301秒。[测试前](.work/2810-final-source-before.json)/[后](.work/2810-final-source-after.json)16文件摘要一致。回归后只修正配装协议中说明段落截断表格的排版，非空行内容不变；[格式变更凭证](.work/2810-release-document-format.json)与[最终交付快照](.work/2810-final-source-release.json)单独记录，运行代码和测试未再改动。[交付ZIP](dist/poe-adjust-2.8.10.zip)185310字节，仍15文件、六Python/二Lua/标准库，SHA256为93adddc185267b93a50c702acfa064e7ed6a35781789fcd63fbacd72e59922ff。
+
+先在原2.8.9复现，[红测](.work/2810-audit-red.log)覆盖八类缺口，主主动999静默变1为实际原生复现；批量漏项是故障注入，XML丢失/改动和恢复路径为真实文件/接口夹具，未宣称原生正常工作时会主动漏项。[213项非原生检查](.work/2810-interface-green-final.log)、[定向46项含原生](.work/2810-focused-green.log)、[两项完整跨模块检查](.work/2810-cross-module-green.log)均通过。先前绿色尝试的stderr捕获和不存在的测试辅助函数错误已修正，日志保留，不记为产品缺陷。
+
+[格式/包校验](.work/2810-format-package-verification.json)确认六Python可解析、TeleAgent四个平面元数据字段有效、本地文档引用存在、15文件ZIP逐字节相同。通用Codex校验器因TeleAgent标准库环境缺PyYAML未运行通过，目标格式直接验证，无新增依赖。[最终保护核验](.work/2810-final-preservation-verification.json)确认原XML、已安装2.8.9的15文件、1332历史冻结文件、旧ZIP和全部原分不变，自动迭代仍PAUSED。
+
+| 缺口 | 本轮修改和当前证据 | 范围 |
+|---|---|---|
+| 显式选择被原生改写 | 当前 displaySkillList 提供物化选择；请求/实际/可用选项诊断；合法1和2、非法999以及 probe 入口检查 | 999原复现是一颗技能，不证明曾发生另一个技能DPS误报；默认省略与空组占位保留 |
+| 跨阶段装备同号混并 | 需求、持有、库存、采购、实际装备统一 spec_sha256；完整两阶段同号不同规格分别需求1/剩余0；同规格异号累计 | 用户持有声明仍非独立盘点；实例身份与规格身份分工 |
+| XML无效仍称已交付 | 清单和阶段摘要均纳入XML及摘要；丢失/改动取消file_exported，确定性子目录合法，重跑只重建损坏阶段 | completed_stages仅是历史计算；原生通过不代表玩法就绪 |
+| 批次缺项/错配 | 原生逐条回传关联标识，结果/缓存统一校验；乱序归位、少项/重复/未知ID/错误摘要拒绝；逐项回退、明确失败及实际计算数 | 属于接口故障注入，未把它写成正常原生故障率 |
+| 失效候选丢恢复上下文 | 返回已知源/评估/复核文件、当前revision及结构化诊断，reevaluate带run和引擎路径 | 无可信旧记录时不猜源文件 |
+| 单颗关闭无法建模 | stage.gems[].enabled传入同一replace_skills；实际XML和原生gems为两颗同组、第二颗false；HTML标注仍占孔位 | 不删宝石、拆组或引入第二开关字段 |
+| 恢复丢所选引擎 | 初始状态保存实际pob_path，status/重跑沿用；显式覆盖仍重新核对指纹 | 旧状态未知路径不能凭指纹反推 |
+| 超大JSON整数崩出接口 | 共用finite_number，预算/资源/配置/报价等边界校验；10**400定位预算字段，JSON失败、state failed | 非宽泛Exception吞错；普通有限数字保持 |
+
+自审补入 probe 的选择保真与聚合实际装备数量，避免只修导出/引用名称；同规格重复库存提前报错，不被字典覆盖。复用六Python/二Lua及现有状态、诊断、缓存与测试文件，清理按本地item_id全局索引和未校验zip拼接，更新调用方及协议；没有新增交付模块、依赖或并行legacy路径。历史冻结文件、旧包和全部模型评分保持。本机仍安装2.8.9；本轮先离线/原生验证，不操作TeleAgent或重启自动迭代。最新已完成独立模型实测仍为2.8.8的48/100，接口通过不能改分或推算配装准确率。
+
+第一次完整回归在原角色正常微调出现继承字段 `mainActiveSkill="nil"` 的误拦截，已停止该次运行并保留[部分日志](.work/2810-first-full-regression.log)/[原快照](.work/2810-first-full-source-before.json)，未记通过。[确切复现](.work/2810-normalization-repro.log)定位整数转换；修补区分本次显式操作、原生省略/继承哨兵，保留合法原角色微调和空组；原生选项接口缺字段显式unsupported，缓存同样核对能力结构。[七项真实引擎重核](.work/2810-normalization-green.log)159.170秒全部通过，含原微调/导出、空组、合法1/2、999、批次故障及完整两阶段恢复。类型自审发现物资kind为数组/对象会抛TypeError，已改成具体kind位置的ContractError并保留[红测](.work/2810-kind-shape-red.log)/[绿测](.work/2810-kind-shape-green.log)；红测的后续断言上下文错误另属夹具，已整理。没有以检测到缺字段为由默认为空选项，仍无固定赛季/对象例外。
+
+路径自审通过实际 Windows 目录联接确认阶段目录可越出交付根而旧完整性仍为true，保留[红测](.work/2810-junction-red.log)。把范围检查放到原stage_directory，route写入前拒绝越界、status标记无效，合法阶段子目录保持；[本机联接重核](.work/2810-junction-green.log)/[九项接口检查](.work/2810-scope-green.log)通过，并核对源/状态/HTML/联接目标XML未被失败写入改动。第二次完整运行在已通过的前16原生项后为此实际边界修补停止，保留[部分日志](.work/2810-second-full-regression.log)/[源快照](.work/2810-second-full-source-before.json)，也不记完整通过；最终按最后源码重新冻结，269项完整通过。不存在的单测名、一次错误重定向目录只属开发调用错误，不计产品缺陷或验证通过。
+
 # 2.8.9 接口边界修复：完整离线255项通过
 
-按实际公开入口复现后修改，未新增交付模块或依赖。[有效红测](.work/289-boundaries-red-corrected.log)保留非法草案、重复集合、路径别名、合并大小、批量删除、长文本失败；[80合法阶段的接口模拟](.work/289-large-response-red.log)原返回13154字符，未实际计算80个原生阶段，也不是已观察到的平台截断。[完整回归](.work/289-final-regression.log)255项含51原生、无跳过，1112.561秒全部通过；[测试前](.work/289-final-source-before.json)/[后](.work/289-final-source-after.json)16文件摘要一致。[交付ZIP](dist/poe-adjust-2.8.9.zip)179294字节，仍15文件、六Python/二Lua/标准库。第一版红测有两处测试夹具错误，已修正并保留原日志，不计产品缺陷。当前尚未安装/提交新实测，不用离线通过代替模型成绩。
+按实际公开入口复现后修改，未新增交付模块或依赖。[有效红测](.work/289-boundaries-red-corrected.log)保留非法草案、重复集合、路径别名、合并大小、批量删除、长文本失败；[80合法阶段的接口模拟](.work/289-large-response-red.log)原返回13154字符，未实际计算80个原生阶段，也不是已观察到的平台截断。[完整回归](.work/289-final-regression.log)255项含51原生、无跳过，1112.561秒全部通过；[测试前](.work/289-final-source-before.json)/[后](.work/289-final-source-after.json)16文件摘要一致。[交付ZIP](dist/poe-adjust-2.8.9.zip)179294字节，仍15文件、六Python/二Lua/标准库。第一版红测有两处测试夹具错误，已修正并保留原日志，不计产品缺陷。随后于10月7日00:05:27完成[安装](.work/289-install-manifest.json)，[已安装doctor](.work/289-installed-doctor.json)四项通过；新玩家任务只准备工作区并打开首页，因用户Escape停止Computer Use而未输入/提交，不用离线通过代替模型成绩。
 
 | 审查项 | 修改与验证 | 边界 |
 |---|---|---|

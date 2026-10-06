@@ -6,7 +6,7 @@ import facts
 
 def number(data, key):
     value=data.get(key)
-    return value if type(value) in (int,float) and math.isfinite(value) else None
+    return value if bx.finite_number(value) else None
 
 
 def input_shape(document, *, complete=True):

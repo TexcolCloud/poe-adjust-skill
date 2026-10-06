@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from html.parser import HTMLParser
 import json
-import math
 import operator
 from pathlib import Path
 import re
@@ -231,8 +230,23 @@ def model_shape(document, *, complete=True):
     if budget is not None:
         bx.require_keys(budget,{"amount","currency"},"/budget")
         bx.require(set(budget)=={"amount","currency"},"budget 需要 amount/currency；未确定时为 null。",location="/budget",expected=["amount","currency"],actual=sorted(budget))
-        bx.require(type(budget["amount"]) in (int,float) and math.isfinite(budget["amount"]) and budget["amount"]>=0,"预算金额应为有限非负数。",location="/budget/amount",expected="finite nonnegative number",actual=budget["amount"])
+        bx.require(bx.finite_number(budget["amount"]) and budget["amount"]>=0,"预算金额应为有限非负数。",location="/budget/amount",expected="finite nonnegative number",actual=budget["amount"])
         bx.require(isinstance(budget["currency"],str) and budget["currency"].strip(),"预算需要通货单位。",location="/budget/currency",expected="nonempty string",actual=budget["currency"])
+    for field in ('inventory','shopping'):
+        seen=set()
+        rows=document.get(field,[])
+        bx.require(isinstance(rows,list),field+' 应为数组。',location='/'+field,expected='array',actual=type(rows).__name__)
+        for index,row in enumerate(rows):
+            path=f'/{field}/{index}'
+            bx.require(isinstance(row,dict),'物资需要对象。',location=path,expected='object',actual=type(row).__name__)
+            ref=material_ref(row,location=path,complete=complete)
+            if ref:
+                bx.require(ref not in seen,'相同规格物资请合并数量，不能重复登记。',location=path,expected='unique material specification',actual=ref)
+                seen.add(ref)
+            if complete or 'quantity' in row:
+                bx.require(type(row.get('quantity')) is int and row['quantity']>0,'物资 quantity 为正整数。',location=path+'/quantity',expected='positive integer',actual=row.get('quantity'))
+            for key in ('low','high'):
+                if key in row: bx.require(bx.finite_number(row[key]) and row[key]>=0,'报价需要有限非负数。',location=path+'/'+key,expected='finite nonnegative number',actual=row[key])
     evidence_shape(document.get("evidence",[]),complete=complete)
     sources=document.get("constraint_sources",{})
     bx.require(isinstance(sources,dict),"constraint_sources 为字段路径到 evidence_id 的映射。",location="/constraint_sources",expected="object",actual=type(sources).__name__)
@@ -408,7 +422,7 @@ def reference_meaning(calculation, locator):
 def format_observation(record):
     value=record.get("value")
     meaning=record.get("meaning",{})
-    if type(value) in (int,float) and math.isfinite(value):
+    if bx.finite_number(value):
         value=format(value*meaning.get("display_multiplier",1),".10g")
     else: value=json.dumps(value,ensure_ascii=False,sort_keys=True,allow_nan=False)
     identity=meaning.get("object_identity",{})
@@ -423,9 +437,9 @@ def check_value(actual, op, expected):
     """A three-valued scalar comparison shared by claims and stage checks."""
     comparisons={"eq":operator.eq,"ge":operator.ge,"le":operator.le}
     bx.require(isinstance(op,str) and op in comparisons,"op 使用 eq/ge/le。",expected=sorted(comparisons),actual=op)
-    bx.require(type(expected) in (int,float,bool,str) and (type(expected) is not float or math.isfinite(expected)),"检查目标为有限数值、布尔或字符串。",actual=expected)
+    bx.require(type(expected) in (int,float,bool,str) and (type(expected) not in (int,float) or bx.finite_number(expected)),"检查目标为有限数值、布尔或字符串。",actual=expected)
     numeric=type(actual) in (int,float) and type(expected) in (int,float)
-    comparable=type(actual) in (int,float,bool,str) and (type(actual) is not float or math.isfinite(actual)) and (numeric or op=="eq" and type(actual) is type(expected))
+    comparable=type(actual) in (int,float,bool,str) and (type(actual) not in (int,float) or bx.finite_number(actual)) and (numeric or op=="eq" and type(actual) is type(expected))
     if not comparable: return "unknown"
     return "supported" if comparisons[op](actual,expected) else "refuted"
 
@@ -656,16 +670,41 @@ def entry_checks(checks, native, claims, subject):
     return rows, pending
 
 
-def material_ref(entry):
+def material_ref(entry, *, location="/", complete=True):
     kind = entry.get("kind")
+    path=location.rstrip('/')
+    bx.require(not complete and kind is None or isinstance(kind,str) and kind in {'gem','item','service'},'物资 kind 使用 gem/item/service。',location=path+'/kind',expected=['gem','item','service'],actual=kind)
+    if kind is None: return None
     if kind == "gem":
-        bx.require(isinstance(entry.get("skill_id"), str) and entry["skill_id"] and type(entry.get("level")) is int and entry["level"] > 0 and type(entry.get("quality")) is int and entry["quality"] >= 0, "宝石物资需要 skill_id、level、quality。")
+        for key in ('skill_id','level','quality'):
+            if not complete and key not in entry: continue
+            value=entry.get(key)
+            valid=isinstance(value,str) and value.strip() if key=='skill_id' else type(value) is int and value>=(0 if key=='quality' else 1)
+            bx.require(valid,'宝石物资需要 skill_id、level、quality。',location=path+'/'+key,expected='nonempty string' if key=='skill_id' else 'nonnegative integer' if key=='quality' else 'positive integer',actual=value)
+        if not {'skill_id','level','quality'}<=entry.keys(): return None
         return f"gem:{entry['skill_id']}:{entry['level']}:{entry['quality']}"
     if kind == "item":
-        bx.require(type(entry.get("item_id")) is int and entry["item_id"] > 0, "装备物资需要 item_id。")
-        return "item:" + str(entry["item_id"])
-    bx.require(kind == "service" and isinstance(entry.get("service_id"),str) and entry["service_id"], "服务物资需要 kind=service 和 service_id。")
+        if "item_id" in entry:
+            bx.require(type(entry["item_id"]) is int and entry["item_id"]>0,"XML 内装备编号需要正整数。",location=path+"/item_id",expected="positive local XML ID",actual=entry["item_id"])
+        spec=entry.get("spec_sha256")
+        if not complete and 'spec_sha256' not in entry: return None
+        bx.require(isinstance(spec,str) and re.fullmatch(r"[0-9a-f]{64}",spec),"装备物资需要当前实际规格 spec_sha256；从计算返回的 material_specs 读取。",location=path+"/spec_sha256",expected="SHA-256 from material_specs",actual=spec)
+        return "item:" + spec
+    if not complete and 'service_id' not in entry: return None
+    bx.require(isinstance(entry.get("service_id"),str) and entry["service_id"], "服务物资需要 kind=service 和 service_id。",location=path+'/service_id',expected='nonempty string',actual=entry.get('service_id'))
     return "service:" + entry["service_id"]
+
+
+def add_material(totals,entry):
+    """Aggregate acquisition quantities by global specification, never XML ID."""
+    ref=material_ref(entry)
+    quantity=entry.get('quantity')
+    bx.require(type(quantity) is int and quantity>0,"物资 quantity 应为正整数。",location="/quantity",expected="positive integer",actual=quantity)
+    if ref not in totals: totals[ref]={**entry,'quantity':0}
+    totals[ref]['quantity']+=quantity
+    if entry.get('evidence_refs'):
+        totals[ref]['evidence_refs']=list(dict.fromkeys(totals[ref].get('evidence_refs',[])+entry['evidence_refs']))
+    return ref
 
 
 def quest_rows(raw, name, classes=()):

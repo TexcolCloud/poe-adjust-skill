@@ -11,7 +11,6 @@ from collections import deque
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -21,6 +20,7 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+import buildxml as bx
 
 # Historical search hints, never current-season or compatibility evidence.
 VERSION_SOURCE_HINTS = {
@@ -310,15 +310,26 @@ def validate_contract(result, *, catalog_only=False):
                 "nodes": list, "granted_passives": list, "config_keys": list, "config_lists": dict, "config_values": dict, "config_labels": dict,
                 "config_defaults": dict, "config_saved_values": dict,
                 "warnings": list, "xml": str,
-                "tree_version": str, "latest_tree_version": str, "tree_context": dict, "socket_limits": dict, "capabilities": dict}
+                "tree_version": str, "latest_tree_version": str, "tree_context": dict, "socket_limits": dict, "capabilities": dict,
+                "skill_selections":list}
     for key, kind in required.items():
         if not isinstance(result.get(key), kind):
             raise EngineError(f"本机接口缺少有效 {key}；当前适配不能完成此项计算，请维护者检查接口变化。")
     for key in ("points", "ascendancy_points", "secondary_ascendancy_points"):
         if type(result.get(key)) is not int or result[key] < 0:
             raise EngineError("本机接口缺少有效已分配点数：" + key)
+    groups=set()
+    for index,row in enumerate(result['skill_selections']):
+        choices=row.get('choices') if isinstance(row,dict) else None
+        valid=isinstance(row,dict) and type(row.get('group')) is int and row['group']>0 and row['group'] not in groups and type(row.get('main_active_skill')) is int and row['main_active_skill']>0 and isinstance(choices,list)
+        if valid:
+            ids=[choice.get('index') if isinstance(choice,dict) else None for choice in choices]
+            valid=all(type(value) is int and value>0 for value in ids) and len(set(ids))==len(ids) and all(isinstance(choice.get('id'),str) and choice['id'] for choice in choices)
+        if not valid:
+            raise EngineError('本机接口缺少有效物化技能选项。',diagnostic={'code':'native_capability_unavailable','action':'inspect_capability','retryable':False,'location':f'/skill_selections/{index}','expected':'group with native indexed choices','actual':row})
+        groups.add(row['group'])
     for key, value in result["stats"].items():
-        if isinstance(value, float) and not math.isfinite(value):
+        if type(value) in (int,float) and not bx.finite_number(value):
             raise EngineError("本机返回非有限指标：" + key)
     if not result["xml"].startswith("<?xml"):
         raise EngineError("本机 XML 保存能力未通过检查。")
@@ -362,6 +373,46 @@ def ascendancy_paths(name, nodes):
     return selected, paths
 
 
+def batch_id(kind,index,value):
+    payload=json.dumps(value,sort_keys=True,ensure_ascii=False,allow_nan=False)
+    return kind+':'+str(index)+':'+hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def ordered_batch(kind, inputs, rows):
+    """Require one native identity per request; restore harmless return reordering."""
+    expected=[batch_id(kind,index,value) for index,value in enumerate(inputs)]
+    actual=[row.get('request_id') if isinstance(row,dict) else None for row in rows] if isinstance(rows,list) else []
+    valid=isinstance(rows,list) and len(rows)==len(expected) and all(isinstance(v,str) for v in actual) and len(set(actual))==len(actual) and set(actual)==set(expected)
+    if not valid:
+        raise EngineError('原生批量结果缺失、重复或与请求身份不符。',diagnostic={
+            'code':'native_response_mismatch','action':'inspect_error','retryable':False,
+            'location':'/calculations' if kind=='xml' else '/catalog_batch',
+            'expected':{'count':len(expected),'request_ids':expected},'actual':{'count':len(actual),'request_ids':actual}})
+    indexed={row['request_id']:row for row in rows}
+    ordered=[indexed[value] for value in expected]
+    for index,row in enumerate(ordered):
+        if kind=='xml':
+            digest=hashlib.sha256(inputs[index].encode('utf-8')).hexdigest()
+            if row.get('input_xml_sha256') not in (None,digest):
+                raise EngineError('原生批量结果的角色摘要与对应请求不符。',diagnostic={'code':'native_response_mismatch','action':'inspect_error','retryable':False,'location':f'/calculations/{index}/input_xml_sha256','expected':digest,'actual':row['input_xml_sha256']})
+            row['input_xml_sha256']=digest
+        elif 'failure' not in row:
+            for field,default in (('kind',None),('query',''),('offset',0)):
+                expected_value=inputs[index].get(field,default)
+                if row.get(field)!=expected_value:
+                    raise EngineError('原生目录结果与对应查询不符。',diagnostic={'code':'native_response_mismatch','action':'inspect_error','retryable':False,'location':f'/catalog_batch/{index}/{field}','expected':expected_value,'actual':row.get(field)})
+    return ordered
+
+
+def validate_response(request,result):
+    if not isinstance(result,dict) or result.get('request_id')!=request['request_id']:
+        raise EngineError('原生响应与本次请求不符。',diagnostic={'code':'native_response_mismatch','action':'inspect_error','retryable':False,'location':'/request_id','expected':request['request_id'],'actual':result.get('request_id') if isinstance(result,dict) else type(result).__name__})
+    if 'xml_batch' in request: result['calculations']=ordered_batch('xml',request['xml_batch'],result.get('calculations'))
+    if 'queries' in request:
+        inputs=[{key:value for key,value in query.items() if key!='request_id'} for query in request['queries']]
+        result['catalog_batch']=ordered_batch('query',inputs,result.get('catalog_batch'))
+
+
 def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, offset: int = 0, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False, class_id: int | None = None, breakdowns: list | None = None, node_probes: list | None = None, equipment_layouts: list | None = None, tree_targets: list | None = None, tree_masteries: dict | None = None, cache: bool = True) -> dict:
     started = time.perf_counter()
     PERFORMANCE["requests"] += 1
@@ -380,11 +431,14 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     request = {"pob_path": str(root), "xml": xml, "catalog": catalog, "query": query, "limit": limit, "offset": offset, "health_probe": health_probe}
     if class_id is not None: request["class_id"] = class_id
     if queries is not None:
-        request["queries"] = queries
+        request["queries"] = [{**value,'request_id':batch_id('query',index,value)} for index,value in enumerate(queries)]
     if crafts is not None:
         request["crafts"] = crafts
     if xml_batch is not None:
+        if not isinstance(xml_batch,list) or not 1<=len(xml_batch)<=12 or not all(isinstance(value,str) and value for value in xml_batch):
+            raise EngineError('原生计算批次需要 1–12 个非空 XML。',diagnostic={'code':'invalid_input','action':'edit_input','retryable':False,'location':'/xml_batch','expected':'1–12 nonempty XML strings','actual':len(xml_batch) if isinstance(xml_batch,list) else type(xml_batch).__name__})
         request["xml_batch"] = xml_batch
+        request['xml_batch_ids']=[batch_id('xml',index,value) for index,value in enumerate(xml_batch)]
     if breakdowns is not None: request["breakdowns"] = breakdowns
     if node_probes is not None: request["node_probes"] = node_probes
     if equipment_layouts is not None: request["equipment_layouts"] = equipment_layouts
@@ -392,6 +446,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     if tree_masteries is not None: request["tree_masteries"] = tree_masteries
     if (breakdowns or node_probes) and not xml:
         raise EngineError("计算明细和天赋筛选需要具体角色 XML。")
+    request['request_id']=batch_id('request',0,request)
     cache_key = hashlib.sha256(json.dumps({"request":request,"fingerprint":info["engine_fingerprint"]},sort_keys=True,ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
     cache_path = CACHE_DIRECTORY / (cache_key + ".json")
     if cache and not health_probe:
@@ -399,6 +454,9 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
             stored = json.loads(cache_path.read_text(encoding="utf-8"))
             payload = json.dumps(stored["result"],sort_keys=True,ensure_ascii=False,allow_nan=False)
             if stored["key"] == cache_key and stored["sha256"] == hashlib.sha256(payload.encode("utf-8")).hexdigest() and fingerprint(root) == info["engine_fingerprint"]:
+                validate_response(request,stored['result'])
+                for calculation in stored['result'].get('calculations',[stored['result']]):
+                    validate_contract(calculation,catalog_only=bool(catalog or queries) and not health_probe and not xml_batch and not crafts)
                 PERFORMANCE["cache_hits"] += 1
                 return {**stored["result"],"runtime":{"cache_hit":True,"worker_calls":0,"elapsed_seconds":round(time.perf_counter()-started,4),"cache_key":cache_key}}
         except (OSError, ValueError, KeyError, TypeError):
@@ -439,6 +497,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         raise EngineError("计算引擎没有返回有效结果：" + process.stdout.decode("utf-8", errors="replace")[-1000:]) from exc
     if fingerprint(root) != info["engine_fingerprint"]:
         raise EngineError("计算期间引擎或数据文件发生变化。本次结果已作废，请等待 PoECharm 更新完成后重试。")
+    validate_response(request,result)
     result.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
     names, oil_names = {}, {}
     for filename in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv", "Items_Oils.csv"):
@@ -490,9 +549,6 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     result["input_xml_sha256"] = hashlib.sha256(xml.encode("utf-8")).hexdigest() if xml else None
     for row in result.get("breakdowns",[]):
         row["context"]={"engine_fingerprint":info["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"config_values":result.get("config_values",{})}
-    if xml_batch:
-        for calculation, source in zip(result["calculations"],xml_batch):
-            calculation["input_xml_sha256"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     if cache and not health_probe:
         temporary = None
         try:

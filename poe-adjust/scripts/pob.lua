@@ -108,6 +108,7 @@ if request.tree_targets then
 end
 local output = build.calcsTab.mainOutput or {}
 local result = {stats = scalarTable(output), minion = scalarTable(output.Minion), warnings = {}, gems = {}, equipped = {}, nodes = {}, errors = {}, excluded_guard_checks = {}}
+result.request_id = request.request_id
 result.convergence = {stable_frames = stable + 1, frames = frames, scope = "Scalar output, point count, group count and native build flag"}
 result.native_tree_allocation = allocation
 if output.Minion then
@@ -226,6 +227,22 @@ end
 result.main_group = build.mainSocketGroup
 result.main_skill = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.id
 result.main_skill_name = build.calcsTab.mainEnv.player.mainSkill.activeEffect.grantedEffect.name
+-- These are the actual materialized choices used by CalcSetup, including
+-- multi-effect gems and item-granted skills. A gem count is not this index range.
+result.skill_selections = setmetatable({}, {__jsontype = "array"})
+for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
+  inputRule(type(group.displaySkillList) == "table", "Native materialized active-skill choices are unavailable",
+    "/skill_groups/"..tostring(groupIndex - 1).."/main_active_skill", "native materialized choices", "unavailable", true)
+  local choices = setmetatable({}, {__jsontype = "array"})
+  for index, skill in ipairs(group.displaySkillList) do
+    local effect = skill.activeEffect
+    local gemIndex
+    for position, gem in ipairs(group.gemList) do if effect.srcInstance == gem then gemIndex = position; break end end
+    table.insert(choices, {index = index, id = effect.grantedEffect.id, name = effect.grantedEffect.name, gem_index = gemIndex})
+  end
+  table.insert(result.skill_selections, {group = groupIndex, source = group.source,
+    main_active_skill = group.mainActiveSkill or 1, choices = choices})
+end
 -- Keep the native Full DPS contributors and each active skill's operating context.
 -- A scalar-only output loses this distinction for minions, mirages and triggers.
 result.damage_sources, result.active_skills = {}, {}
@@ -671,7 +688,9 @@ end
 if request.queries then
   result.catalog_batch = {}
   for _, query in ipairs(request.queries) do
-    table.insert(result.catalog_batch, queryCatalog(query.kind, query.query, query.limit, query.offset))
+    local row = queryCatalog(query.kind, query.query, query.limit, query.offset)
+    row.request_id = query.request_id
+    table.insert(result.catalog_batch, row)
   end
 end
 result.xml = assert(build:SaveDB("POE Adjust"))
@@ -819,8 +838,10 @@ end
 local response
 if request.xml_batch then
   assert(#request.xml_batch >= 1 and #request.xml_batch <= 12, "A calculation batch accepts 1-12 builds")
-  response = {calculations = {}}
-  for _, xml in ipairs(request.xml_batch) do table.insert(response.calculations, calculateRequest({xml = xml})) end
+  response = {request_id = request.request_id, calculations = {}}
+  for index, xml in ipairs(request.xml_batch) do
+    table.insert(response.calculations, calculateRequest({xml = xml, request_id = request.xml_batch_ids[index]}))
+  end
 else
   response = calculateRequest(request)
   if request.health_probe then

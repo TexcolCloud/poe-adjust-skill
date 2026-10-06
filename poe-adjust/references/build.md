@@ -62,6 +62,8 @@
 | weapon_set | XML 支持的1或2；这是接口格式，非武器组合策略 |
 | config | 候选专有配置变化；null 显式删除。共同场景写顶层 scenario，未知字段保留未覆盖 |
 
+`main_active_skill` 是当前物化组的主动技能选项序号，不等于宝石位置或宝石数。`inspect --calculate` 的 `calculation.skill_selections` 给出当前各组 choices（index/id/name/gem_index）；采用新组合后重新计算。非法选项或原生静默改写会返回 `native_selection_changed`、请求/实际值及 `available_options`。模型决定选哪一项，程序不自动替换；省略字段的原生默认值和无主动技能空组的默认占位可以正常保存。
+
 宝石额外字段：enabled、enable_global1、enable_global2、count、skill_part、skill_stage_count、skill_minion，沿用当前本机语义。关闭守护收益与仍装备/触发/支付费用分开。禁用普通组不会释放 slot；确实卸下需显式 `slot:""`。
 
 tree.masteries/masteries_add 使用节点 ID 字符串到效果 ID 的映射；nodes 全量不能混用增量，masteries 全量不能混用局部；保留其他专精。模板路径相对 plan 所在目录，仍须核对实际来源与迁移步骤。

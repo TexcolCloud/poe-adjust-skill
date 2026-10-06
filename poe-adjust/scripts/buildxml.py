@@ -21,10 +21,10 @@ _UNSET = object()
 
 class ContractError(ValueError):
     """An input error with a concrete field and observable repair information."""
-    def __init__(self, message, *, code="invalid_input", location=None, expected=None, actual=_UNSET, input_file=None):
+    def __init__(self, message, *, code="invalid_input", location=None, expected=None, actual=_UNSET, input_file=None, available_options=None):
         super().__init__(message)
         self.diagnostic={"code":code,"message":message,"action":"edit_input","retryable":False}
-        for key,value in (("location",location),("expected",expected),("input_file",input_file)):
+        for key,value in (("location",location),("expected",expected),("input_file",input_file),("available_options",available_options)):
             if value is not None: self.diagnostic[key]=value
         if actual is not _UNSET: self.diagnostic["actual"]=actual
 
@@ -32,6 +32,13 @@ class ContractError(ValueError):
 def require(condition, message, **details):
     if not condition:
         raise ContractError(message, **details)
+
+
+def finite_number(value):
+    """Numbers crossing Lua/native arithmetic must fit a finite double."""
+    if type(value) not in (int,float): return False
+    try: return math.isfinite(value)
+    except OverflowError: return False
 
 
 def require_keys(value, allowed, location, message="包含未知字段。"):
@@ -73,7 +80,7 @@ def group_shape(values, location, *, allowed=None):
         if key in {"index","main_active_skill"}:
             require(type(value) is int and value>0,key+" 应为正整数。",location=path,expected="positive integer",actual=value)
         if key=="group_count":
-            require(type(value) in (int,float) and math.isfinite(value) and value>0,key+" 应为有限正数。",location=path,expected="finite positive number",actual=value)
+            require(finite_number(value) and value>0,key+" 应为有限正数。",location=path,expected="finite positive number",actual=value)
         if key=="gems": require(isinstance(value,list),"gems 应为数组。",location=path,expected="array",actual=value)
 
 
@@ -102,7 +109,7 @@ def config_shape(values, location):
         path=location+"/"+key.replace("~","~0").replace("/","~1")
         require(key and key not in {"customMods","customModsExtra"},"使用真实配置字段和装备，不接受自定义数值补丁。",location=path,expected="nonempty native config key excluding customMods/Extra",actual=key)
         require(value is None or type(value) in (str,int,float,bool),"配置值为文本、数值、布尔或 null。",location=path,expected="scalar or null",actual=value)
-        require(type(value) is not float or math.isfinite(value),"配置数值应有限。",location=path,expected="finite number",actual=value)
+        require(type(value) not in (int,float) or finite_number(value),"配置数值应有限。",location=path,expected="finite representable number",actual=value)
 
 
 def item_shape(item, location, *, complete=True):
@@ -122,7 +129,7 @@ def item_shape(item, location, *, complete=True):
             for index,affix in enumerate(affixes):
                 loc=path+f"/affixes/{index}";require_keys(affix,{"id","roll"},loc)
                 if complete or "id" in affix: require(isinstance(affix.get("id"),str) and affix["id"].strip(),"词缀 id 使用本机值。",location=loc+"/id",expected="nonempty string",actual=affix.get("id"))
-                if "roll" in affix: require(type(affix["roll"]) in (int,float) and math.isfinite(affix["roll"]) and 0<=affix["roll"]<=1,"roll 是范围位置 0–1。",location=loc+"/roll",expected="finite number 0..1",actual=affix["roll"])
+                if "roll" in affix: require(finite_number(affix["roll"]) and 0<=affix["roll"]<=1,"roll 是范围位置 0–1。",location=loc+"/roll",expected="finite number 0..1",actual=affix["roll"])
     if complete: require("text" in item or "craft" in item,"装备需要 text 或 craft。",location=location,expected="text OR craft",actual=sorted(item))
 
 
@@ -305,6 +312,57 @@ def update_group(group, values, *, location="/groups"):
     for key,value in values.items():
         if key not in GROUP_FIELDS: continue
         group.set(GROUP_FIELDS[key],attr(value))
+
+
+def verify_selections(document, result, operations=None):
+    """Check requested meaning before accepting the native normalized save."""
+    explicit_only=operations is not None
+    operations=operations or {}
+    selected=document.find('Build').get('mainSocketGroup')
+    if selected not in (None,'nil') and (not explicit_only or 'main_group' in operations):
+        requested=int(selected)
+        require(requested==result.get('main_group'),"原生改写了请求的主技能组。",code="native_selection_changed",location="/operations/main_group",expected=requested,actual=result.get('main_group'))
+    observed={row['group']:row for row in result.get('skill_selections',[])}
+    saved=parse(result['xml'])
+    saved_groups=groups(saved)
+    for index,group in enumerate(groups(document),1):
+        path=f"/skill_groups/{index-1}"
+        replacement=operations.get('replace_skills',[])
+        declared=replacement[index-1] if index<=len(replacement) else {}
+        if replacement: path=f"/operations/replace_skills/{index-1}"
+        for change_index,change in enumerate(operations.get('groups',[])):
+            if change['index']==index and 'main_active_skill' in change:
+                path=f"/operations/groups/{change_index}"
+                declared={**declared,**change}
+        raw=group.get('mainActiveSkill')
+        if raw not in (None,'nil') and (not explicit_only or 'main_active_skill' in declared):
+            requested=int(raw)
+            row=observed.get(index)
+            require(row is not None,"当前原生接口未返回这一组的可选技能。",code="native_selection_unavailable",location=path+'/main_active_skill',expected="materialized native choices",actual=None)
+            choices={choice['index'] for choice in row['choices']}
+            actual=row['main_active_skill']
+            # Empty/support-only groups have the native default 1 and no skill
+            # to select. Omitted native defaults do not change user intent.
+            valid=requested in choices or requested==1 and not choices
+            require(valid and requested==actual,"请求的主主动技能不可用或被原生改写。",code="native_selection_changed",location=path+'/main_active_skill',expected=requested,actual=actual,available_options=row['choices'])
+        for gem_index,gem in enumerate(group.findall('Gem'),1):
+            for field in ('skill_part','skill_stage_count','skill_minion'):
+                attr_name=GEM_FIELDS[field];expected=gem.get(attr_name)
+                entries=declared.get('gems',[])
+                explicit=gem_index<=len(entries) and field in entries[gem_index-1]
+                explicit=explicit or any(change['group']==index and change['index']==gem_index and field in change for change in operations.get('gems',[]))
+                if expected is None or expected=='nil' and not explicit or explicit_only and not explicit: continue
+                require(index<=len(saved_groups),"原生保存丢失了请求的技能组。",code="native_selection_changed",location=f"/skill_groups/{index-1}",expected="preserved group",actual=None)
+                actual_gems=saved_groups[index-1].findall('Gem')
+                require(gem_index<=len(actual_gems),"原生保存丢失了请求的宝石。",code="native_selection_changed",location=f"/skill_groups/{index-1}/gems/{gem_index-1}",expected="preserved gem",actual=None)
+                actual=actual_gems[gem_index-1].get(attr_name)
+                # Part 1 is the native default when omitted on save.
+                if field=='skill_part': expected,actual=int(expected),int(actual or 1)
+                elif field=='skill_stage_count': expected,actual=int(expected),int(actual or 0)
+                location=f"/operations/replace_skills/{index-1}/gems/{gem_index-1}/{field}" if 'replace_skills' in operations else f"/skill_groups/{index-1}/gems/{gem_index-1}/{field}"
+                for change_index,change in enumerate(operations.get('gems',[])):
+                    if change['group']==index and change['index']==gem_index and field in change: location=f"/operations/gems/{change_index}/{field}"
+                require(expected==actual,"原生保存改写了请求的技能状态。",code="native_selection_changed",location=location,expected=expected,actual=actual)
 
 
 def plan_shape(plan, *, complete=True):

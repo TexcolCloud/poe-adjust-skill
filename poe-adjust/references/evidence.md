@@ -54,9 +54,9 @@ readiness.single_payments 列出所有当前启用技能对三资源的独立单
 
 requirements 从实际 XML 差异产生，包含仍装备的禁用/备用宝石、规格变化、装备改造和退点资源。阅读 evaluation.budget.materials，不能用“原 XML 没有，所以用户肯定没有”代替询问。
 
-物资公共字段：kind、quantity、evidence_refs，可选 description。gem 用 skill_id/level/quality；item 用 item_id/spec_sha256（来自该候选需求）；service 用 service_id。库存写 inventory，报价写 shopping，均不能自填 status。
+物资公共字段：kind、quantity、evidence_refs，可选 description。gem 用 skill_id/level/quality；item 用 spec_sha256（读取当前 requirement_id/material_specs，不手算），可选 item_id 仅指某个 XML 内的编号；service 用 service_id。库存写 inventory，报价写 shopping，均不能自填 status。
 
-库存 evidence.subject 为 `gem:<skill_id>:<level>:<quality>`、`item:<id>` 或 `service:<service_id>`，context.quantity 对应用户实际确认数量，装备还匹配 spec_sha256。同规格合并数量，依据不重复。同一条用户声明不反复累计数量。
+库存 evidence.subject 为 `gem:<skill_id>:<level>:<quality>`、`item:<spec_sha256>` 或 `service:<service_id>`，直接沿用程序返回的 requirement_id。context.quantity 对应用户实际确认数量，装备还匹配 spec_sha256。同规格合并数量，依据不重复。同一条用户声明不反复累计数量。两个阶段都出现 item_id:1 不表示同一规格；相同规格用不同 XML 编号仍按同一规格累计，实物 instance_id 用于首次取得与后续沿用。
 
 报价另含 low/high/currency：low/high 是**该整条 quantity 的总价**。来源 context 需对应 realm:"cn"、league、currency、quantity、low、high，装备还需 spec_sha256，并有实际 checked_at。`quote:<物资引用>` claim 必须引用同一价格记录，解释规格与语义匹配。只写 URL 或 verified_cn 会被拒绝。国际服报价不计成国服已核实价格；无汇率依据不自动换算。
 

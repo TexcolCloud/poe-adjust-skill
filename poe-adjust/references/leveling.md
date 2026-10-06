@@ -66,7 +66,7 @@ route 自动分批读取当前宝石、连线、基底和完整升华目录，�
 | entry_conditions | 该阶段条件 claim_id 数组，claim.subjects 包含 `stage:<stage_id>` |
 | entry_checks | 可选数值/配置条件数组；每条含 check_id、locator、op、value、claim_id，见下文 |
 | bases / weapon_setup | `{原生槽位:完整基底名}`；武器布局可选自由说明 |
-| skill_groups | `[{name,slot,use,enabled,gems:[{instance_id,skill_id,level,quality}]}]`；level可填auto，quality默认0 |
+| skill_groups | `[{name,slot,use,enabled,gems:[{instance_id,skill_id,level,quality,enabled}]}]`；level可填auto，quality默认0；单颗enabled默认true，false仍占同一物理组孔位 |
 | gear / passives / checks / transition | 各为文字或文字数组，说明目标属性、天赋顺序、可观察检查与下一段条件 |
 | ascendancy_points / ascendancy_nodes | 本阶段声明可用升华点数与累计目标节点 ID；程序合并当前原生连接路径，不只数大点；留点允许 |
 | normal_points_available / secondary_ascendancy_points | 本阶段声明的普通/次级升华总可用点数，未知省略/null；结合当前任务来源在 `progress:<stage_id>` claim 核对，不用固定章节奖励公式 |
@@ -87,7 +87,7 @@ route 自动分批读取当前宝石、连线、基底和完整升华目录，�
 }
 ```
 
-以上仅展示格式，不认证 Fireball 在此职业/阶段的取得方式；必须替换成实际查询行。装备使用 kind:item/item_id/spec_sha256，服务用 kind:service/service_id，quantity 均正整数。acquisition 可表达 owned/quest/vendor/trade/drop/lab/craft 等实际来源，不强制随机来源附普通替代。
+以上仅展示格式，不认证 Fireball 在此职业/阶段的取得方式；必须替换成实际查询行。装备使用 kind:item/spec_sha256，item_id 仅为阶段 XML 内的可选编号，全路线库存/采购用 item:<spec_sha256>；同号不同规格分别登记，同规格合并数量。服务用 kind:service/service_id，quantity 均正整数。acquisition 可表达 owned/quest/vendor/trade/drop/lab/craft 等实际来源，不强制随机来源附普通替代。
 
 owned 需要 user_statement 记录，subject 匹配物资引用，context 包含实例对应的 instance_id 与 quantity。购入物资同时关联 inventory/shopping 的规格；不要将同一实例的首次购入费用重复列在后续阶段。quest/vendor 须对应当前页面唯一行，程序不能证明任务已做或奖励选择；由 `acquisition:<instance_id>` claim 解释进入条件、成长到所填等级、费用与限制。其他来源用实际取得的证据及同对象 claim；不能只写一句“能刷到”。
 
@@ -110,7 +110,7 @@ assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[
 - `template_xml` 可选，指向真实角色模板；省略时复用当前原生职业空角色。程序生成内部 XML，不要求玩家先有角色，也不要手写最小 XML。
 - `operations` 复用配装协议的 items/equip/tree/config/main_group/weapon_set。角色等级与基础技能组来自本阶段。gems 仅补计数、技能部位等状态；groups 仅补 main_active_skill/include_in_full_dps/group_count，不能在快照偷偷换掉阶段列出的宝石、等级或位置。
 
-  例如 snapshot.operations.groups 使用 `{index:1,main_active_skill:1}`，组启用写 stage.skill_groups[].enabled；等级写 stage.level。职业/升华由路线和本阶段分配推导，不需要在快照重复填写。
+  例如 snapshot.operations.groups 使用 `{index:1,main_active_skill:1}`，组启用写 stage.skill_groups[].enabled，单颗开关写其 gems[].enabled；等级写 stage.level。主主动的合法选项来自物化后的 native skill_selections，不能从宝石数猜索引。职业/升华由路线和本阶段分配推导，不需要在快照重复填写。
 - `assumptions` 为 claim_id 数组，对应 claim.subjects 含 `snapshot:<stage_id>`。说明实际假设的装备词缀/孔连、天赋、操作和何时取得；资料只证明某物品存在时，不能说用户已经拥有。
 - `usage` / `timeline` 采用共同证据协议，引用阶段实际 skill_ref；需要时先运行 route，读取该阶段 calculation.active_skills 后补全。同阶段使用一组时间条件。
 - `metrics` 可选指标名数组。只取实际原生输出，不在当前结果中的指标保持未知。

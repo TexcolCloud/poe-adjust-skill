@@ -246,7 +246,7 @@ class DocumentTests(unittest.TestCase):
 
     def test_budget_keeps_unknown_and_foreign_prices_unverified(self):
         intent={"budget":{"amount":20,"currency":"divine"},"league":"CN"}
-        item={"kind":"item","item_id":5,"quantity":1}
+        item={"kind":"item","item_id":5,"spec_sha256":bx.digest('fixture item'),'quantity':1}
         result=poe.budget_summary({"shopping":[item]},intent,[item])
         self.assertEqual(result["status"],"unknown")
         self.assertFalse(result["totals_complete"])
@@ -909,10 +909,11 @@ class EvidenceTests(unittest.TestCase):
         claims=[{"claim_id":"c","text":"uncertain","subjects":["goal"],"evidence_refs":["user"],"uncertainties":["not tested"]}]
         self.assertEqual(facts.assess_claims(claims,{"user":{"status":"user_declared"}})[0]["status"],"unresolved")
     def test_quote_requires_matching_realm_subject_specs_and_claim_reference(self):
-        need={"kind":"item","item_id":1,"spec_sha256":"spec","quantity":2}
+        need={"kind":"item","item_id":1,"spec_sha256":bx.digest('spec'),"quantity":2}
+        ref=facts.material_ref(need)
         quote={**need,"low":6,"high":8,"currency":"divine","evidence_refs":["p"]}
-        evidence={"p":{"evidence_id":"p","kind":"artifact","subject":"item:1","status":"artifact_observed","checked_at":"2026-10-04","context":{"realm":"cn","league":"test","currency":"divine","quantity":2,"low":6,"high":8,"spec_sha256":"spec"}}}
-        claims=[{"claim_id":"q","status":"model_assessed","subjects":["quote:item:1"],"evidence_refs":["p"]}]
+        evidence={"p":{"evidence_id":"p","kind":"artifact","subject":ref,"status":"artifact_observed","checked_at":"2026-10-04","context":{"realm":"cn","league":"test","currency":"divine","quantity":2,"low":6,"high":8,"spec_sha256":need['spec_sha256']}}}
+        claims=[{"claim_id":"q","status":"model_assessed","subjects":["quote:"+ref],"evidence_refs":["p"]}]
         intent={"league":"test","budget":{"amount":10,"currency":"divine"}}
         result=poe.budget_summary({"shopping":[quote]},intent,[need],evidence,claims)
         self.assertEqual((result["low"],result["high"]),(6,8))
@@ -1259,7 +1260,11 @@ class WorkflowInterfaceTests(unittest.TestCase):
                       'stat_metadata':{'CombinedDPS':[{'label':'Combined DPS','format':'.1f','actor':'player'}]}}
             candidate=copy.deepcopy(baseline);candidate.update(input_xml_sha256='after',points=1,ascendancy_points=0,secondary_ascendancy_points=0)
             record=(run,{'intent':{}},{'plan':{'mode':'refine'},'engine_fingerprint':'fixture','baseline':baseline},SAMPLE,run)
-            with patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',side_effect=[baseline,{'calculations':[candidate]}]),patch.object(poe,'materialize_items',side_effect=lambda plan,root:(plan,[])),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',return_value={'errors':[],'pending':[],'warnings':[]}):
+            def calculate(*pos,**kw):
+                if 'xml_batch' in kw:
+                    return {'calculations':[{**candidate,'xml':xml,'request_id':engine.batch_id('xml',i,xml),'input_xml_sha256':bx.digest(xml)} for i,xml in enumerate(kw['xml_batch'])]}
+                return baseline
+            with patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'materialize_items',side_effect=lambda plan,root:(plan,[])),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',return_value={'errors':[],'pending':[],'warnings':[]}):
                 response=poe.probe(args(run=str(run),name='fixture',variants=str(variant_file)))
             observation=response['alternatives'][0]['damage_observation']
             self.assertEqual(response['alternatives'][0]['dps_delta'],0)
@@ -2422,6 +2427,271 @@ class EditAndRecoveryTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(),before);self.assertEqual(self.source.with_suffix(".edit.json").read_bytes(),receipt)
 
 
+class DeliveryIntegrityTests(unittest.TestCase):
+    def route_state(self, root):
+        source=root/'route.json';output=root/'route.html';state=root/'route.state.json'
+        poe.write_json(source,{'goal':'fixture'});poe.write_text(output,'report')
+        xml=poe.stage_directory(output,'a')/'snapshot.xml';poe.write_text(xml,SAMPLE)
+        value={'input':str(source),'input_sha256':bx.digest(source.read_bytes()),'output':str(output),
+               'pob_path':str(root/'selected-engine'),'phase':'exported','file_exported':True,
+               'engine_fingerprint':'fixture','files':{str(output):bx.digest(output.read_bytes())},
+               'stages':{'a':{'status':'calculated','native_calculated':True,'xml_path':str(xml),'xml_sha256':bx.digest(xml.read_bytes())}}}
+        poe.write_json(state,value)
+        return source,output,state,xml
+
+    def test_route_delivery_tracks_stage_xml_and_allows_only_its_stage_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);_,_,state,xml=self.route_state(root)
+            with patch.object(engine,'resolve_root',return_value=root),patch.object(engine,'fingerprint',return_value='fixture'):
+                self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+                for content in (None,SAMPLE+' '):
+                    with self.subTest(content=content):
+                        if content is None: xml.unlink()
+                        else: poe.write_text(xml,content)
+                        result=poe.workflow_status(args(route_state=str(state)))
+                        self.assertFalse(result['file_exported'])
+                        self.assertEqual(result['completed_stages'],['a'])
+                        self.assertIn(str(xml),result['invalid_artifacts'])
+                        self.assertEqual(result['next_actions'][0]['action'],'resume_route')
+                poe.write_text(xml,SAMPLE)
+                value=poe.read_json(state);value['files'][str(xml)]=bx.digest(xml.read_bytes());poe.write_json(state,value)
+                self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+                outside=root/'other.xml';poe.write_text(outside,SAMPLE)
+                value['stages']['a']['xml_path']=str(outside);poe.write_json(state,value)
+                self.assertFalse(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+            if os.name=='nt':
+                case=root/'junction-case';case.mkdir()
+                source,output,state,xml=self.route_state(case)
+                directory=xml.parent;xml.unlink();directory.rmdir()
+                target=root/'outside-case';target.mkdir();poe.write_text(target/'snapshot.xml',SAMPLE)
+                quote=lambda value:"'"+str(value).replace("'","''")+"'"
+                junction=engine.subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',
+                    'New-Item -ItemType Junction -Path '+quote(directory)+' -Target '+quote(target)+' | Out-Null'],
+                    capture_output=True,creationflags=engine.subprocess.CREATE_NO_WINDOW)
+                self.assertEqual(junction.returncode,0,junction.stderr.decode(errors='replace'))
+                with patch.object(engine,'resolve_root',return_value=case),patch.object(engine,'fingerprint',return_value='fixture'):
+                    status=poe.workflow_status(args(route_state=str(state)))
+                    self.assertTrue(status['input_unchanged']);self.assertFalse(status['files_intact'])
+                    self.assertFalse(status['file_exported']);self.assertIn(str(xml.resolve()),status['invalid_artifacts'])
+                    poe.write_json(source,{'stages':[{'stage_id':'a','snapshot':{}}]})
+                    state_before=state.read_bytes();report_before=output.read_bytes();xml_before=(target/'snapshot.xml').read_bytes()
+                    with self.assertRaises(bx.ContractError) as caught:
+                        poe.route_command(args(invoked=True,file=str(source),out=str(output)))
+                    self.assertEqual(caught.exception.diagnostic['code'],'path_conflict')
+                    self.assertEqual(state.read_bytes(),state_before);self.assertEqual(output.read_bytes(),report_before)
+                    self.assertEqual((target/'snapshot.xml').read_bytes(),xml_before)
+
+    def test_route_restore_reuses_selected_engine_and_accepts_explicit_override(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);_,_,state,_=self.route_state(root)
+            with patch.object(engine,'resolve_root',return_value=root) as resolve,patch.object(engine,'fingerprint',return_value='fixture'):
+                poe.workflow_status(args(route_state=str(state)))
+                self.assertEqual(resolve.call_args.args[0],str(root/'selected-engine'))
+                request=args(route_state=str(state));request.pob=str(root/'override')
+                poe.workflow_status(request)
+                self.assertEqual(resolve.call_args.args[0],request.pob)
+
+    def test_stale_candidate_keeps_source_and_recovery_diagnostic(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);xml=bx.serialise(bx.parse(SAMPLE));poe.write_text(run/'original.xml',xml)
+            plan=run/'source-plan.json';poe.write_json(plan,{'operations':{}})
+            candidate=run/'candidates/test';poe.write_text(candidate/'candidate.xml',xml);poe.write_text(candidate/'requested.xml',xml)
+            value={'schema_version':2,'skill_version':poe.VERSION,'intent_hash':None,'original_sha256':bx.digest(xml),
+                   'xml_sha256':bx.digest(xml),'requested_sha256':bx.digest(xml),'source_plan':str(plan),
+                   'source_plan_sha256':bx.digest(plan.read_bytes()),'engine_fingerprint':'fixture','status':'draft','pending':[],'errors':[]}
+            poe.write_json(candidate/'evaluation.json',value)
+            poe.write_json(run/'run.json',{'schema_version':2,'invoked':True,'phase':'evaluated','original_sha256':bx.digest(xml),
+                                          'pob_path':str(run),'candidates':{'test':{'evaluation_sha256':bx.digest((candidate/'evaluation.json').read_bytes())}}})
+            poe.write_json(plan,{'operations':{'main_group':2}})
+            with patch.object(engine,'calculate',side_effect=AssertionError('status must not calculate')):
+                result=poe.workflow_status(args(run=str(run)))
+            row=result['candidate_records'][0];action=next(a for a in result['next_actions'] if a['action']=='reevaluate')
+            self.assertFalse(row['valid']);self.assertEqual(row['plan_file'],str(plan))
+            self.assertEqual(row['diagnostic']['location'],'/source_plan')
+            self.assertEqual(row['input_revision'],bx.digest(plan.read_bytes()))
+            self.assertEqual(action['plan_file'],str(plan));self.assertEqual(action['run'],str(run))
+            self.assertEqual(action['details_file'],str(candidate/'evaluation.json'))
+
+    def test_material_identity_uses_specification_across_local_xml_ids(self):
+        a={'kind':'item','item_id':1,'spec_sha256':bx.digest('first'),'quantity':1,'evidence_refs':['a']}
+        b={**a,'spec_sha256':bx.digest('second'),'evidence_refs':['b']}
+        same={**a,'item_id':500}
+        self.assertNotEqual(facts.material_ref(a),facts.material_ref(b))
+        self.assertEqual(facts.material_ref(a),facts.material_ref(same))
+        evidence={key:{'kind':'user_statement','status':'user_declared','subject':facts.material_ref(row),
+                       'context':{'quantity':1,'spec_sha256':row['spec_sha256']}} for key,row in [('a',a),('b',b)]}
+        budget=poe.budget_summary({'inventory':[a,b]}, {},[a,b],evidence)
+        self.assertEqual([m['remaining'] for m in budget['materials']],[0,0])
+        self.assertEqual(len({m['requirement_id'] for m in budget['materials']}),2)
+
+    def test_disabled_route_gem_preserves_the_same_physical_group(self):
+        fixture=RouteTests();fixture.setUp();fixture.route['stages'][0]['skill_groups'][0]['gems'][0]['enabled']=False
+        checked,_=fixture.check()
+        self.assertFalse(checked['stages'][0]['skill_groups'][0]['gems'][0]['enabled'])
+        self.assertEqual(len(checked['stages'][0]['skill_groups'][0]['gems']),1)
+        fixture.route['stages'][0]['skill_groups'][0]['gems'][0]['enabled']='false'
+        with self.assertRaises(bx.ContractError): fixture.check()
+
+    def test_material_aggregation_keeps_distinct_specs_and_shared_spec_quantities(self):
+        fixture=RouteTests();fixture.setUp()
+        first={'kind':'item','item_id':1,'spec_sha256':bx.digest('first'),'quantity':1,'instance_id':'first-item'}
+        second={**first,'spec_sha256':bx.digest('second'),'instance_id':'second-item'}
+        fixture.route['stages'][0]['required_items']=[first]
+        fixture.route['stages'][1]['required_items']=[second]
+        checked,_=fixture.check()
+        requirements={}
+        for stage in checked['stages']:
+            for item in stage['required_items']: facts.add_material(requirements,item)
+        self.assertEqual(sorted(row['quantity'] for row in requirements.values()),[1,1])
+        facts.add_material(requirements,{**first,'item_id':77,'instance_id':'same-spec-other-item'})
+        self.assertEqual(requirements[facts.material_ref(first)]['quantity'],2)
+        self.assertEqual(requirements[facts.material_ref(second)]['quantity'],1)
+        draft={'inventory':[{'kind':'item'}]};facts.model_shape(draft,complete=False)
+        with self.assertRaises(bx.ContractError): facts.model_shape(draft)
+        with self.assertRaises(bx.ContractError): facts.model_shape({'inventory':[first,{**first,'item_id':77}]})
+        for invalid in ([],{},True,1,'unknown'):
+            with self.subTest(kind=invalid):
+                with self.assertRaises(bx.ContractError) as caught:
+                    facts.model_shape({'inventory':[{'kind':invalid}]},complete=False)
+                self.assertEqual(caught.exception.diagnostic['location'],'/inventory/0/kind')
+
+    def test_incomplete_probe_batch_has_an_outcome_for_every_variant(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);poe.write_text(run/'original.xml',SAMPLE)
+            variants=run/'variants.json';poe.write_json(variants,{'variants':[{'id':'first','operations':{}},{'id':'second','operations':{}}]})
+            baseline={'active_skills':[],'engine_fingerprint':'fixture','stats':{}}
+            record=(run,{'intent':{}},{'plan':{'mode':'refine'},'engine_fingerprint':'fixture','baseline':baseline},SAMPLE,run)
+            for count in (0,1,2):
+                singles=[0]
+                def calculate(*pos,**kw):
+                    if 'xml_batch' in kw: return {'calculations':[{'failure':'injected per-item failure'} for _ in range(count)]}
+                    singles[0]+=1
+                    if singles[0]>1: raise engine.EngineError('injected single failure')
+                    return baseline
+                with self.subTest(count=count),patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'materialize_items',side_effect=lambda plan,root:(plan,[])):
+                    result=poe.probe(args(run=str(run),name='fixture',variants=str(variants)))
+                    self.assertEqual({r['id'] for r in result['alternatives']},{'first','second'})
+                    self.assertTrue(all(r['status']=='failed' for r in result['alternatives']))
+                    self.assertEqual(result['status'],'failed')
+
+    def test_incomplete_catalog_batch_is_a_structured_failure(self):
+        queries=[{'kind':'gems','query':'a'},{'kind':'gems','query':'b'}]
+        with patch.object(engine,'calculate',return_value={'engine_fingerprint':'fixture','catalog_batch':[{'kind':'gems','query':'a'}]}):
+            with self.assertRaises(engine.EngineError) as caught: poe.native_queries(Path('.'),queries)
+        self.assertEqual(caught.exception.diagnostic['code'],'native_response_mismatch')
+
+    def test_huge_json_number_is_located_and_route_records_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'route.json';output=root/'route.html'
+            route=route_fixture();route['budget']={'amount':10**400,'currency':'divine'};poe.write_json(source,route)
+            captured=io.StringIO()
+            with patch.object(engine,'resolve_root',return_value=root),patch.object(engine,'fingerprint',return_value='fixture'),redirect_stdout(captured),redirect_stderr(captured):
+                code=poe.main(['route','--invoked','--file',str(source),'--out',str(output)])
+            self.assertNotEqual(code,0)
+            failure=json.loads(captured.getvalue())
+            self.assertFalse(failure['ok']);self.assertEqual(failure['diagnostic']['location'],'/budget/amount')
+            self.assertEqual(poe.read_json(output.with_suffix('.state.json'))['phase'],'failed')
+            self.assertIsNone(resources.number({'metric':10**400},'metric'))
+            self.assertEqual(resources.number({'metric':100},'metric'),100)
+
+
+class NativeSelectionIntegrityTests(unittest.TestCase):
+    def test_explicit_main_selection_is_checked_against_materialized_native_choices(self):
+        root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
+        source=bx.read_document(root/'Builds/夷陵盾牌S29 原始配装.xml')
+        native=engine.calculate(root,bx.serialise(source))
+        for selection in (1,2,999):
+            gems=[{'skill_id':'Fireball','level':1,'quality':0} for _ in range(2 if selection==2 else 1)]
+            document=bx.apply_plan(source,{'mode':'rebuild','summary':'native selection regression',
+                'operations':{'replace_skills':[{'main_active_skill':selection,'gems':gems}],'main_group':1}},native=native)
+            result=engine.calculate(root,bx.serialise(document),cache=False)
+            with self.subTest(selection=selection):
+                if selection in (1,2):
+                    self.assertTrue(poe.roundtrip(root,result,document))
+                    self.assertEqual(result['skill_selections'][0]['main_active_skill'],selection)
+                    self.assertEqual(result['skill_selections'][0]['choices'][selection-1]['gem_index'],selection)
+                else:
+                    with self.assertRaises(bx.ContractError) as caught: poe.roundtrip(root,result,document)
+                    self.assertEqual(caught.exception.diagnostic['expected'],999)
+                    self.assertEqual(caught.exception.diagnostic['actual'],1)
+                    self.assertIn('main_active_skill',caught.exception.diagnostic['location'])
+                    self.assertEqual(len(caught.exception.diagnostic['available_options']),1)
+                    with tempfile.TemporaryDirectory() as folder:
+                        run=Path(folder);poe.write_text(run/'original.xml',bx.serialise(source))
+                        variants=run/'variants.json';poe.write_json(variants,{'variants':[{'id':'invalid-selection','operations':{'replace_skills':[{'main_active_skill':999,'gems':gems}],'main_group':1}}]})
+                        record=(run,{'intent':{}},{'plan':{'mode':'rebuild'},'engine_fingerprint':native['engine_fingerprint'],'baseline':native},bx.serialise(source),root)
+                        with patch.object(poe,'read_candidate',return_value=record):
+                            probed=poe.probe(args(run=str(run),name='fixture',variants=str(variants)))
+                        row=probed['alternatives'][0]
+                        self.assertEqual(row['status'],'blocked');self.assertNotIn('stats',row)
+                        self.assertEqual(row['diagnostic']['location'],'/variants/0/operations/replace_skills/0/main_active_skill')
+
+    def test_native_batch_correspondence_and_cache_reject_transport_faults(self):
+        root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
+        source=bx.read_document(root/'Builds/夷陵盾牌S29 原始配装.xml')
+        changed=copy.deepcopy(source);changed.find('Build').set('level',str(int(source.find('Build').get('level'))-1))
+        inputs=[bx.serialise(source),bx.serialise(changed)]
+        control=engine.calculate(root,xml_batch=inputs,cache=False)
+        self.assertEqual([row['input_xml_sha256'] for row in control['calculations']],[bx.digest(xml) for xml in inputs])
+        def process(value):
+            return argparse.Namespace(returncode=0,stdout=json.dumps(value,ensure_ascii=False).encode('utf-8'),stderr=b'')
+        reordered=copy.deepcopy(control);reordered['calculations'].reverse()
+        with patch.object(engine.subprocess,'run',return_value=process(reordered)):
+            result=engine.calculate(root,xml_batch=inputs,cache=False)
+        self.assertEqual([row['level'] for row in result['calculations']],[row['level'] for row in control['calculations']])
+        faulty=[]
+        missing=copy.deepcopy(control);missing['calculations'].pop();faulty.append(missing)
+        duplicate=copy.deepcopy(control);duplicate['calculations'][1]=copy.deepcopy(duplicate['calculations'][0]);faulty.append(duplicate)
+        wrong=copy.deepcopy(control);wrong['calculations'][0]['request_id']='unknown';faulty.append(wrong)
+        wrong_hash=copy.deepcopy(control);wrong_hash['calculations'][0]['input_xml_sha256']=bx.digest('different');faulty.append(wrong_hash)
+        wrong_request=copy.deepcopy(control);wrong_request['request_id']='different request';faulty.append(wrong_request)
+        for index,value in enumerate(faulty):
+            with self.subTest(fault=index),patch.object(engine.subprocess,'run',return_value=process(value)):
+                with self.assertRaises(engine.EngineError) as caught: engine.calculate(root,xml_batch=inputs,cache=False)
+                self.assertEqual(caught.exception.diagnostic['code'],'native_response_mismatch')
+        with tempfile.TemporaryDirectory() as folder:
+            cache=Path(folder);key=control['runtime']['cache_key']
+            missing_choices=copy.deepcopy(control);missing_choices['calculations'][0]['skill_selections'][0]['choices']=None
+            with patch.object(engine.subprocess,'run',return_value=process(missing_choices)):
+                with self.assertRaises(engine.EngineError) as caught: engine.calculate(root,xml_batch=inputs,cache=False)
+                self.assertEqual(caught.exception.diagnostic['code'],'native_capability_unavailable')
+            for corrupted in (duplicate,missing_choices):
+                payload=json.dumps(corrupted,sort_keys=True,ensure_ascii=False,allow_nan=False)
+                poe.write_json(cache/(key+'.json'),{'key':key,'sha256':bx.digest(payload),'result':corrupted})
+                with patch.object(engine,'CACHE_DIRECTORY',cache),patch.object(engine.subprocess,'run',return_value=process(control)) as worker:
+                    recovered=engine.calculate(root,xml_batch=inputs)
+                self.assertEqual(worker.call_count,1);self.assertFalse(recovered['runtime']['cache_hit'])
+                self.assertEqual(len(recovered['calculations']),2)
+
+    def test_catalog_batches_restore_order_and_reject_wrong_query_identity(self):
+        root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
+        queries=[{'kind':'gems','query':'Fireball','limit':1},{'kind':'rules','query':'socket','limit':1}]
+        control=poe.native_queries(root,queries)
+        reordered=copy.deepcopy(control);reordered['catalog_batch'].reverse()
+        with patch.object(engine,'calculate',return_value=reordered):
+            restored=poe.native_queries(root,queries)
+        self.assertEqual([row['query'] for row in restored['catalog_batch']],[query['query'] for query in queries])
+        for field in ('request_id','query'):
+            wrong=copy.deepcopy(control);wrong['catalog_batch'][0][field]='different'
+            with self.subTest(field=field),patch.object(engine,'calculate',return_value=wrong):
+                with self.assertRaises(engine.EngineError) as caught: poe.native_queries(root,queries)
+                self.assertEqual(caught.exception.diagnostic['code'],'native_response_mismatch')
+
+    def test_route_snapshot_preserves_disabled_gem_in_same_physical_links(self):
+        root=engine.resolve_root(os.environ.get('POECHARM_PATH'));native=engine.calculate(root,'')
+        class_id=int(bx.active_spec(bx.parse(native['xml'])).get('classId'))
+        stage={'stage_id':'disabled','name':'native disabled-gem regression','level':12,'ascendancy_allocated_nodes':[],
+               'skill_groups':[{'name':'main','slot':'','gems':[{'skill_id':'Fireball','level':1,'quality':0},{'skill_id':'Fireball','level':1,'quality':0,'enabled':False}]}],
+               'snapshot':{'operations':{'tree':{'nodes':[]},'main_group':1}}}
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder)/'route.html';poe.write_json(output.with_suffix('.state.json'),{})
+            record=poe.route_snapshots({'class_id':class_id,'stages':[stage]},native,root,Path(folder),output)['disabled']
+            self.assertEqual(record['status'],'calculated',record)
+            gems=bx.groups(bx.parse(Path(record['xml_path']).read_text(encoding='utf-8')))[0].findall('Gem')
+            self.assertEqual(len(gems),2);self.assertEqual(gems[1].get('enabled'),'false')
+            self.assertEqual([gem['enabled'] for gem in record['result']['gems']],[True,False])
+
+
 class RealEngineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -3263,6 +3533,46 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(screen["alternatives"][0]["status"],"screened")
         self.assertIn("excludes path cost",screen["alternatives"][0]["scope"])
 
+    def test_52_route_material_specs_and_xml_recovery_cross_stage_local_ids(self):
+        route=route_fixture(self.native['data_version']);route.update(class_id=3,ascendancy=None,gems={'Fireball':{}},stages=[],inventory=[])
+        gem={'kind':'gem','instance_id':'fire','skill_id':'Fireball','level':1,'quality':0,'quantity':1,'acquisition':'owned','evidence_refs':['held-gem']}
+        route['evidence']=[{'evidence_id':'user','kind':'user_statement','subject':'intent','text':'Offline interface fixture'},
+                           {'evidence_id':'held-gem','kind':'user_statement','subject':facts.material_ref(gem),'text':'held one gem','context':{'quantity':1,'instance_id':'fire'}}]
+        for index,sockets in enumerate(('B','B-B')):
+            text='Rarity: NORMAL\nWool Gloves\nSockets: '+sockets
+            item={'kind':'item','item_id':1,'instance_id':'item-'+str(index),'spec_sha256':bx.digest(bx.normal_item(text)),
+                  'quantity':1,'acquisition':'owned','evidence_refs':['held-item-'+str(index)]}
+            route['inventory'].append({key:value for key,value in item.items() if key not in {'item_id','instance_id','acquisition'}})
+            route['evidence'].append({'evidence_id':item['evidence_refs'][0],'kind':'user_statement','subject':facts.material_ref(item),
+                                      'text':'held exact specification','context':{'quantity':1,'spec_sha256':item['spec_sha256']}})
+            route['stages'].append({'stage_id':'phase-'+str(index),'name':'Fixture stage','level':12+index,'bases':{'Gloves':'Wool Gloves'},
+                'skill_groups':[{'name':'Fireball','slot':'Gloves','use':'fixture','gems':[{'instance_id':'fire','skill_id':'Fireball','level':1,'quality':0}]}],
+                'required_items':([gem] if index==0 else [])+[item],
+                'snapshot':{'operations':{'items':[{'id':1,'text':text}],'equip':[{'slot':'Gloves','item_id':1}],'main_group':1},'metrics':['Life']}})
+        source=Path(self.temp.name)/'specs-route.json';output=Path(self.temp.name)/'specs-route.html';poe.write_json(source,route)
+        with patch.object(facts,'gem_facts',return_value={}): poe.route_command(args(invoked=True,file=str(source),out=str(output)))
+        checked=poe.read_json(output.with_suffix('.evidence.json'))['checked_route']
+        materials=[row for row in checked['budget_assessment']['materials'] if row['kind']=='item']
+        self.assertEqual(len(materials),2);self.assertEqual([row['quantity'] for row in materials],[1,1])
+        self.assertEqual([row['remaining'] for row in materials],[0,0])
+        self.assertEqual(len({row['requirement_id'] for row in materials}),2)
+        self.assertTrue(all(stage['calculation']['native_calculated'] for stage in checked['stages']))
+        self.assertFalse(any(':material:item:' in gap for gap in checked['pending']))
+        state=output.with_suffix('.state.json');value=poe.read_json(state)
+        xmls=[Path(row['calculation']['xml_path']) for row in checked['stages']]
+        self.assertTrue(all(str(path) in value['files'] for path in xmls))
+        self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+        unchanged=xmls[1].read_bytes();stamp=xmls[1].stat().st_mtime_ns
+        xmls[0].unlink()
+        missing=poe.workflow_status(args(route_state=str(state)))
+        self.assertFalse(missing['file_exported']);self.assertIn(str(xmls[0]),missing['invalid_artifacts'])
+        self.assertEqual(missing['completed_stages'],['phase-0','phase-1'])
+        with patch.object(facts,'gem_facts',return_value={}),patch.object(poe,'roundtrip',wraps=poe.roundtrip) as replay:
+            poe.route_command(args(invoked=True,file=str(source),out=str(output)))
+        self.assertEqual(replay.call_count,1)
+        self.assertEqual(xmls[1].read_bytes(),unchanged);self.assertEqual(xmls[1].stat().st_mtime_ns,stamp)
+        self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+
     def test_36_route_snapshots_bind_native_claims_and_leave_missing_stage_unknown(self):
         route=route_fixture(self.native['data_version']);route.update(class_id=3,ascendancy=None,gems={"Fireball":{}},stages=[])
         text="Rarity: NORMAL\nWool Gloves\nSockets: B"
@@ -3270,7 +3580,7 @@ class RealEngineTests(unittest.TestCase):
         held_item={"kind":"item","item_id":201,"spec_sha256":bx.digest(bx.normal_item(text)),"quantity":1,"acquisition":"owned","evidence_refs":["held-item"]}
         route["evidence"]=[{"evidence_id":"user","kind":"user_statement","subject":"intent","text":"Offline fixture only"},
             {"evidence_id":"held-gem","kind":"user_statement","subject":facts.material_ref(held_gem),"text":"Fixture: held Fireball 1/0 x1","context":{"quantity":1,"instance_id":"fire"}},
-            {"evidence_id":"held-item","kind":"user_statement","subject":"item:201","text":"Fixture: held exact gloves","context":{"quantity":1,"spec_sha256":held_item["spec_sha256"]}}]
+            {"evidence_id":"held-item","kind":"user_statement","subject":facts.material_ref(held_item),"text":"Fixture: held exact gloves","context":{"quantity":1,"spec_sha256":held_item["spec_sha256"]}}]
         route["claims"]=[{"claim_id":"stage","text":"Conditional snapshot, not a gameplay recommendation","subjects":["stage:a","snapshot:a","goal"],"evidence_refs":["native:stage:a#/stats/Life"]}]
         stage={"stage_id":"a","name":"Fixture phase","level":12,"bases":{"Gloves":"Wool Gloves"},"key_transition":True,
                "skill_groups":[{"name":"Fireball","slot":"Gloves","use":"fixture","gems":[{"instance_id":"fire","skill_id":"Fireball","level":1,"quality":0}]}],

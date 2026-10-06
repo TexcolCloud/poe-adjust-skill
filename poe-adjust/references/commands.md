@@ -78,7 +78,7 @@ python $entry edit --invoked --kind route --file '<本次input_file>' --proposal
 
 配装使用 `--kind plan`。此入口与 `--changes` 互斥，复用相同的原子保存、标识、判断失效和幂等凭证。提案绑定唯一源文件、修订、当前技能/引擎和完整计算凭证，原角色、已确认意图及外部模板变化也会拒绝旧提案；先重算取得新提案。天赋提案已知超点或移除冲突不能直接采用；未声明点数仍是待核实草案。保存只表示采用输入，随后重跑 evaluate/route，检查所选目标节点和专精真正保留、全部属性/技能/资源及每项用户目标。旧评审不会跟随修改变为通过。
 
-XML 由当前 PoECharm `Build.SaveDB` 在内存中保存，再由程序写入任务工作区并冷回读；模型提交结构化操作和条件。原始自定义扩展仅由程序保留，原生语义和全部统计仍需一致。中间请求 XML 与最终回读 XML 分开记录。
+XML 由当前 PoECharm `Build.SaveDB` 在内存中保存，再由程序写入任务工作区并冷回读；模型提交结构化操作和条件。原始自定义扩展仅由程序保留，原生语义和全部统计仍需一致。中间请求 XML 与最终回读 XML 分开记录。显式主技能与技能状态还需保留请求含义；回读两次一致不能替代此项检查。原生批次逐条返回 request_id，程序校验完整性及对应关系；probe 每个变体都有结果或具体失败，calculated_variants 表示实际通过的计算数，partial/failed 不表示全部已测完。
 
 ## 错误与恢复
 
@@ -92,4 +92,4 @@ input_revision 指出出错时的源修订。invalid_input/input_too_large 修�
 
 完整终端回复包含 entrypoint/runtime 后仍受 12,000 字符限制，continuations 给出每个缩略字段的完整凭证路径。view 的 page_unit 是 items（数组）、fields（对象）、characters（字符串）或 scalar；沿用 next_offset 继续同一 pointer，offset 按该单位计数。数组/对象 limit=1–100，长字符串可用 limit=4000（最多12000，自动收缩到可返回大小）。单条记录仍过大时，deferred_values/next_actions 指向其子 pointer；读取子字段，再继续父字段的 next_offset。嵌套字段名通过 JSON pointer 转义；无需读取平台内部工具缓存。
 
-配装使用 `status --run`，读取 candidate_records 的完整性、待办及源 plan/review 文件路径，按 next_actions 继续。last_operation 记录最新评估或导出；成功重试更新旧失败，重新评估使同候选旧交付凭证失效，原产物保留供追溯，须重新 export。失败导出不保留成功交付身份。开荒使用 `status --route-state <输出名.state.json>`，失败记录 phase:failed、failure 和具体修复动作；检查输入/输出/引擎是否一致，变更后不把旧阶段算成本次完成。恢复重跑同一 route，有效计算缓存自动复用，资料与模型判断重新核对。
+配装使用 `status --run`，读取 candidate_records 的完整性、待办及源 plan/review 文件路径，按 next_actions 继续。失效候选保留已知 plan_file/details_file/review_file、当前 input_revision 和 diagnostic；重新 evaluate 使用返回的源文件与 run，源定位未知时先读取已有记录，不猜路径。last_operation 记录最新评估或导出；成功重试更新旧失败，重新评估使同候选旧交付凭证失效，原产物保留供追溯，须重新 export。失败导出不保留成功交付身份。开荒使用 `status --route-state <输出名.state.json>`，失败记录 phase:failed、failure 和具体修复动作；沿用记录的 pob_path，显式 --pob 可覆盖并重新核对指纹。交付完整性包括报告和所有声明的阶段 XML；missing/changed XML 列入 invalid_artifacts，file_exported=false，重跑同一 route 修复。completed_stages 仅表示该输入/引擎下历史原生计算完成，不保证当前 XML 仍存在；有效阶段缓存自动复用，资料与模型判断重新核对。旧状态缺 XML 摘要时重新 route，不能直接继承交付成功。
