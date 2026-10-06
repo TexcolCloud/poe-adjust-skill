@@ -1,6 +1,8 @@
-# 2.8.8 完整离线242项通过，实机尚未提交
+# 2.8.8 完整离线242项通过，已安装并提交新实测
 
-本轮[完整回归](.work/288-final-regression.log)242项713.431秒全部通过，含51真实引擎、无跳过；[测试前](.work/288-final-source-before.json)/[后](.work/288-final-source-after.json)16文件一致。2.8.8尚未安装和提交新版 TeleAgent 实测。此前2.8.7完整236项716.155秒通过、48真实引擎，无跳过；其准备任务未提交。原首份73/60/66/64/43及2.8.6恢复46保持，不把接口修复或开发重放换算成新模型分数。
+本轮[完整回归](.work/288-final-regression.log)242项713.431秒全部通过，含51真实引擎、无跳过；[测试前](.work/288-final-source-before.json)/[后](.work/288-final-source-after.json)16文件一致。[15文件包](dist/poe-adjust-2.8.8.zip)174352字节，SHA256 38a6c66caad8ccc5f23b94d8b6f78c49a6b2e21505c23adcc461aa7b04be37e5；[格式/包校验](.work/288-format-package-verification.json)通过。20:30:33[安装](.work/288-install-manifest.json)前核对旧15文件，源码/ZIP/安装字节一致；[已安装doctor](.work/288-installed-doctor.json)3.6727秒四项通过，无安装写入。目标平面元数据直接验证，通用Codex validator因缺PyYAML未成功，没有新依赖。
+
+随后才选择[全新女巫冰系SSF开荒任务](.work/live-288-manifest.json)，20:32:39公开提交410字符玩家目标精确一致、仅一次，没有XML、构筑答案、节点或调试建议；任务“POE1冰系女巫SSF开荒方案”。[实测前保护核验](.work/288-pre-live-verification.json)保留16源/测试、15安装、原XML、952旧冻结文件、旧ZIP与原分，自动迭代仍PAUSED。新任务正在执行，尚无评分；共享账户历史隔离未证明。此前2.8.7准备任务未提交，不计模型实测。原首份73/60/66/64/43及2.8.6恢复46保持，不把接口修复或开发重放换算成新模型分数。
 
 | 实际缺口 | 本轮实现与开发验证 | 尚需实测确认 |
 |---|---|---|
