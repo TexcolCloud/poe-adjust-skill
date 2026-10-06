@@ -27,6 +27,8 @@ python $entry research --trials --out '<工作区>/trial-facts.json'
 
 批量文件：`{"queries":[{"kind":"gems","query":"id:Fireball","limit":2,"offset":0}]}`。支持上述原生 kind，translations 单查。单页 limit=1–100，按返回 next_offset 继续；程序自动分批，不限制整体候选/路线数量。--out 保存完整数据，摘要中的 queries[].entries_pointer 给出该查询的实际条目位置，entry_fields 按 kind 列出本次条目可出现的字段；用 view 选择需要的字段。summary_complete=false 只表示终端查询元数据未全部展示，完整数据未丢，沿用 next_actions 翻页。多次分批前后指纹须一致。
 
+doctor 的 `data_layout` 从当前 `GameVersions.lua` 清单和实际目录发现 `tree_locations`，同时列出声明但缺失的树、未登记目录和共享 `Data` 位置。先确认结构，再按返回版本/路径读取；不得由最高目录名猜当前规则。当前发布说明、标准树标识与实际数据文件一起核对；共享宝石/物品/机制没有因选择历史树而切换版本，国服规则和取得仍需联网依据。
+
 - classes 条目的 id 是职业 ID，ascendancies 给出主升华；--class-id 是命令参数名。nodes 条目的 stats 是效果文本，name/display_name 是名称，linked/path 是连接信息；按返回 entry_fields 读取，查询过的效果无需再搜原文件。rules 含副升华目录、slots、规则来源及 `meaning/status`。observed 不一律表示游戏上限：engine_state 是本次状态，native_fact 是原生事实，engine_constraint 是接口约束，unsupported 是没读到可靠规则。不能把建议/默认值当合法上限。
 - bases 返回当前基底 `sockets/valid_slots/valid_slots_context/affix_limits/requirements`。valid_slots 是该次查询装备与天赋上下文中的观察，空配装中不可放不证明与其他装备组合后不可放；实际阶段由 route 整套布局或 XML 调用原生规则。基底容量不证明实际物品的特殊效果、连线或取得。socket_limits 只汇总类别容量，不推荐任一基底；实际选择核对当前属性/等级要求与取得。affixes 返回当前物品词缀池、互斥组及物品等级要求。
 - 孔色读取当次 rules.socket_quality 及 gems.matches_socket/socket_quality_bonus，并按 data 返回定位核对本机匹配与品质计算原文。原生加成事实不等于游戏插入限制证明；是否必须改色、是否值得取得匹配孔色，由模型结合当季国服来源和实际差异决定，不沿用旧赛季禁令。

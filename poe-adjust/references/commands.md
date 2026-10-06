@@ -64,6 +64,18 @@ artifacts 标注文件用途：source 是可编辑方案，persistent_state 是�
 
 保存采用完整文件原子替换；版本摘要是乐观检查，多个写入方仍须顺序修改同一源文件。凭证缺失、损坏或写入失败时，重新 view 源文件取得当前 revision，再用 edit 恢复；旧重放信息可能已经丢失，不能承诺原请求已被去重。
 
+## 采用原生候选
+
+evaluate/route 的 `next_actions[].action:review_native_proposal` 给出本次提案的 `details_file/pointer/proposal_id/input_revision`。先用 view 的 `preview_pointer/preview_fields` 读实际点数和缺口；进入该预览的 `/comparison` 用 keys 找本次指标，再 fields 选择与用户目标有关的收益/损失，`/active_skills` 分页核对费用，`/readiness` 核对资源范围。完整数值已保存，不整份重复输出。模型决定接受、补属性、延后或改目标；程序不自动采用。接受后引用已有凭证，无需重抄节点、宝石或完整 changes：
+
+```powershell
+python $entry edit --invoked --kind route --file '<本次input_file>' --proposal-file '<本次details_file>' --proposal-id '<本次proposal_id>' --if-sha256 '<本次input_revision>'
+```
+
+配装使用 `--kind plan`。此入口与 `--changes` 互斥，复用相同的原子保存、标识、判断失效和幂等凭证。提案绑定唯一源文件、修订、当前技能/引擎和完整计算凭证，原角色、已确认意图及外部模板变化也会拒绝旧提案；先重算取得新提案。天赋提案已知超点或移除冲突不能直接采用；未声明点数仍是待核实草案。保存只表示采用输入，随后重跑 evaluate/route，检查所选目标节点和专精真正保留、全部属性/技能/资源及每项用户目标。旧评审不会跟随修改变为通过。
+
+XML 由当前 PoECharm `Build.SaveDB` 在内存中保存，再由程序写入任务工作区并冷回读；模型提交结构化操作和条件。原始自定义扩展仅由程序保留，原生语义和全部统计仍需一致。中间请求 XML 与最终回读 XML 分开记录。
+
 ## 错误与恢复
 
 失败返回 error 与 diagnostic；有 location 时按 expected/actual 修对应 JSON 路径，input_file 指出源文件。共用的证据、判断、目标、约束映射和评审结构在写入/原生查询前检查；约束映射值是单个 evidence_id 字符串。actual:null 表示字段缺失或值为空。输入错误修源文件；inspect_capability 的能力缺口先核对 doctor/publication 的 capabilities，再由模型选择方案或保留条件。

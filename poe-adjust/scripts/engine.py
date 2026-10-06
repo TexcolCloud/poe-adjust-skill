@@ -249,13 +249,20 @@ def metadata(root: Path) -> dict:
     release = re.search(r"^VERSION\[" + re.escape(current) + r"\]", notes, re.M)
     heading = re.search(r"^---\s+(\d+\.\d+)\b[^\r\n]*", notes[release.start():], re.M) if release else None
     rules = heading[1] if heading else None
-    matched = rules is not None and latest == rules.replace(".", "_")
+    tree_root=root/"TreeData"
+    locations={tree:[str(path.relative_to(root)).replace("\\","/") for name in ("tree.lua","data.json") if (path:=tree_root/tree/name).is_file()] for tree in trees}
+    physical=sorted(path.name for path in tree_root.iterdir() if path.is_dir() and any((path/name).is_file() for name in ("tree.lua","data.json"))) if tree_root.is_dir() else []
+    matched = rules is not None and latest == rules.replace(".", "_") and bool(locations.get(latest))
     hint = VERSION_SOURCE_HINTS.get(rules) if matched else None
     return {"engine_version": current, "data_version": rules if matched else None,
             "available_tree_versions": trees, "latest_standard_tree": latest,
+            "data_layout":{"version_manifest":"GameVersions.lua","tree_locations":locations,
+                "missing_declared_trees":[tree for tree in trees if not locations[tree]],"unregistered_tree_directories":sorted(set(physical)-set(trees)),
+                "shared_data_locations":["Data/"+path.name for path in sorted((root/"Data").iterdir())] if (root/"Data").is_dir() else [],
+                "scope":"先按当前清单与实际目录定位天赋数据；Data 下共享宝石/物品/机制不因切换历史天赋目录而还原旧版。目录存在不证明国服规则。"},
             "data_version_basis": {"status": "corroborated" if matched else "unresolved",
                 "release": current, "changelog_heading": heading[0] if heading else None,
-                "tree_metadata": latest,
+                "tree_metadata": latest,"tree_source_files":locations.get(latest,[]),
                 "scope": "本机发布记录与标准树交叉确认；不代表已核实国服改动或所有游戏机制。"},
             "version_source_hint": {**hint, "status": "unverified_hint",
                 "scope": "历史公告搜索线索，本次尚未联网核实；不表示当前赛季、用户区服或国服现行规则。"} if hint else None}
@@ -355,11 +362,18 @@ def ascendancy_paths(name, nodes):
     return selected, paths
 
 
-def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, offset: int = 0, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False, class_id: int | None = None, breakdowns: list | None = None, node_probes: list | None = None, equipment_layouts: list | None = None, cache: bool = True) -> dict:
+def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", limit: int = 30, offset: int = 0, queries: list | None = None, crafts: list | None = None, xml_batch: list | None = None, health_probe: bool = False, class_id: int | None = None, breakdowns: list | None = None, node_probes: list | None = None, equipment_layouts: list | None = None, tree_targets: list | None = None, tree_masteries: dict | None = None, cache: bool = True) -> dict:
     started = time.perf_counter()
     PERFORMANCE["requests"] += 1
     if class_id is not None and (type(class_id) is not int or xml or xml_batch):
         raise EngineError("职业起点查询需要整数 class_id，且不能覆盖已有 XML 的角色上下文。")
+    if tree_targets is not None:
+        if not xml or xml_batch is not None or not isinstance(tree_targets,list) or not tree_targets or any(type(v) is not int or v<=0 for v in tree_targets) or len(set(tree_targets))!=len(tree_targets):
+            raise EngineError("原生连接预览需要具体 XML 和不重复的正整数目标节点。")
+        if tree_masteries is not None and (not isinstance(tree_masteries,dict) or any(not str(k).isdigit() or int(k) not in tree_targets or type(v) is not int or v<=0 for k,v in tree_masteries.items())):
+            raise EngineError("连接预览的专精效果只能指向本次目标节点；选项由当前原生树核对。")
+    elif tree_masteries is not None:
+        raise EngineError("专精连接选择需要同时提供 tree_targets。")
     info = check(root)
     if type(offset) is not int or offset < 0:
         raise EngineError("目录 offset 应为非负整数。")
@@ -374,6 +388,8 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     if breakdowns is not None: request["breakdowns"] = breakdowns
     if node_probes is not None: request["node_probes"] = node_probes
     if equipment_layouts is not None: request["equipment_layouts"] = equipment_layouts
+    if tree_targets is not None: request["tree_targets"] = tree_targets
+    if tree_masteries is not None: request["tree_masteries"] = tree_masteries
     if (breakdowns or node_probes) and not xml:
         raise EngineError("计算明细和天赋筛选需要具体角色 XML。")
     cache_key = hashlib.sha256(json.dumps({"request":request,"fingerprint":info["engine_fingerprint"]},sort_keys=True,ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()

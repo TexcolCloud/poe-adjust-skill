@@ -10,7 +10,7 @@ import resources
 
 ATTRIBUTES = {"strength":"力量", "dexterity":"敏捷", "intelligence":"智慧"}
 ROUTE_FIELDS={"schema_version","name","confirmed","goal","objectives","league","game_version","class_id","ascendancy","trade_mode","budget","version_source","scope","gems","stages","risks","notes","allow_minions","allow_mule","constraint_sources","evidence","claims","assessment","inventory","shopping"}
-STAGE_FIELDS={"stage_id","name","level","act","completed_act","entry_conditions","entry_checks","weapon_setup","bases","skill_groups","gear","passives","ascendancy_points","ascendancy_nodes","resources","checks","transition","required_items","key_transition","snapshot"}
+STAGE_FIELDS={"stage_id","name","level","act","completed_act","entry_conditions","entry_checks","weapon_setup","bases","skill_groups","gear","passives","normal_points_available","ascendancy_points","secondary_ascendancy_points","ascendancy_nodes","resources","checks","transition","required_items","key_transition","snapshot"}
 GROUP_FIELDS={"name","slot","use","enabled","gems"}
 GEM_FIELDS={"instance_id","skill_id","level","quality","level_selection"}
 SNAPSHOT_FIELDS={"template_xml","operations","assumptions","usage","timeline","metrics"}
@@ -45,8 +45,8 @@ def preflight(route, *, complete=True):
         bx.require(isinstance(sid,str) and sid.strip() and "#" not in sid and sid not in seen,"stage_id 需要唯一、非空且不含引用分隔符 #。",location=path+"/stage_id",expected="unique stage identifier",actual=sid)
         seen.add(sid)
         if "bases" in stage: bx.require(isinstance(stage["bases"],dict) and all(v is None or isinstance(v,str) and v for v in stage["bases"].values()),"bases 为槽位到基底名称或明确空槽 null 的对象。",location=path+"/bases",expected="object of names or explicit null slots",actual=stage["bases"])
-        for field in ("level","act","completed_act","ascendancy_points"):
-            if stage.get(field) is not None: bx.require(type(stage[field]) is int and stage[field]>=(0 if field in {"completed_act","ascendancy_points"} else 1),field+" 使用相应非负/正整数。",location=path+"/"+field,expected="nonnegative integer" if field in {"completed_act","ascendancy_points"} else "positive integer",actual=stage[field])
+        for field in ("level","act","completed_act","normal_points_available","ascendancy_points","secondary_ascendancy_points"):
+            if stage.get(field) is not None: bx.require(type(stage[field]) is int and stage[field]>=(1 if field in {"level","act"} else 0),field+" 使用相应非负/正整数。",location=path+"/"+field,expected="positive integer" if field in {"level","act"} else "nonnegative integer",actual=stage[field])
         for field in ("skill_groups","required_items","ascendancy_nodes","entry_conditions","entry_checks"):
             if field in stage: bx.require(isinstance(stage[field],list),field+" 应为数组。",location=path+"/"+field,expected="array",actual=type(stage[field]).__name__)
         for group_index,group in enumerate(stage.get("skill_groups",[])):
@@ -197,8 +197,8 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             valid={c["claim_id"] for c in claims if c["status"]=="model_assessed" and "snapshot:"+sid in c["subjects"]}
             if not snap.get("assumptions") or not set(snap["assumptions"])<=valid: pending.append("snapshot_assumptions:"+sid)
         bx.require(isinstance(stage.get("name"),str) and stage["name"],sid+" 需要名称。")
-        for key in ("level","act","completed_act","ascendancy_points"):
-            if stage.get(key) is not None: bx.require(type(stage[key]) is int and stage[key]>=(0 if key in {"completed_act","ascendancy_points"} else 1),sid+" 的 "+key+" 无效。")
+        for key in ("level","act","completed_act","normal_points_available","ascendancy_points","secondary_ascendancy_points"):
+            if stage.get(key) is not None: bx.require(type(stage[key]) is int and stage[key]>=(1 if key in {"level","act"} else 0),sid+" 的 "+key+" 无效。")
         if stage.get("level") is not None:
             bx.require(prior_level is None or stage["level"]>=prior_level,"执行顺序中的角色等级不能倒退；同级阶段允许。")
             prior_level=stage["level"]
@@ -288,7 +288,7 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             actual.update(paths[node])
         points=stage.get("ascendancy_points")
         if points is not None: bx.require(len(actual)<=points,sid+" 的升华连接点超过该阶段声明的可用点数。")
-        if actual and not facts.has_claim(claims,"progress:"+sid): pending.append("progress:"+sid)
+        if (actual or any(stage.get(key) is not None for key in ("normal_points_available","secondary_ascendancy_points"))) and not facts.has_claim(claims,"progress:"+sid): pending.append("progress:"+sid)
         if previous_nodes-actual and not facts.has_claim(claims,"respec:"+sid): pending.append("respec:"+sid)
         previous_nodes=actual
         stage["ascendancy_used"]=len(actual)

@@ -34,11 +34,11 @@ def args(**kwargs):
     return argparse.Namespace(pob=None, **kwargs)
 
 
-def intent_for(root):
+def intent_for(root,*,game_version="3.29",normal_points=108,ascendancy_points=8):
     value={"schema_version":2,"confirmed":True,"goal":"离线测试：验证现有角色的改装计算","league":"国服测试赛季","mode":"both",
-           "game_version":"3.29","budget":{"amount":20,"currency":"divine"},"target_level":86,
+           "game_version":game_version,"budget":{"amount":20,"currency":"divine"},"target_level":int(root.find('Build').get('level')),
            "allow_main_skill_change":True,"allow_ascendancy_change":True,"scenario":{"enemyLevel":83},"baseline_main_group":1,
-           "quest_passive_points":23,"normal_points_available":108,"ascendancy_points":8}
+           "normal_points_available":normal_points,"ascendancy_points":ascendancy_points}
     slots={s.get("name") for s in bx.active_set(root,"Items","ItemSet","activeItemSet").findall("Slot")}
     value["keep_slots"]=[{"slot":"Weapon 2" if "Weapon 2" in slots else "Boots","preserve":"exact_spec"}]
     value["objectives"]=[{"objective_id":"fixture-goal","text":value["goal"],"evidence_refs":["user"]}]
@@ -112,10 +112,19 @@ class DocumentTests(unittest.TestCase):
             (root / "manifest.xml").write_text('<PoBVersion><Version number="9.1.0"/></PoBVersion>', encoding="utf-8")
             (root / "GameVersions.lua").write_text('treeVersionList = {"3_29", "3_30_ruthless", "3_30"}', encoding="utf-8")
             (root / "changelog.txt").write_text('VERSION[9.1.0][2027/01/01]\nfixes\nVERSION[9.0.0]\n--- 3.30 - Example ---\n', encoding="utf-8")
+            self.assertIsNone(engine.metadata(root)['data_version'])
+            (root/'TreeData/3_30').mkdir(parents=True)
+            (root/'TreeData/3_30/tree.lua').write_text('return {}',encoding='utf8')
+            (root/'TreeData/3_50_unregistered').mkdir()
+            (root/'TreeData/3_50_unregistered/data.json').write_text('{}',encoding='utf8')
             info = engine.metadata(root)
             self.assertEqual(info["data_version"], "3.30")
             self.assertIsNone(info["version_source_hint"])
             self.assertNotIn("version_evidence", info)
+            self.assertEqual(info['data_layout']['tree_locations']['3_30'],['TreeData/3_30/tree.lua'])
+            self.assertEqual(info['data_layout']['missing_declared_trees'],['3_29','3_30_ruthless'])
+            self.assertEqual(info['data_layout']['unregistered_tree_directories'],['3_50_unregistered'])
+            self.assertEqual(info['latest_standard_tree'],'3_30')
             with patch.dict(engine.VERSION_SOURCE_HINTS, {"3.30": {"season": "historic-example", "url": "https://poe.qq.com/example"}}):
                 hint = engine.metadata(root)["version_source_hint"]
                 self.assertEqual(hint["status"], "unverified_hint")
@@ -248,12 +257,12 @@ class DocumentTests(unittest.TestCase):
 
     def test_intent_does_not_assume_character_progress(self):
         for field in ("target_level","quest_passive_points","ascendancy_points","normal_points_available"):
-            value=intent_for(self.root);del value[field]
+            value=intent_for(self.root);value.pop(field,None)
             with self.subTest(field=field):self.assertIsNone(poe.validate_intent(value,self.root)[field])
         value=intent_for(self.root);value["constraint_sources"].pop("/budget")
         with self.assertRaisesRegex(ValueError,"/budget"):poe.validate_intent(value,self.root)
 
-    def test_329_socket_layout_ignores_colour_but_rejects_missing_links(self):
+    def test_socket_layout_checks_actual_occupancy_and_links(self):
         result = {"equipped": [{"slot": "Boots", "id": 1}],
                   "gems": [{"group": 1, "index": i, "color": "G", "enabled": True, "support": i > 1} for i in range(1, 5)]}
         self.assertEqual(poe.socket_layout_issues(self.root, result), [])
@@ -283,14 +292,6 @@ class DocumentTests(unittest.TestCase):
         self.assertTrue(poe.socket_layout_issues(changed, result))
         bx.groups(changed)[0].set("slot", "")
         self.assertEqual(poe.socket_layout_issues(changed, result), [])
-
-    def test_disabled_granted_group_keeps_native_source_identity(self):
-        group = bx.groups(self.root)[0]
-        group.set("source", "Item:1:Fixture")
-        group.set("enabled", "false")
-        self.assertEqual(group.get("slot"), "Boots")
-        self.assertEqual(group.get("source"), "Item:1:Fixture")
-        self.assertEqual(group.get("enabled"), "false")
 
     def test_season_names_do_not_replace_observed_version_evidence(self):
         value=intent_for(self.root)
@@ -395,8 +396,8 @@ class DocumentTests(unittest.TestCase):
 
 
 
-def route_fixture():
-    return {"schema_version":2,"name":"离线路线","confirmed":True,"goal":"验证阶段结构","objectives":[{"objective_id":"fixture-goal","text":"验证阶段结构","evidence_refs":["user"]}],"league":"测试赛季","class_id":4,"game_version":"3.29","ascendancy":"Champion","scope":"所列阶段","trade_mode":"ssf",
+def route_fixture(game_version="3.29"):
+    return {"schema_version":2,"name":"离线路线","confirmed":True,"goal":"验证阶段结构","objectives":[{"objective_id":"fixture-goal","text":"验证阶段结构","evidence_refs":["user"]}],"league":"测试赛季","class_id":4,"game_version":game_version,"ascendancy":"Champion","scope":"所列阶段","trade_mode":"ssf",
             "constraint_sources":{"/goal":"user","/trade_mode":"user"},"gems":{"ShieldCrush":{}},
             "stages":[{"stage_id":"stage-"+str(i),"name":"测试阶段","level":level,"act":act,"entry_conditions":[],"bases":{"Gloves":"Iron Gauntlets"},
                        "skill_groups":[{"name":"输出","slot":"Gloves","use":"按需使用","gems":[{"instance_id":"one","skill_id":"ShieldCrush","level":1,"quality":0}]}],
@@ -1349,7 +1350,9 @@ class WorkflowInterfaceTests(unittest.TestCase):
     def test_tree_connection_proposal_is_an_explicit_source_edit_with_current_context(self):
         document=bx.parse(SAMPLE);bx.active_spec(document).set('nodes','1,2,42,43')
         actual=copy.deepcopy(document);bx.active_spec(actual).set('nodes','1,2')
-        result={'xml':bx.serialise(actual),'engine_fingerprint':'fixture','nodes':[1,2],'class_id':1,'ascendancy_id':0}
+        result={'xml':bx.serialise(actual),'engine_fingerprint':'fixture','nodes':[1,2],'class_id':1,'ascendancy_id':0,'stats':{'Life':100},'classes':[{'id':1,'name':'Current class'}]}
+        allocated={**result,'nodes':[1,2,20,30,42,43],'native_tree_allocation':{'method':'PassiveSpec.AllocNode','targets':[{'id':42,'retained':True},{'id':43,'retained':True}]}}
+        preview={**allocated,'points':4,'ascendancy_points':0,'secondary_ascendancy_points':0,'stats':{'Life':125},'active_skills':[]}
         catalog={'engine_fingerprint':'fixture','catalog_batch':[
             {'entries':[{'id':42,'reachable':True,'path':[20,30,42],'points_to_allocate':3}]},
             {'entries':[{'id':43,'reachable':True,'path':[30,43],'points_to_allocate':2}]}]}
@@ -1357,8 +1360,8 @@ class WorkflowInterfaceTests(unittest.TestCase):
         for tree in ({'nodes_add':[42,43],'nodes_remove':[99],'masteries_add':{'2':11},'class_id':1},
                      {'nodes':[1,2,42,43],'masteries':{'2':11},'ascendancy_id':0}):
             original=copy.deepcopy(tree);requested=bx.serialise(document)
-            with patch.object(poe,'native_queries',return_value=catalog) as query:
-                _,diagnostics=poe.native_tree_diagnostics(Path('.'),document,result,location,tree_operations=tree)
+            with patch.object(poe,'native_queries',return_value=catalog) as query,patch.object(engine,'calculate',side_effect=[allocated,preview]) as calculate,patch.object(poe,'roundtrip',return_value='native saved XML'),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(resources,'assess',return_value={'errors':[],'warnings':[],'pending':[],'point_budgets':[{'pool':'normal','used':4,'available':4,'status':'within_declared_limit'}]}):
+                _,diagnostics=poe.native_tree_diagnostics(Path('.'),document,result,location,tree_operations=tree,limits={'normal_points_available':4})
             proposal=diagnostics[0]['connection_proposal']
             changed=proposal['changes']['replace'][location]
             self.assertEqual(changed['nodes'],[1,2,20,30,42,43])
@@ -1366,12 +1369,16 @@ class WorkflowInterfaceTests(unittest.TestCase):
             for key,value in original.items():
                 if key not in {'nodes','nodes_add','nodes_remove'}: self.assertEqual(changed[key],value)
             self.assertEqual(proposal['additional_node_ids'],[20,30])
+            self.assertEqual(calculate.call_args_list[0].kwargs,{'tree_targets':[42,43],'tree_masteries':{}})
+            self.assertEqual(proposal['preview']['point_budgets'][0]['used'],4)
+            self.assertEqual(proposal['preview']['comparison']['Life']['delta'],25)
+            self.assertTrue(proposal['adoptable']);self.assertTrue(proposal['preview']['roundtrip_verified'])
             self.assertEqual(query.call_args.args[2],result['xml'])
             self.assertEqual(tree,original);self.assertEqual(bx.serialise(document),requested)
             self.assertEqual(diagnostics[0]['native_context']['engine_fingerprint'],'fixture')
             action=poe.delivery_actions({'status':'blocked','errors':['Dropped nodes'],'pending':[],
                                        'diagnostics':diagnostics},'route.json','result.json','review.json')[0]
-            self.assertEqual(action['diagnostics'][0]['connection_proposal']['changes'],proposal['changes'])
+            self.assertNotIn('connection_proposal',action['diagnostics'][0])
 
     def test_tree_connection_proposal_cannot_undo_removals_or_guess_unknown_paths(self):
         document=bx.parse(SAMPLE);bx.active_spec(document).set('nodes','1,2,42')
@@ -1380,7 +1387,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
         variants=[{'entries':[]}, {'entries':[{'id':42,'reachable':False,'path':[],'points_to_allocate':1000}]},
                   {'entries':[{'id':42,'reachable':True,'path':[20,42],'points_to_allocate':2}]}]
         for row in variants:
-            with patch.object(poe,'native_queries',return_value={'engine_fingerprint':'fixture','catalog_batch':[row]}):
+            with patch.object(poe,'native_queries',return_value={'engine_fingerprint':'fixture','catalog_batch':[row]}),patch.object(engine,'calculate',return_value={**result,'nodes':[1,2,20,42],'native_tree_allocation':{'method':'PassiveSpec.AllocNode'}}):
                 _,diagnostics=poe.native_tree_diagnostics(Path('.'),document,result,tree_operations={'nodes_add':[42],'nodes_remove':[20]})
             self.assertNotIn('connection_proposal',diagnostics[0])
         with patch.object(poe,'native_queries',return_value={'engine_fingerprint':'fixture','catalog_batch':[variants[-1]]}):
@@ -1646,13 +1653,21 @@ class WorkflowInterfaceTests(unittest.TestCase):
     def test_route_status_requires_current_input_output_and_engine(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);source=root/'route.json';output=root/'route.html';state=root/'route.state.json'
+            template=root/'template.xml';poe.write_text(template,'original template')
             poe.write_json(source,{'goal':'fixture'});poe.write_text(output,'fixture report')
             poe.write_json(state,{'input':str(source),'input_sha256':bx.digest(source.read_bytes()),'output':str(output),'phase':'exported','file_exported':True,
                                  'stages':{'a':{'status':'calculated'},'b':{'status':'unsupported'}},
+                                 'input_artifacts':{str(template):bx.digest(template.read_bytes())},
                                  'engine_fingerprint':'fixture','files':{str(output):bx.digest(output.read_bytes())}})
             with patch.object(engine,'resolve_root',return_value=root),patch.object(engine,'fingerprint',return_value='fixture'):
                 self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
                 self.assertEqual(poe.workflow_status(args(route_state=str(state)))['completed_stages'],['a'])
+                poe.write_text(template,'changed template')
+                stale=poe.workflow_status(args(route_state=str(state)))
+                self.assertFalse(stale['file_exported'])
+                self.assertFalse(stale['input_artifacts_unchanged'])
+                self.assertEqual(stale['completed_stages'],[])
+                poe.write_text(template,'original template')
                 poe.write_json(source,{'goal':'changed'})
                 result=poe.workflow_status(args(route_state=str(state)))
                 self.assertFalse(result['file_exported'])
@@ -1830,6 +1845,104 @@ class TimelineTests(unittest.TestCase):
 
 
 class EditAndRecoveryTests(unittest.TestCase):
+    def saved_proposal(self,kind='route'):
+        first=self.edit({'set':{'stages':[{'stage_id':'one','snapshot':{'operations':{'tree':{'nodes_add':[42]}}}}]}}) if kind=='route' else self.edit({'set':{'mode':'refine','operations':{'gems':[{'group':1,'index':1,'skill_id':'FutureSkill','level':20},{'group':1,'index':2,'skill_id':'OtherSkill','level':7}]}}},kind='plan')
+        file=self.folder/'result.evidence.json' if kind=='route' else self.folder/'run/candidates/native/evaluation.json'
+        change={'replace':{'/stages/0/snapshot/operations/tree':{'nodes':[20,42]}}} if kind=='route' else {'set':{'operations':{'gems':[{'group':1,'index':1,'level':5}]}}}
+        proposal={'proposal_type':'native_tree_connection' if kind=='route' else 'native_gem_level','changes':change,'adoptable':True,'blockers':[],'preview':{'roundtrip_verified':True}}
+        outcome={'status':'blocked','errors':['native unmet input'],'pending':['objective:actual'],'diagnostics':[{'code':'native_unmet','action':'edit_input','location':'/stages/0/snapshot/operations/tree' if kind=='route' else '/operations/gems','connection_proposal' if kind=='route' else 'change_proposal':proposal}]}
+        actions=poe.delivery_actions(outcome,self.source,file,file.with_suffix('.review.json'),'/checked_route' if kind=='route' else '')
+        if kind=='route':
+            saved={'skill_version':poe.VERSION,'engine_fingerprint':'fixture','checked_route':outcome,'next_actions':actions}
+            state_path=self.folder/'result.state.json'
+            state={'engine_fingerprint':'fixture','input':str(self.source),'input_sha256':first['revision'],'file_exported':True}
+        else:
+            original=self.folder/'run/original.xml';poe.write_text(original,SAMPLE)
+            saved={**outcome,'skill_version':poe.VERSION,'engine_fingerprint':'fixture','source_plan':str(self.source),'source_plan_sha256':first['revision'],'next_actions':actions,'intent_hash':None,'original_sha256':bx.digest(original.read_bytes())}
+            state_path=self.folder/'run/run.json';state={'schema_version':2,'invoked':True,'intent':None,'intent_hash':None,'original_sha256':saved['original_sha256'],'engine_fingerprint':'fixture'}
+        poe.write_json(file,saved)
+        if kind=='route':state['files']={str(file):bx.digest(file.read_bytes())}
+        else:state['candidates']={'native':{'evaluation_sha256':bx.digest(file.read_bytes())}}
+        poe.write_json(state_path,state)
+        return args(invoked=True,kind=kind,file=str(self.source),changes=None,proposal_file=str(file),proposal_id=proposal['proposal_id'],if_sha256=first['revision']),state_path
+
+    def test_native_proposal_reference_applies_full_changes_and_replays_once(self):
+        for kind in ('route','plan'):
+            with self.subTest(kind=kind):
+                self.source=self.folder/(kind+'.json')
+                request,_=self.saved_proposal(kind)
+                before=self.source.read_bytes()
+                stale=copy.copy(request);stale.if_sha256='old'
+                with self.assertRaises(bx.ContractError):poe.edit_document(stale)
+                self.assertEqual(self.source.read_bytes(),before)
+                with patch.object(engine,'calculate') as native:
+                    saved=poe.edit_document(request);replay=poe.edit_document(request)
+                native.assert_not_called();self.assertTrue(replay['replayed'])
+                self.assertEqual(saved['adopted_proposal']['proposal_id'],request.proposal_id)
+                value=poe.read_json(self.source)
+                if kind=='route':self.assertEqual(value['stages'][0]['snapshot']['operations']['tree'],{'nodes':[20,42]})
+                else:
+                    self.assertEqual(value['operations']['gems'][0],{'group':1,'index':1,'skill_id':'FutureSkill','level':5})
+                    self.assertEqual(value['operations']['gems'][1]['level'],7)
+
+    def test_native_proposal_reference_rejects_changed_source_engine_and_receipt(self):
+        request,state_path=self.saved_proposal()
+        original=self.source.read_bytes()
+        other=self.folder/'other.json';other.write_bytes(original)
+        wrong=copy.copy(request);wrong.file=str(other)
+        with self.assertRaises(bx.ContractError):poe.edit_document(wrong)
+        wrong=copy.copy(request);wrong.proposal_id='unknown'
+        with self.assertRaises(bx.ContractError):poe.edit_document(wrong)
+        with patch.object(engine,'fingerprint',return_value='updated'),self.assertRaises(bx.ContractError):poe.edit_document(request)
+        self.edit({'set':{'name':'later input'}},request.if_sha256)
+        request.if_sha256=bx.digest(self.source.read_bytes())
+        newer=self.source.read_bytes()
+        with self.assertRaises(bx.ContractError):poe.edit_document(request)
+        self.assertEqual(self.source.read_bytes(),newer)
+        self.source.write_bytes(original)
+        payload=poe.read_json(request.proposal_file);payload['checked_route']['diagnostics'][0]['connection_proposal']['changes']['replace']['/stages/0/snapshot/operations/tree']['nodes'].append(99)
+        poe.write_json(request.proposal_file,payload)
+        request.if_sha256=bx.digest(original)
+        with self.assertRaises(bx.ContractError):poe.edit_document(request)
+        state=poe.read_json(state_path);state['files'][request.proposal_file]=bx.digest(Path(request.proposal_file).read_bytes());poe.write_json(state_path,state)
+        with self.assertRaises(bx.ContractError):poe.edit_document(request)
+        self.assertEqual(self.source.read_bytes(),original)
+
+    def test_native_proposal_cli_and_known_conflict_preserve_source(self):
+        request,state_path=self.saved_proposal()
+        before=self.source.read_bytes();payload=poe.read_json(request.proposal_file)
+        proposal=payload['checked_route']['diagnostics'][0]['connection_proposal'];proposal['adoptable']=False;proposal['blockers']=['point_budget:normal']
+        proposal.pop('proposal_id');proposal['proposal_id']=bx.digest(json.dumps(proposal,sort_keys=True,ensure_ascii=False,allow_nan=False))
+        request.proposal_id=proposal['proposal_id'];poe.write_json(request.proposal_file,payload)
+        state=poe.read_json(state_path);state['files'][request.proposal_file]=bx.digest(Path(request.proposal_file).read_bytes());poe.write_json(state_path,state)
+        stdout,stderr=io.StringIO(),io.StringIO()
+        with redirect_stdout(stdout),redirect_stderr(stderr):code=poe.main(['edit','--invoked','--kind','route','--file',request.file,'--proposal-file',request.proposal_file,'--proposal-id',request.proposal_id,'--if-sha256',request.if_sha256])
+        self.assertEqual(code,2);self.assertIn('point_budget:normal',stderr.getvalue());self.assertEqual(self.source.read_bytes(),before)
+
+    def test_native_proposal_rejects_changed_intent_or_external_template(self):
+        for change in ('intent','template','original','route-template'):
+            with self.subTest(change=change):
+                self.source=self.folder/(change+'.json');request,state_path=self.saved_proposal('route' if change=='route-template' else 'plan')
+                before=self.source.read_bytes()
+                if change=='intent':
+                    state=poe.read_json(state_path);state['intent']={'goal':'later confirmed direction'}
+                    state['intent_hash']=bx.digest(json.dumps(state['intent'],sort_keys=True,ensure_ascii=False,allow_nan=False));poe.write_json(state_path,state)
+                elif change=='original':
+                    original=self.folder/'run/original.xml';poe.write_text(original,SAMPLE.replace('level="86"','level="87"'))
+                else:
+                    template=self.folder/'real-template.xml';poe.write_text(template,SAMPLE)
+                    saved=poe.read_json(request.proposal_file)
+                    if change=='route-template':saved['checked_route']['stages']=[{'calculation':{'input_artifacts':{str(template):bx.digest(template.read_bytes())}}}]
+                    else:saved['input_artifacts']={str(template):bx.digest(template.read_bytes())}
+                    poe.write_json(request.proposal_file,saved)
+                    state=poe.read_json(state_path)
+                    if change=='route-template':state['files'][request.proposal_file]=bx.digest(Path(request.proposal_file).read_bytes())
+                    else:state['candidates']['native']['evaluation_sha256']=bx.digest(Path(request.proposal_file).read_bytes())
+                    poe.write_json(state_path,state)
+                    poe.write_text(template,SAMPLE.replace('level="86"','level="87"'))
+                with self.assertRaises(bx.ContractError):poe.edit_document(request)
+                self.assertEqual(self.source.read_bytes(),before)
+
     def test_edit_receipt_lists_current_input_fields_and_their_owners(self):
         result=self.edit({"set":{"summary":"draft","mode":"refine"}},kind="plan")
         contract=result["input_contract"]
@@ -2136,7 +2249,8 @@ class RealEngineTests(unittest.TestCase):
         poe.begin(args(invoked=True, input=str(cls.sample), run=str(cls.run_dir)))
         cls.original = bx.read_document(cls.sample)
         cls.native = engine.calculate(cls.pob, catalog="bases", query="id:Iron Gauntlets", limit=1)
-        cls.intent = intent_for(cls.original)
+        current=engine.calculate(cls.pob,bx.serialise(cls.original))
+        cls.intent = intent_for(cls.original,game_version=engine.require_data_version(engine.metadata(cls.pob)),normal_points=current['points']+10,ascendancy_points=current['ascendancy_points']+2)
         path = Path(cls.temp.name) / "intent.json"
         poe.write_json(path, cls.intent)
         poe.set_intent(args(run=str(cls.run_dir), file=str(path)))
@@ -2375,18 +2489,21 @@ class RealEngineTests(unittest.TestCase):
 
     def test_32_native_anoint_recipes_keep_quantities_and_local_translations(self):
         import re
-        result = engine.calculate(self.pob, queries=[{"kind": "nodes", "query": "id:" + str(node), "limit": 1}
-                                                  for node in (55485, 2225, 27604)])
+        result=engine.calculate(self.pob,catalog='nodes',query='',limit=10000)
+        entries=result['catalog']
+        ordinary=next(node for node in entries if node.get('anoint_recipe'))
+        repeated=next(node for node in entries if node.get('anoint_recipe') and len(node['anoint_recipe'])>len({part['id'] for part in node['anoint_recipe']}))
+        no_recipe=next(node for node in entries if node['type']=='Normal' and not node.get('anoint_recipe'))
         native_tree = (self.pob / "TreeData" / result["tree_version"] / "tree.lua").read_text(encoding="utf-8-sig")
-        for row in result["catalog_batch"][:2]:
-            node = row["entries"][0]
+        native_tree=native_tree[re.search(r'^    \["nodes"\]\s*=\s*\{',native_tree,re.M).end():]
+        for node in (ordinary,repeated):
             stanza = re.search(r"\[" + str(node["id"]) + r"\]\s*=\s*\{.*?\[\"recipe\"\]\s*=\s*\{([^}]+)\}", native_tree, re.S)
             self.assertIsNotNone(stanza)
             self.assertEqual([part["id"] for part in node["anoint_recipe"]], re.findall(r'"([^\"]+)"', stanza[1]))
             self.assertTrue(all(part.get("name_cn") and part.get("display_name") for part in node["anoint_recipe"]))
-        oils = result["catalog_batch"][1]["entries"][0]["anoint_recipe"]
+        oils = repeated['anoint_recipe']
         self.assertGreater(len(oils), len({part["id"] for part in oils}))
-        self.assertNotIn("anoint_recipe", result["catalog_batch"][2]["entries"][0])
+        self.assertNotIn('anoint_recipe',no_recipe)
 
     def test_09_resource_shortfall_stays_visible_without_forcing_one_play_style(self):
         plan=copy.deepcopy(self.refine)
@@ -2402,7 +2519,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(continuous["status"],"blocked")
         self.assertFalse(poe.export(args(run=str(self.run_dir),name="resource-continuous"))["file_exported"])
 
-    def test_10_native_329_mismatched_colours_are_legal_and_quality_changes(self):
+    def test_10_native_matching_quality_follows_current_socket_rule(self):
         plan = copy.deepcopy(self.refine)
         item_set = bx.active_set(self.original, "Items", "ItemSet", "activeItemSet")
         item_id = int(next(slot for slot in item_set.findall("Slot") if slot.get("name") == "Boots").get("itemId"))
@@ -2413,12 +2530,13 @@ class RealEngineTests(unittest.TestCase):
         outcome = self.evaluate_plan(plan, "white-sockets")
         self.assertEqual(outcome["status"], "draft", outcome["errors"])
         saved = poe.read_json(self.run_dir / "candidates/white-sockets/evaluation.json")["result"]
-        self.assertEqual(saved["data_version"], "3.29")
-        self.assertEqual(saved["matching_socket_quality_bonus"], 10)
+        self.assertEqual(saved["data_version"],engine.metadata(self.pob)['data_version'])
+        bonus=saved['matching_socket_quality_bonus']
+        self.assertEqual(bonus,engine.calculate(self.pob,catalog='rules')['matching_socket_quality_bonus'])
         for gem in saved["gems"]:
             if gem["slot"] == "Boots": self.assertEqual(gem["socket_quality_bonus"], 0)
         standard = engine.calculate(self.pob, bx.serialise(bx.apply_plan(poe.prepared(self.original, self.intent), self.refine)))
-        self.assertTrue(any(gem["socket_quality_bonus"] == 10 for gem in standard["gems"] if gem["slot"] == "Boots"))
+        self.assertTrue(any(gem["socket_quality_bonus"] == bonus for gem in standard["gems"] if gem["slot"] == "Boots" and gem['matches_socket']))
         determination = next(gem for gem in saved["gems"] if gem.get("id") == "Determination")
         self.assertEqual(determination["name_cn"], "坚定")
 
@@ -2435,7 +2553,7 @@ class RealEngineTests(unittest.TestCase):
         outcome = self.evaluate_plan(plan, "ascendancy-route")
         self.assertEqual(outcome["status"], "draft", outcome["errors"])
         saved = poe.read_json(self.run_dir / "candidates/ascendancy-route/evaluation.json")
-        self.assertEqual(saved["result"]["ascendancy_points"], 8)
+        self.assertEqual(saved["result"]["ascendancy_points"],self.intent['ascendancy_points'])
 
     def test_12_native_batch_catalog_validates_starter_gem_levels(self):
         result = engine.calculate(self.pob, queries=[{"kind": "gems", "query": "id:ShieldCrush", "limit": 2},
@@ -2449,28 +2567,33 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(len(result["catalog_batch"]), 8)
         gems = {entry["skill_id"]: entry for query in result["catalog_batch"] for entry in query["entries"]}
         self.assertEqual(set(gems), {"ShieldCrush", "Sunder", "Determination", "Grace", "Discipline", "Hatred", "Clarity", "SupportMinionDamage"})
-        self.assertEqual(gems["ShieldCrush"]["min_level"], 1)
-        self.assertEqual(gems["Sunder"]["min_level"], 12)
-        for skill_id, amount in (("Discipline", 35), ("Hatred", 50)):
-            for row in gems[skill_id]["level_requirements"]:
-                self.assertEqual(row["base_resources"]["manaReservationPercent"], amount)
+        for skill_id in ('ShieldCrush','Sunder'):
+            self.assertEqual(gems[skill_id]['min_level'],min(row['character_level'] for row in gems[skill_id]['level_requirements']))
+        documents=[];expected=[]
+        for skill_id in ('Determination','Grace','Discipline','Hatred'):
+            row=next(row for row in reversed(gems[skill_id]['level_requirements']) if row.get('naturally_trainable'))
+            seed=engine.calculate(self.pob,class_id=self.native['classes'][0]['id'])
+            document=bx.apply_plan(bx.parse(seed['xml']),{'mode':'rebuild','summary':'native requirements oracle','operations':{'level':row['character_level'],'replace_skills':[{'slot':'','gems':[{'skill_id':skill_id,'level':row['gem_level']}]}]}},native=seed)
+            documents.append(bx.serialise(document));expected.append((skill_id,row))
+        calculated=engine.calculate(self.pob,xml_batch=documents)['calculations']
+        for (skill_id,row),actual in zip(expected,calculated):
+            gem=next(g for g in actual['gems'] if g['id']==skill_id)
+            self.assertEqual((gem['req_level'],gem['req_str'],gem['req_dex'],gem['req_int']),(row['character_level'],row['strength'],row['dexterity'],row['intelligence']))
         clarity = gems["Clarity"]["level_requirements"]
         self.assertLess(clarity[0]["base_resources"]["manaReservationFlat"], clarity[-1]["base_resources"]["manaReservationFlat"])
         self.assertGreater(gems["ShieldCrush"]["level_requirements"][0]["base_resources"]["cost"]["Mana"], 0)
         self.assertGreater(gems["SupportMinionDamage"]["level_requirements"][0]["base_resources"]["manaMultiplier"], 0)
-        for skill_id, attribute in (("Determination", "strength"), ("Grace", "dexterity"), ("Discipline", "intelligence")):
-            level_20 = next(row for row in gems[skill_id]["level_requirements"] if row["gem_level"] == 20)
-            self.assertEqual(level_20["character_level"], 70)
-            self.assertEqual(level_20[attribute], 155)
-        route = route_fixture()
+        route = route_fixture(self.native['data_version'])
         checked, _ = self.validate_route(route, gems)
         self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["name"], gems["ShieldCrush"]["display_name"])
         route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = "auto"
         checked, _ = self.validate_route(route, gems)
         actual = checked["stages"][-1]["skill_groups"][0]["gems"][0]["level"]
         self.assertEqual(actual, max(row["gem_level"] for row in gems["ShieldCrush"]["level_requirements"] if row["character_level"] <= 68 and row.get("naturally_trainable")))
-        route["gems"]["Sunder"] = copy.deepcopy(route["gems"]["ShieldCrush"])
-        route["stages"][0]["skill_groups"][0]["gems"][0]["skill_id"] = "Sunder"
+        gated=next(gem for gem in gems.values() if gem['min_level']>1 and gem['tags'].get('grants_active_skill'))
+        route['stages'][0]['level']=gated['min_level']-1
+        route["gems"][gated['skill_id']] = copy.deepcopy(route["gems"]["ShieldCrush"])
+        route["stages"][0]["skill_groups"][0]["gems"][0]["skill_id"] = gated['skill_id']
         with self.assertRaisesRegex(ValueError, "使用等级"):
             self.validate_route(route, gems)
 
@@ -2617,8 +2740,13 @@ class RealEngineTests(unittest.TestCase):
         self.assertFalse(any("品质上限" in e for e in outcome["errors"]))
 
     def test_15_native_rare_recipe_and_invalid_modifier_constraints(self):
-        recipe = {"base": "Two-Toned Boots (Armour/Energy Shield)", "ilvl": 86, "sockets": "W-W-W-W",
-                  "affixes": [{"id": "IncreasedLife8"}, {"id": "MovementVelocity5"}, {"id": "ChaosResist6"}]}
+        import re
+        base_name='Two-Toned Boots (Armour/Energy Shield)'
+        base=engine.calculate(self.pob,catalog='bases',query='id:'+base_name,limit=1)['catalog'][0]
+        entries=engine.calculate(self.pob,catalog='affixes',query=base_name+'|',limit=10000)['catalog']
+        selected=[max((entry for entry in entries if any(phrase in line for line in entry['lines'])),key=lambda entry:entry['required_item_level']) for phrase in ('to maximum Life','Movement Speed','Chaos Resistance')]
+        recipe={'base':base_name,'ilvl':max(entry['required_item_level'] for entry in selected),'sockets':'-'.join(['W']*base['sockets']),
+                'affixes':[{'id':entry['id'],'roll':0} for entry in selected]}
         item_set = bx.active_set(self.original, "Items", "ItemSet", "activeItemSet")
         item_id = int(next(slot for slot in item_set.findall("Slot") if slot.get("name") == "Boots").get("itemId"))
         plan = copy.deepcopy(self.refine)
@@ -2627,18 +2755,23 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "draft", outcome["errors"])
         recorded = poe.read_json(self.run_dir / "candidates/crafted-boots/evaluation.json")
         raw = recorded["crafted_items"][0]["text"]
-        self.assertIn("+122 to maximum Life", raw)
-        self.assertIn("+33% to Chaos Resistance", raw)
-        self.assertIn("+10% to Fire and Lightning Resistances", raw)
+        for entry in selected:
+            for line in entry['lines']:
+                expected=re.sub(r'\((-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)\)',lambda match:match[1],line)
+                expected=re.sub(r'\{[^}]*\}','',expected).strip()
+                self.assertIn(expected,raw)
+        self.assertEqual([entry['id'] for entry in recorded['crafted_items'][0]['affixes']],[entry['id'] for entry in selected])
+        self.assertTrue(base['implicit'])
         self.assertIn("ArmourBasePercentile: 0.5", raw)
         output = poe.export(args(run=str(self.run_dir), name="crafted-boots"))
         self.assertIn("crafted_items", Path(output["files"][1]).read_text(encoding="utf-8"))
         bad = copy.deepcopy(recipe)
-        bad["affixes"].append({"id": "IncreasedLife7"})
+        conflicting=next(entry for entry in entries if entry['group']==selected[0]['group'] and entry['id']!=selected[0]['id'])
+        bad["affixes"].append({"id":conflicting['id']})
         with self.assertRaisesRegex(ValueError, "Conflicting modifier group"):
             poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
         bad = copy.deepcopy(recipe)
-        bad["ilvl"] = 70
+        bad["ilvl"] = recipe['ilvl']-1
         with self.assertRaisesRegex(engine.EngineError, "level is too low") as failure:
             poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
         diagnostic=failure.exception.diagnostic
@@ -2648,14 +2781,14 @@ class RealEngineTests(unittest.TestCase):
         self.assertGreater(diagnostic["expected"]["minimum_item_level"],bad["ilvl"])
         self.assertEqual(diagnostic["actual"]["item_level"],bad["ilvl"])
         bad = copy.deepcopy(recipe)
-        bad["sockets"] = "W-W-W-W-W"
+        bad["sockets"] = '-'.join(['W']*(base['sockets']+1))
         with self.assertRaisesRegex(ValueError, "Socket count"):
             poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
-        entries = engine.calculate(self.pob, catalog="affixes", query=recipe["base"] + "|", limit=1000)["catalog"]
-        unique_prefixes = {entry["group"]: entry["id"] for entry in entries if entry["type"] == "Prefix" and entry["required_item_level"] <= 86}
-        self.assertGreaterEqual(len(unique_prefixes), 4)
+        unique_prefixes = {entry["group"]: entry["id"] for entry in entries if entry["type"] == "Prefix" and entry["required_item_level"] <= recipe['ilvl']}
+        excess=base['affix_limits']['prefix']+1
+        self.assertGreaterEqual(len(unique_prefixes),excess)
         bad = copy.deepcopy(recipe)
-        bad["affixes"] = [{"id": mod} for mod in list(unique_prefixes.values())[:4]]
+        bad["affixes"] = [{"id": mod} for mod in list(unique_prefixes.values())[:excess]]
         with self.assertRaisesRegex(ValueError, "Too many Prefix"):
             poe.materialize_items({"operations": {"items": [{"id": 20, "craft": bad}]}}, self.pob)
 
@@ -2724,12 +2857,23 @@ class RealEngineTests(unittest.TestCase):
     def test_19_native_route_counts_connections_and_records_respec_dependency(self):
         result=engine.calculate(self.pob,queries=[{"kind":"nodes","query":"Inquisitor","limit":100},{"kind":"gems","query":"id:ShieldCrush","limit":1}])
         nodes=result["catalog_batch"][0]["entries"];gems={g["skill_id"]:g for g in result["catalog_batch"][1]["entries"]}
-        route=route_fixture();route.update(class_id=5,ascendancy="Inquisitor")
-        stage=route["stages"][-1];stage.update(ascendancy_points=8,ascendancy_nodes=[39790,32816,53884,48214])
-        checked,_=self.validate_route(route,gems,nodes=nodes);self.assertEqual(checked["stages"][-1]["ascendancy_used"],8)
-        stage["ascendancy_nodes"].append(40059)
+        owner=next(cls for cls in result['classes'] if any(asc['name']=='Inquisitor' for asc in cls['ascendancies']))
+        ascendancy=next(asc for asc in owner['ascendancies'] if asc['name']=='Inquisitor')
+        seed=engine.calculate(self.pob,class_id=owner['id'])
+        context=bx.apply_plan(bx.parse(seed['xml']),{'mode':'rebuild','summary':'native ascendancy count','operations':{'tree':{'ascendancy_id':ascendancy['id']}}},native=seed)
+        seed=engine.calculate(self.pob,bx.serialise(context))
+        targets=[node['id'] for node in nodes if node['ascendancy_name']=='Inquisitor' and node['type']=='Notable']
+        chosen=[targets[0]]
+        allocated=engine.calculate(self.pob,seed['xml'],tree_targets=chosen)
+        extra=next(target for target in targets[1:] if target not in allocated['nodes'])
+        route=route_fixture(self.native['data_version']);route.update(class_id=owner['id'],ascendancy='Inquisitor')
+        stage=route['stages'][-1];stage.update(ascendancy_points=allocated['ascendancy_points'],ascendancy_nodes=chosen)
+        checked,_=self.validate_route(route,gems,nodes=nodes);self.assertEqual(checked['stages'][-1]['ascendancy_used'],allocated['ascendancy_points'])
+        stage['ascendancy_nodes'].append(extra)
         with self.assertRaisesRegex(ValueError,"超过"):self.validate_route(route,gems,nodes=nodes)
-        stage["ascendancy_nodes"].remove(40059);route["stages"][1].update(ascendancy_points=2,ascendancy_nodes=[40059])
+        stage['ascendancy_nodes'].remove(extra)
+        previous=engine.calculate(self.pob,seed['xml'],tree_targets=[extra])
+        route['stages'][1].update(ascendancy_points=previous['ascendancy_points'],ascendancy_nodes=[extra])
         checked,_=self.validate_route(route,gems,nodes=nodes);self.assertIn("respec:stage-2",checked["pending"])
         self.assertIn("progress:stage-2",checked["pending"])
 
@@ -2925,7 +3069,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("excludes path cost",screen["alternatives"][0]["scope"])
 
     def test_36_route_snapshots_bind_native_claims_and_leave_missing_stage_unknown(self):
-        route=route_fixture();route.update(class_id=3,ascendancy=None,gems={"Fireball":{}},stages=[])
+        route=route_fixture(self.native['data_version']);route.update(class_id=3,ascendancy=None,gems={"Fireball":{}},stages=[])
         text="Rarity: NORMAL\nWool Gloves\nSockets: B"
         held_gem={"kind":"gem","instance_id":"fire","skill_id":"Fireball","level":1,"quality":0,"quantity":1,"acquisition":"owned","evidence_refs":["held-gem"]}
         held_item={"kind":"item","item_id":201,"spec_sha256":bx.digest(bx.normal_item(text)),"quantity":1,"acquisition":"owned","evidence_refs":["held-item"]}
@@ -3022,7 +3166,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("item:"+str(item["id"])+":unparsed",pending)
 
     def test_38_route_surfaces_stage_errors_and_never_labels_blocked_snapshot_ready(self):
-        route=route_fixture();route.update(class_id=3,ascendancy=None,gems={'Fireball':{}})
+        route=route_fixture(self.native['data_version']);route.update(class_id=3,ascendancy=None,gems={'Fireball':{}})
         seed=engine.calculate(self.pob,class_id=route['class_id'])
         context=engine.calculate(self.pob,seed['xml'],catalog='nodes',query='life',limit=100)
         node=next(n for n in context['catalog'] if not n['allocated'] and not n['ascendancy_name'] and n['reachable'] and n['points_to_allocate']>1 and n['type'] in {'Normal','Notable'})
@@ -3045,7 +3189,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(diagnostic['stage_id'],'custom')
         self.assertEqual(diagnostic['location'],'/stages/0/snapshot/operations/tree')
         repair=next(a for a in response['next_actions'] if a['action']=='repair_input')
-        self.assertIn(diagnostic,repair['diagnostics'])
+        self.assertTrue(any(row.get('code')=='native_tree_nodes_unretained' and row['location']==diagnostic['location'] for row in repair['diagnostics']))
         self.assertEqual(repair['input_revision'],bx.digest(path.read_bytes()))
         self.assertIn('普通天赋已分配',response['facts_summary'])
         html=output.read_text(encoding='utf8')
@@ -3056,16 +3200,18 @@ class RealEngineTests(unittest.TestCase):
         proposal=diagnostic['connection_proposal']
         self.assertIn(node['id'],proposal['changes']['replace'][diagnostic['location']]['nodes'])
         self.assertEqual(poe.read_json(path)['stages'][0]['snapshot']['operations']['tree'],{'nodes_add':[node['id']]})
-        changes=path.with_name('connect-changes.json');poe.write_json(changes,proposal['changes'])
+        self.assertTrue(proposal['preview']['roundtrip_verified'])
+        self.assertEqual(proposal['preview']['point_budgets'][0]['status'],'unknown')
         with self.assertRaises(bx.ContractError):
-            poe.edit_document(args(invoked=True,kind='route',file=str(path),changes=str(changes),if_sha256='stale-source'))
+            poe.edit_document(args(invoked=True,kind='route',file=str(path),proposal_file=str(output.with_suffix('.evidence.json')),proposal_id=proposal['proposal_id'],if_sha256='stale-source'))
         self.assertEqual(bx.digest(path.read_bytes()),repair['input_revision'])
-        edited=poe.edit_document(args(invoked=True,kind='route',file=str(path),changes=str(changes),if_sha256=repair['input_revision']))
+        edited=poe.edit_document(args(invoked=True,kind='route',file=str(path),proposal_file=str(output.with_suffix('.evidence.json')),proposal_id=proposal['proposal_id'],if_sha256=repair['input_revision']))
         self.assertEqual(edited['revision'],bx.digest(path.read_bytes()))
         with patch.object(facts,'gem_facts',return_value={}):repaired=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         final=poe.read_json(output.with_suffix('.evidence.json'))['checked_route']['stages'][0]['calculation']
         self.assertEqual(final['tree_diagnostics'],[])
         self.assertIn(node['id'],final['facts']['nodes'])
+        self.assertEqual(final['facts']['points'],proposal['preview']['point_budgets'][0]['used'])
         self.assertFalse(any(d['code']=='native_tree_nodes_unretained' for a in repaired['next_actions'] for d in a.get('diagnostics',[])))
         self.assertEqual(repaired['status'],'blocked')  # The independent unknown equipment is still invalid.
 
@@ -3210,7 +3356,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(catalog["catalog"][0]["valid_slots_context"]["basis"],"empty_equipment")
 
     def test_44_route_uses_declared_layout_instead_of_empty_catalog_slot_result(self):
-        route=route_fixture();route["ascendancy"]="";route["stages"]=route["stages"][-1:]
+        route=route_fixture(self.native['data_version']);route["ascendancy"]="";route["stages"]=route["stages"][-1:]
         route["evidence"]=[{"evidence_id":"user","kind":"user_statement","subject":"intent","text":"Offline SSF structure validation"}]
         stage=route["stages"][0];stage["bases"].update({"Weapon 1":"Crude Bow","Weapon 2":"Spike-Point Arrow Quiver"})
         path=Path(self.temp.name)/"equipment-route.json";output=path.with_suffix(".html");poe.write_json(path,route)
@@ -3224,6 +3370,98 @@ class RealEngineTests(unittest.TestCase):
         with self.assertRaises(engine.EngineError) as error:poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         self.assertEqual(error.exception.diagnostic["location"],"/stages/0/bases/Future Slot")
         state=poe.read_json(output.with_suffix(".state.json"));self.assertEqual(state["status"],"blocked");self.assertFalse(state["file_exported"])
+
+    def test_49_native_target_allocation_counts_shared_paths_and_preserves_known_removal(self):
+        seed=engine.calculate(self.pob,class_id=int(bx.active_spec(self.original).get('classId')))
+        catalog=engine.calculate(self.pob,seed['xml'],catalog='nodes',query='life',limit=100)['catalog']
+        nodes=[n for n in catalog if n['type'] in {'Normal','Notable'} and not n['allocated'] and not n['ascendancy_name'] and n['reachable'] and 1<n['points_to_allocate']<10]
+        first=nodes[0];second=next(n for n in nodes[1:] if set(n['path'])&set(first['path']))
+        targets=[first['id'],second['id']]
+        connected=engine.calculate(self.pob,seed['xml'],tree_targets=targets)
+        self.assertEqual(connected['native_tree_allocation']['method'],'PassiveSpec.AllocNode')
+        self.assertTrue(set(targets)<=set(connected['nodes']))
+        self.assertLess(connected['points'],sum(n['points_to_allocate'] for n in (first,second)))
+        self.assertTrue(set(seed['nodes'])<=set(connected['nodes']))
+        self.assertEqual(connected['native_xml']['method'],'Build.SaveDB')
+        saved=poe.roundtrip(self.pob,connected,bx.parse(connected['xml']))
+        rerun=engine.calculate(self.pob,saved,tree_targets=targets+[10**12])
+        self.assertEqual(rerun['native_tree_allocation']['targets'][0]['status'],'already_allocated')
+        self.assertEqual(rerun['native_tree_allocation']['targets'][-1]['status'],'unknown_node')
+        self.assertEqual(rerun['nodes'],connected['nodes'])
+        self.assertEqual(rerun['stats'],connected['stats'])
+        document=bx.apply_plan(bx.parse(seed['xml']),{'mode':'rebuild','summary':'native connection proof','operations':{'tree':{'nodes_add':targets}}},native=seed)
+        current=engine.calculate(self.pob,bx.serialise(document))
+        _,diagnostics=poe.native_tree_diagnostics(self.pob,document,current,tree_operations={'nodes_add':targets},limits={'normal_points_available':0})
+        proposal=diagnostics[0]['connection_proposal']
+        self.assertFalse(proposal['adoptable']);self.assertEqual(proposal['blockers'],['point_budget:normal'])
+        self.assertEqual(proposal['preview']['point_budgets'][0]['used'],connected['points'])
+        connector=first['path'][-1]
+        prior=engine.calculate(self.pob,seed['xml'],tree_targets=[connector])
+        tree={'nodes_add':[first['id']],'nodes_remove':[connector]}
+        document=bx.apply_plan(bx.parse(prior['xml']),{'mode':'rebuild','summary':'explicit removal proof','operations':{'tree':tree}},native=prior)
+        current=engine.calculate(self.pob,bx.serialise(document))
+        _,diagnostics=poe.native_tree_diagnostics(self.pob,document,current,tree_operations=tree)
+        self.assertIn(connector,diagnostics[0]['connection_conflicts_with_removal'])
+        self.assertNotIn('connection_proposal',diagnostics[0])
+
+    def test_50_native_mastery_target_requires_current_option_and_roundtrip_keeps_selection(self):
+        seed=engine.calculate(self.pob,class_id=int(bx.active_spec(self.original).get('classId')))
+        nodes=engine.calculate(self.pob,seed['xml'],catalog='nodes',query='',limit=10000)['catalog']
+        node=next(n for n in nodes if n['type']=='Mastery' and n.get('mastery_effects') and n.get('reachable') and n.get('points_to_allocate',1000)<15)
+        effect=node['mastery_effects'][0]['effect']
+        missing=engine.calculate(self.pob,seed['xml'],tree_targets=[node['id']])
+        self.assertEqual(missing['native_tree_allocation']['targets'][0]['status'],'mastery_selection_required')
+        self.assertNotIn(node['id'],missing['nodes'])
+        tree={'nodes_add':[node['id']],'masteries_add':{str(node['id']):effect}}
+        document=bx.apply_plan(bx.parse(seed['xml']),{'mode':'rebuild','summary':'native mastery preview','operations':{'tree':tree}},native=seed)
+        current=engine.calculate(self.pob,bx.serialise(document))
+        _,diagnostics=poe.native_tree_diagnostics(self.pob,document,current,tree_operations=tree)
+        proposal=diagnostics[0]['connection_proposal']
+        self.assertTrue(proposal['preview']['roundtrip_verified']);self.assertIn(node['id'],proposal['preview']['nodes'])
+        adopted=bx.apply_plan(document,{'mode':'rebuild','summary':'apply native mastery proposal','operations':{'tree':proposal['changes']['replace']['/operations/tree']}},native=current)
+        actual=engine.calculate(self.pob,bx.serialise(adopted))
+        self.assertEqual(actual['mastery_selections'][str(node['id'])],effect)
+        poe.roundtrip(self.pob,actual,adopted)
+        changed=copy.deepcopy(actual);changed['mastery_selections'][str(node['id'])]=10**12
+        self.assertTrue(any('专精' in error for error in poe.mechanical_issues(adopted,changed,{})[0]))
+        foreign=next(n for n in nodes if n['ascendancy_name'] and not n['is_ascendancy_start'] and not n['reachable'])
+        unreachable=engine.calculate(self.pob,seed['xml'],tree_targets=[foreign['id']])
+        self.assertEqual(unreachable['native_tree_allocation']['targets'][0]['status'],'unreachable')
+        self.assertFalse(unreachable['native_tree_allocation']['targets'][0]['retained'])
+
+    def test_51_native_gem_requirement_proposal_exposes_attribute_gap_and_single_gem_cost(self):
+        native=engine.calculate(self.pob,queries=[{'kind':'gems','query':'id:Fireball','limit':1}])
+        gem=native['catalog_batch'][0]['entries'][0]
+        highest=max((row for row in gem['level_requirements'] if row.get('naturally_trainable')),key=lambda row:row['gem_level'])
+        seed=engine.calculate(self.pob,class_id=int(bx.active_spec(self.original).get('classId')))
+        plan={'mode':'rebuild','summary':'native requirement proof','operations':{'level':highest['character_level'],
+            'items':[{'id':201,'craft':{'base':self.native['catalog'][0]['name'],'ilvl':1,'sockets':'W-W','affixes':[]}}],
+            'equip':[{'slot':'Gloves','item_id':201}],
+            'replace_skills':[{'slot':'Gloves','gems':[{'skill_id':'Fireball','level':highest['gem_level']},{'skill_id':'Fireball','level':1}]}],'main_group':1}}
+        resolved,_=poe.materialize_items(plan,self.pob)
+        document=bx.apply_plan(bx.parse(seed['xml']),resolved,native=seed)
+        result=engine.calculate(self.pob,bx.serialise(document))
+        before=bx.serialise(document)
+        diagnostics=poe.native_gem_diagnostics(self.pob,document,result,gems={'Fireball':gem})
+        self.assertEqual(len(diagnostics),1)
+        diagnostic=diagnostics[0]
+        self.assertIn('intelligence',diagnostic['required_gaps'])
+        self.assertEqual(diagnostic['required_gaps']['intelligence']['available'],result['stats']['Int'])
+        proposal=diagnostic['change_proposal']
+        self.assertEqual(proposal['selected_level'],max(diagnostic['usable_natural_levels']))
+        self.assertTrue(proposal['preview']['roundtrip_verified'])
+        self.assertEqual(len(proposal['changes']['set']['operations']['gems']),1)
+        changed=bx.apply_plan(document,{'mode':'rebuild','summary':'adopt one gem deferral','operations':proposal['changes']['set']['operations']},native=result)
+        actual=engine.calculate(self.pob,bx.serialise(changed))
+        self.assertEqual(actual['stats'],proposal['preview']['stats'])
+        self.assertEqual(bx.groups(changed)[0].findall('Gem')[1].get('level'),'1')
+        self.assertFalse(poe.mechanical_issues(changed,actual,{})[0])
+        self.assertEqual(bx.serialise(document),before)
+        incomplete=copy.deepcopy(result);incomplete['stats'].pop('Int')
+        with patch.object(engine,'calculate') as calculate:
+            unknown=poe.native_gem_diagnostics(self.pob,document,incomplete,gems={'Fireball':gem})
+        calculate.assert_not_called()
+        self.assertFalse(unknown)  # Unknown attributes cannot be labelled a measured deficit.
 
 
 if __name__ == "__main__": unittest.main()

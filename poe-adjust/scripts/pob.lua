@@ -50,24 +50,66 @@ local function scalarTable(tbl)
   end
   return values
 end
--- Observe convergence within an engineering bound instead of assuming three frames.
-local previous, stable, frames = nil, 0, 0
-for i = 1, 12 do
-  runCallback("OnFrame")
-  local stats = scalarTable(build.calcsTab.mainOutput)
-  local keys, parts = {}, {}
-  for key in pairs(stats) do table.insert(keys, key) end
-  table.sort(keys)
-  for _, key in ipairs(keys) do table.insert(parts, key .. "=" .. tostring(stats[key])) end
-  local signature = table.concat(parts, "|") .. ":" .. tostring(build.spec:CountAllocNodes()) .. ":" .. #build.skillsTab.socketGroupList
-  stable = signature == previous and stable + 1 or 0
-  previous, frames = signature, i
-  if i >= 3 and stable >= 2 and not build.buildFlag then break end
+-- Observe convergence before and after native allocation: jewels and other
+-- build effects can change reachability. Each preview has its own worker.
+local function converge()
+  local previous, stable, frames = nil, 0, 0
+  for i = 1, 12 do
+    runCallback("OnFrame")
+    local stats = scalarTable(build.calcsTab.mainOutput)
+    local keys, parts = {}, {}
+    for key in pairs(stats) do table.insert(keys, key) end
+    table.sort(keys)
+    for _, key in ipairs(keys) do table.insert(parts, key .. "=" .. tostring(stats[key])) end
+    local normal, asc, secondary = build.spec:CountAllocNodes()
+    local signature = table.concat(parts, "|") .. ":" .. normal .. ":" .. asc .. ":" .. secondary .. ":" .. #build.skillsTab.socketGroupList
+    stable = signature == previous and stable + 1 or 0
+    previous, frames = signature, i
+    if i >= 3 and stable >= 2 and not build.buildFlag then break end
+  end
+  assert(stable >= 2 and not build.buildFlag, "Native calculation did not converge within the frame bound")
+  return stable, frames
 end
-assert(stable >= 2 and not build.buildFlag, "Native calculation did not converge within the frame bound")
+local stable, frames = converge()
+local allocation
+if request.tree_targets then
+  inputRule(hasTreeContext, "Tree allocation needs a concrete build", "/tree_targets", "input XML", nil)
+  inputRule(type(build.spec.AllocNode) == "function" and type(build.spec.BuildAllDependsAndPaths) == "function",
+    "Native tree allocation is unavailable", "/tree_targets", "PassiveSpec.AllocNode and BuildAllDependsAndPaths", nil, true)
+  allocation = {method = "PassiveSpec.AllocNode", targets = {}, scope = "Sequential native paths in this build; shared nodes counted once, not a global optimum or progress proof"}
+  for _, id in ipairs(request.tree_targets) do
+    local node, row = build.spec.nodes[id], {id = id}
+    if not node then row.status = "unknown_node"
+    elseif node.alloc then row.status = "already_allocated"
+    elseif not node.path then row.status = "unreachable"
+    else
+      local selection = (request.tree_masteries or {})[tostring(id)]
+      local validSelection = node.type ~= "Mastery"
+      for _, option in ipairs(node.masteryEffects or {}) do
+        if option.effect == selection then validSelection = true end
+      end
+      if not validSelection then row.status = "mastery_selection_required"
+      else
+        row.path = {}
+        for _, part in ipairs(node.path) do table.insert(row.path, part.id) end
+        if node.type == "Mastery" then build.spec.masterySelections[id] = selection end
+        build.spec:AllocNode(node)
+        build.buildFlag = true
+        row.status = "allocated"
+      end
+    end
+    table.insert(allocation.targets, row)
+  end
+  stable, frames = converge()
+  for _, row in ipairs(allocation.targets) do
+    row.retained = build.spec.allocNodes[row.id] ~= nil
+    if not row.retained and row.status == "allocated" then row.status = "not_retained" end
+  end
+end
 local output = build.calcsTab.mainOutput or {}
 local result = {stats = scalarTable(output), minion = scalarTable(output.Minion), warnings = {}, gems = {}, equipped = {}, nodes = {}, errors = {}, excluded_guard_checks = {}}
 result.convergence = {stable_frames = stable + 1, frames = frames, scope = "Scalar output, point count, group count and native build flag"}
+result.native_tree_allocation = allocation
 if output.Minion then
   result.stats.MinionCombinedDPS = output.Minion.CombinedDPS
   result.stats.MinionHitChance = output.Minion.HitChance
@@ -129,6 +171,8 @@ result.capabilities = {
   equipment_slots = type(build.itemsTab.slots) == "table",
   calcs_breakdown = type(build.calcsTab.calcs.buildOutput) == "function",
   node_screening = type(build.calcsTab.GetNodeCalculator) == "function",
+  native_tree_allocation = type(build.spec.AllocNode) == "function" and type(build.spec.BuildAllDependsAndPaths) == "function",
+  native_xml_save = type(build.SaveDB) == "function",
 }
 result.classes = {}
 for id, class in pairs(build.spec.tree.classes) do
@@ -278,6 +322,8 @@ for _, entry in ipairs(configOptions) do
   end
 end
 result.points, result.ascendancy_points, result.secondary_ascendancy_points = build.spec:CountAllocNodes()
+result.mastery_selections = setmetatable({}, {__jsontype = "object"})
+for id, effect in pairs(build.spec.masterySelections) do result.mastery_selections[tostring(id)] = effect end
 for _, line in ipairs(build.controls.warnings.lines or {}) do table.insert(result.warnings, line) end
 for id, node in pairs(build.spec.allocNodes) do table.insert(result.nodes, id) end
 table.sort(result.nodes)
@@ -375,9 +421,7 @@ if request.crafts then
       inputRule(not seen[mod.group], "Conflicting modifier group: " .. mod.group, affixPath .. "/id", {unique_group = mod.group}, affix.id)
       seen[mod.group] = true
       counts[mod.type] = counts[mod.type] + 1
-      local nativeLimit
-      if mod.type == "Prefix" then nativeLimit = item.prefixes.limit else nativeLimit = item.suffixes.limit end
-      nativeLimit = nativeLimit or item.affixLimit and item.affixLimit / 2
+      local nativeLimit = affixLimits[mod.type == "Prefix" and "prefix" or "suffix"]
       inputRule(type(nativeLimit) == "number", "Native affix limit is unavailable", affixPath, "native item affix limit", nil, true)
       inputRule(counts[mod.type] <= nativeLimit, "Too many " .. mod.type .. " modifiers for current native item", affixPath, {type = mod.type, maximum = nativeLimit}, {count = counts[mod.type]})
       local roll = affix.roll or 0.5
@@ -574,7 +618,8 @@ local function queryCatalog(kind, query, limit, offset)
       table.sort(entry.valid_slots)
       entry.valid_slots_context = {basis = request.xml ~= "" and "input_xml" or "empty_equipment", tree = result.tree_context,
         scope = "Observed against this query's current equipment and tree; not an unconditional base-slot rule"}
-      entry.affix_limits = {total = item.affixLimit, prefix = item.prefixes and item.prefixes.limit, suffix = item.suffixes and item.suffixes.limit}
+      entry.affix_limits = {total = item.affixLimit, prefix = item.prefixes and (item.prefixes.limit or item.affixLimit and item.affixLimit / 2), suffix = item.suffixes and (item.suffixes.limit or item.affixLimit and item.affixLimit / 2),
+        scope = "Classes/Item.lua mod-list limits observed from this rare base; excludes special item text and availability"}
     end
   end
   return {kind = kind, query = query, total = #entries, offset = offset, next_offset = offset + #selected < #entries and offset + #selected or nil, entries = selected}
@@ -630,6 +675,7 @@ if request.queries then
   end
 end
 result.xml = assert(build:SaveDB("POE Adjust"))
+result.native_xml = {method = "Build.SaveDB", storage = "in_memory", scope = "Native serializer; workspace persistence and cold reload are checked by the caller"}
 -- Optional evidence is captured after saving, so Calcs selection never changes
 -- the exported build. Copy only JSON-safe native values; disclose omissions.
 local function evidenceTable(value)

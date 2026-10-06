@@ -22,7 +22,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.7"
+VERSION = "2.8.8"
 SCHEMA_VERSION = 2
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
@@ -153,20 +153,63 @@ def document_counts(document):
     return counts
 
 
+def input_artifacts_current(outcome):
+    """Check native input templates recorded by the role or stage calculation."""
+    stages=outcome.get("stages",[])
+    if isinstance(stages,dict): stages=stages.values()
+    groups=[outcome.get("input_artifacts",{})]+[stage.get("calculation",{}).get("input_artifacts",{}) for stage in stages]
+    return all(Path(filename).is_file() and bx.digest(Path(filename).read_bytes())==digest for group in groups for filename,digest in group.items())
+
+
+def proposal_request(args, root, source):
+    """Read a saved native proposal through the existing calculation receipts."""
+    path=Path(args.proposal_file).resolve()
+    bx.require(isinstance(getattr(args,"proposal_id",None),str) and args.proposal_id,"采用提案需提供 next_actions 的 proposal_id。",location="/proposal_id")
+    saved=read_json(path); raw_hash=bx.digest(path.read_bytes())
+    if args.kind=="plan":
+        bx.require(path.name=="evaluation.json" and path.parent.parent.name=="candidates","使用 evaluate 返回的 evaluation_file。",location="/proposal_file")
+        _,state=read_run(path.parent.parent.parent)
+        bx.require(state.get("candidates",{}).get(path.parent.name,{}).get("evaluation_sha256")==raw_hash,"计算凭证已变化或不完整，请重新 evaluate。",code="proposal_receipt_stale",location="/proposal_file")
+        outcome=saved; input_file=saved.get("source_plan"); revision=saved.get("source_plan_sha256")
+        bx.require(saved.get("intent_hash")==state.get("intent_hash") and saved.get("original_sha256")==state.get("original_sha256"),"意图或原角色变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
+    else:
+        bx.require(path.name.endswith(".evidence.json"),"使用 route 返回的 .evidence.json。",location="/proposal_file")
+        state=read_json(path.with_name(path.name.removesuffix(".evidence.json")+".state.json"))
+        bx.require(state.get("file_exported") is True and state.get("files",{}).get(str(path))==raw_hash,"路线计算凭证已变化或不完整，请重新 route。",code="proposal_receipt_stale",location="/proposal_file")
+        outcome=saved.get("checked_route",{});input_file=state.get("input");revision=state.get("input_sha256")
+    bx.require(saved.get("skill_version")==VERSION and saved.get("engine_fingerprint")==state.get("engine_fingerprint")==engine.fingerprint(root),"技能或引擎变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
+    bx.require(input_artifacts_current(outcome),"外部角色模板变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
+    candidates=[row[key] for row in outcome.get("diagnostics",[]) for key in ("connection_proposal","change_proposal") if isinstance(row.get(key),dict) and row[key].get("proposal_id")==getattr(args,"proposal_id",None)]
+    bx.require(len(candidates)==1,"proposal_id 必须对应当前计算中唯一的程序提案。",location="/proposal_id",expected="one current saved proposal",actual=getattr(args,"proposal_id",None))
+    proposal=candidates[0]
+    body={k:v for k,v in proposal.items() if k!="proposal_id"}
+    bx.require(bx.digest(json.dumps(body,sort_keys=True,ensure_ascii=False,allow_nan=False))==proposal["proposal_id"],"提案内容被修改，请重新计算。",location="/proposal_id")
+    bx.require(input_file is not None and Path(input_file).resolve()==source and proposal.get("input_file")==str(source) and proposal.get("input_revision")==revision and proposal.get("details_file")==str(path) and proposal.get("kind")==args.kind,
+               "提案不属于本源方案和本次计算。",code="proposal_context_stale",location="/file",actual=str(source))
+    bx.require(proposal.get("adoptable") is True,"提案存在已知冲突；先修订所列目标、点数或操作后重算。",location="/proposal_id",actual=proposal.get("blockers"))
+    bx.require(bx.digest(path.read_bytes())==raw_hash,"读取期间计算凭证变化，请重读。",location="/proposal_file")
+    return copy.deepcopy(proposal["changes"]), {"file":str(path),"proposal_id":proposal["proposal_id"],"input_revision":revision,"receipt_sha256":raw_hash,"proposal_type":proposal["proposal_type"]}
+
+
 def edit_document(args):
     """Persist direction or one change without calculating an incomplete document."""
     bx.require(args.invoked,"用户明确调用后才能创建/修改方案。",location="/invoked",expected=True,actual=args.invoked)
-    path,changes_path=Path(args.file).resolve(),Path(args.changes).resolve()
+    path=Path(args.file).resolve()
+    reference=getattr(args,"proposal_file",None)
+    changes=getattr(args,"changes",None)
+    bx.require(bool(reference)!=bool(changes),"使用 changes 文件或程序 proposal_file 二者之一。",location="/changes")
+    changes_path=Path(reference or changes).resolve()
     bx.require(path.suffix.lower()==".json" and path!=changes_path,"方案与修改请求使用两个独立 JSON 文件。",location="/file",actual=str(path))
     root=engine.resolve_root(args.pob); engine.check_output_path(path)
-    request=read_json(changes_path)
+    bx.require(reference is not None or getattr(args,"proposal_id",None) is None,"proposal_id 需配合 proposal_file。",location="/proposal_id")
+    request,adoption=proposal_request(args,root,path) if reference else (read_json(changes_path),None)
     bx.require_keys(request,{"set","replace","remove","review_claims"},"/","修改请求使用 set/replace/remove/review_claims。")
     bx.require(isinstance(request.get("set",{}),dict),"set 应为对象。",location="/set",expected="object",actual=type(request.get("set")).__name__)
     existing=path.read_bytes() if path.is_file() else None
     stamp=bx.digest(existing) if existing is not None else None
     receipt=path.with_suffix(".edit.json")
     bx.require(receipt!=changes_path,"修改请求不能使用程序的 .edit.json 凭证文件名。",location="/changes",actual=str(changes_path))
-    request_hash=bx.digest(json.dumps({"kind":args.kind,"request":request},sort_keys=True,ensure_ascii=False,allow_nan=False))
+    request_hash=bx.digest(json.dumps({"kind":args.kind,"request":request,**({"adoption":adoption} if adoption else {})},sort_keys=True,ensure_ascii=False,allow_nan=False))
     if receipt.is_file() and existing is not None:
         try: old=read_json(receipt)
         except (ValueError,OSError): old={}
@@ -175,6 +218,8 @@ def edit_document(args):
                 old.update(entrypoint=execution_entrypoint(),input_contract=input_contract(args.kind));write_json(receipt,old)
             return {**old,"replayed":True,"file":str(path),"status":"saved_draft"}
     bx.require(existing is None or getattr(args,"if_sha256",None)==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",location="/if_sha256",expected=stamp,actual=getattr(args,"if_sha256",None))
+    if adoption:
+        bx.require(existing is not None and adoption["input_revision"]==stamp,"源方案变化，请重算新的提案。",code="proposal_context_stale",location="/if_sha256",expected=stamp,actual=adoption["input_revision"])
     document=read_json(path) if existing is not None else {"schema_version":SCHEMA_VERSION}
     result=merge_edit(document,request.get("set",{}))
     replacements=request.get("replace",{})
@@ -244,6 +289,7 @@ def edit_document(args):
               "next_actions":[{"action":"edit_or_calculate","file":str(path),"revision":revision,"reference":"references/leveling.md" if args.kind=="route" else "references/build.md"}],
               "scope":"已保存输入草案及稳定标识；没有计算、确认游戏合法性或自动完成模型评审。"}
     if args.kind=="route": response["stage_instances"]=[{"stage_id":s["stage_id"],"instances":[{k:g.get(k) for k in ("instance_id","skill_id","level")} for group in s.get("skill_groups",[]) for g in group["gems"]]} for s in result.get("stages",[])]
+    if adoption: response["adopted_proposal"]=adoption
     response["facts_summary"]=f"已保存草案；实际修改 {len(response['actual_changes'])} 处，阶段 {response['counts']['stages']} 个、技能组 {response['counts']['skill_groups']} 组、宝石 {response['counts']['gems']} 颗、判断 {response['counts']['claims']} 条。待重新评审判断 {len(invalidated)} 条。持久状态凭证保留在 {receipt}；程序临时文件已自动处理。此操作没有计算或证明配装达标。"
     write_json(receipt,response)
     return response
@@ -527,6 +573,9 @@ def mechanical_issues(document, result, intent):
     requested_nodes = {int(n) for n in spec.get("nodes", "").split(",") if n}
     missing = requested_nodes - set(result["nodes"])
     if missing: errors.append("引擎未保留部分天赋节点：" + ",".join(map(str, sorted(missing))))
+    for node,effect in re.findall(r"\{(\d+),(\d+)\}",spec.get("masteryEffects","")):
+        if "mastery_selections" not in result: gaps.append("tree:mastery:"+node)
+        elif result["mastery_selections"].get(node)!=int(effect): errors.append("引擎未保留专精效果："+node+"="+effect)
     for group in bx.groups(document):
         if not group.get("source"): continue
         for gem in group.findall("Gem"):
@@ -749,7 +798,7 @@ def compare(before, after, comparable=True):
 def semantics(result):
     return {"class": result["class"], "ascendancy": result["ascendancy"], "secondary_ascendancy_id": result.get("secondary_ascendancy_id"), "level": result["level"], "tree_version": result["tree_version"],
             "config_values": result.get("config_saved_values", result["config_values"]),
-            "nodes": result["nodes"], "main_skill": result["main_skill"], "main_group": result["main_group"],
+            "nodes": result["nodes"], "mastery_selections":result.get("mastery_selections"), "main_skill": result["main_skill"], "main_group": result["main_group"],
             "gems": [{key: gem.get(key) for key in ("group", "index", "id", "source", "level", "quality", "enabled", "group_enabled", "slot", "matches_socket", "socket_quality_bonus", "count", "group_count", "skill_part", "skill_stage_count", "skill_minion", "main_active_skill", "include_in_full_dps")} for gem in result["gems"]],
             "equipped": [{key: item.get(key) for key in ("slot", "id", "name", "base", "active")} for item in result["equipped"]]}
 
@@ -892,13 +941,25 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     shared={"input_file":str(input_file),"details_file":str(details_file)}
     if Path(input_file).is_file(): shared["input_revision"]=bx.digest(Path(input_file).read_bytes())
     actions=[]
+    for index,row in enumerate(outcome.get("diagnostics",[])):
+        for key in ("connection_proposal","change_proposal"):
+            if not isinstance(row.get(key),dict) or "input_revision" not in shared: continue
+            proposal=row[key]
+            proposal.update(kind="route" if details_pointer else "plan",skill_version=VERSION,**shared)
+            proposal.pop("proposal_id",None)
+            proposal["proposal_id"]=bx.digest(json.dumps(proposal,sort_keys=True,ensure_ascii=False,allow_nan=False))
+            actions.append({**shared,"action":"review_native_proposal","proposal_id":proposal["proposal_id"],"proposal_type":proposal["proposal_type"],
+                            "pointer":details_pointer+f"/diagnostics/{index}/"+key,"adoptable":proposal["adoptable"],"blockers":proposal["blockers"],
+                            "preview_pointer":details_pointer+f"/diagnostics/{index}/"+key+"/preview",
+                            "preview_fields":[field for field in ("point_budgets","errors","pending","warnings") if field in proposal["preview"]],
+                            "instruction":"view 用 preview_pointer/preview_fields 先读点数和缺口；comparison 先 keys 再按用户目标选择字段，active_skills 分页读费用。决定采用后 edit --proposal-file 指向 details_file、--proposal-id 使用本标识、--if-sha256 使用 input_revision；程序读取完整修改。保存后重算并复核全部用户目标。"})
     claim_reviews=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="review_claims" and row.get("claim_id")]
     ids=list(dict.fromkeys(row["claim_id"] for row in claim_reviews))
     repairs=[row for row in outcome.get("diagnostics",[]) if row.get("action") in {"edit_input","link_claim","record_user_basis","revise_conclusion"} and row.get("location")
              and not (row.get("code")=="goal_claim_unresolved" and isinstance(row.get("actual"),dict) and row["actual"].get("claim_id") in ids)]
     if outcome["errors"] or repairs:
         actions.append({**shared,"action":"repair_input","pointer":details_pointer+("/errors" if outcome["errors"] else "/diagnostics"),
-                        "total":len(outcome["errors"]) if outcome["errors"] else len(repairs),"diagnostics":repairs,
+                        "total":len(outcome["errors"]) if outcome["errors"] else len(repairs),"diagnostics":[{k:v for k,v in row.items() if k not in {"connection_proposal","change_proposal"}} for row in repairs],
                         "instruction":"按具体诊断修订原方案；保留用户目标所需功能，不能靠删除有效组件消除错误。"})
     if outcome.get("reference_contract"):
         actions.append({**shared,"action":"view","file":str(details_file),"pointer":details_pointer+"/reference_contract",
@@ -926,8 +987,22 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     return actions
 
 
-def native_tree_diagnostics(root,document,result,location="/operations/tree",*,tree_operations=None):
-    """Observe dropped requested nodes and native paths in this exact build; never allocate."""
+def native_preview(root,document,before,result,limits,usage_plan):
+    """One native save/reload and whole-build impact report for either proposal."""
+    bx.require(result["engine_fingerprint"]==before["engine_fingerprint"],"候选预览期间引擎变化，请重算。")
+    xml=roundtrip(root,result,document)
+    errors,warnings,pending=mechanical_issues(document,result,limits or {})
+    audit=resources.assess(result,limits or {},usage_plan or {},[])
+    fields=("level","class_id","ascendancy_id","secondary_ascendancy_id","main_skill","main_group","use_second_weapon_set","config_values")
+    context_changes=[key for key in fields if before.get(key)!=result.get(key)]
+    return {"xml_sha256":bx.digest(xml),"engine_fingerprint":result["engine_fingerprint"],"native_xml":result.get("native_xml"),"roundtrip_verified":True,
+            "context":{key:result.get(key) for key in fields},"context_changes":context_changes,"point_budgets":audit["point_budgets"],
+            "nodes":result["nodes"],"mastery_selections":result.get("mastery_selections"),"stats":result["stats"],"comparison":compare(before,result,not context_changes),"active_skills":result["active_skills"],
+            "errors":errors+audit["errors"],"pending":list(dict.fromkeys(pending+audit["pending"])),"warnings":warnings+audit["warnings"],"readiness":audit}
+
+
+def native_tree_diagnostics(root,document,result,location="/operations/tree",*,tree_operations=None,limits=None,usage_plan=None):
+    """Preview native allocation in isolation; adopting still requires a model choice."""
     requested={int(value) for value in bx.active_spec(document).get("nodes","").split(",") if value}
     missing=sorted(requested-set(result["nodes"]))
     if not missing: return [],[]
@@ -942,19 +1017,89 @@ def native_tree_diagnostics(root,document,result,location="/operations/tree",*,t
                 "expected":sorted(requested),"actual":sorted(result["nodes"]),"tree_diagnostics":details,
                 "native_context":{"xml_sha256":bx.digest(result["xml"]),"engine_fingerprint":result["engine_fingerprint"],
                                   "class_id":result.get("class_id"),"ascendancy_id":result.get("ascendancy_id")},
-                "message":"所列请求节点未保留；核对原生路径与源操作中的连接点。path 与 points_to_allocate 来自此实际角色的原生树；模型核对可用点数、目标与取得条件后选择路径并重算。查询返回路径不等于已加入源操作，也不证明最优、可立即取得或多个路径的合计点数。"}
-    if tree_operations is not None and all(row["found"] and row.get("reachable") and row.get("path") and row["id"] in row["path"] for row in details):
-        paths={value for row in details for value in row["path"]}
-        conflicts=paths & set(tree_operations.get("nodes_remove",[]))
-        if conflicts:
-            diagnostic["connection_conflicts_with_removal"]=sorted(conflicts)
-        else:
-            tree=copy.deepcopy(tree_operations)
-            tree.pop("nodes_add",None);tree.pop("nodes_remove",None)
-            tree["nodes"]=sorted(requested|paths)
-            diagnostic["connection_proposal"]={"changes":{"replace":{location:tree}},"additional_node_ids":sorted(paths-requested),
-                                                "scope":"仅为保留当前已请求节点而合并本次原生路径；尚未应用。模型决定是否采用，并用 input_revision 经 edit 提交，再重算实际点数、专精、资源与目标；不自动分配，不证明最优或点数可用。"}
+                "message":"请求节点未保留。程序按此实际角色的原生规则预览补路；模型审查目标与完整影响后引用程序提案采用，再重算。单节点查询成本不能相加为总点数，原生补路不证明全局最优或可立即取得。"}
+    if tree_operations is not None and all(row["found"] for row in details):
+        try:
+            masteries={node:int(effect) for node,effect in re.findall(r"\{(\d+),(\d+)\}",bx.active_spec(document).get("masteryEffects","")) if int(node) in missing}
+            order=list(dict.fromkeys([node for node in tree_operations.get("nodes_add",tree_operations.get("nodes",[])) if node in missing]+missing))
+            allocated=engine.calculate(root,result["xml"],tree_targets=order,tree_masteries=masteries)
+            bx.require(allocated["engine_fingerprint"]==result["engine_fingerprint"],"补路期间引擎变化，请重算。")
+            diagnostic["native_allocation"]=allocated.get("native_tree_allocation",{"status":"unsupported"})
+            remaining=sorted(requested-set(allocated["nodes"]))
+            conflicts=sorted(set(allocated["nodes"]) & set(tree_operations.get("nodes_remove",[])))
+            if remaining: diagnostic["connection_unretained_targets"]=remaining
+            elif conflicts: diagnostic["connection_conflicts_with_removal"]=conflicts
+            elif allocated.get("native_tree_allocation"):
+                tree=copy.deepcopy(tree_operations)
+                tree.pop("nodes_add",None);tree.pop("nodes_remove",None)
+                tree["nodes"]=sorted(set(allocated["nodes"]))
+                preview_document=bx.apply_plan(document,{"mode":"rebuild","summary":"原生天赋连接预览","operations":{"tree":tree}},native=result)
+                preview=engine.calculate(root,bx.serialise(preview_document))
+                bx.require(preview["engine_fingerprint"]==result["engine_fingerprint"],"连接预览期间引擎变化，请重算。")
+                unretained=sorted(requested-set(preview["nodes"]))
+                if unretained: diagnostic["connection_unretained_targets"]=unretained
+                else:
+                    report=native_preview(root,preview_document,result,preview,limits,usage_plan)
+                    budgets=report["point_budgets"]
+                    blockers=["point_budget:"+row["pool"] for row in budgets if row["status"]=="exceeded"]
+                    diagnostic["connection_proposal"]={"proposal_type":"native_tree_connection","changes":{"replace":{location:tree}},
+                        "additional_node_ids":sorted(set(preview["nodes"])-requested-set(result["nodes"])),"requested_node_ids":sorted(requested),"allocation_order":order,"adoptable":not blockers,"blockers":blockers,"preview":report,
+                        "scope":"本次原生顺序补路后完整实算并 SaveDB 回读，保留全部请求节点；尚未应用。点数上限仅为声明，未知仍待核实；配装目标、取得、互斥和收益由模型决定，采用后重新 evaluate/route 全面审查。"}
+        except (ValueError,KeyError,TypeError,IndexError) as exc:
+            diagnostic["connection_preview_failure"]=failure_record(exc)
     return details,[diagnostic]
+
+
+def native_gem_diagnostics(root,document,result,*,stage_index=None,gems=None,limits=None,usage_plan=None):
+    """Expose current level requirements and one optional deferral per unmet gem."""
+    affected=[]
+    for gem in result.get("gems",[]):
+        available={"character_level":result["level"],"strength":result["stats"].get("Str"),"dexterity":result["stats"].get("Dex"),"intelligence":result["stats"].get("Int")}
+        required={key:gem.get(field) for key,field in (("character_level","req_level"),("strength","req_str"),("dexterity","req_dex"),("intelligence","req_int"))}
+        gaps={key:{"required":value,"available":available[key],"deficit":value-available[key]} for key,value in required.items() if type(value) in (int,float) and type(available[key]) in (int,float) and value>available[key]}
+        if gaps and gem.get("recognised") and not gem.get("source") and gem.get("slot"): affected.append((gem,available,gaps))
+    if not affected: return []
+    if gems is None:
+        ids=list(dict.fromkeys(gem["id"] for gem,_,_ in affected))
+        catalog=native_queries(root,[{"kind":"gems","query":"id:"+value,"limit":2} for value in ids])
+        bx.require(catalog["engine_fingerprint"]==result["engine_fingerprint"],"宝石需求查询期间引擎变化，请重算。")
+        gems={row["skill_id"]:row for page in catalog["catalog_batch"] for row in page["entries"]}
+    diagnostics=[]; variants=[]
+    for gem,available,gaps in affected:
+        locator=f"/stages/{stage_index}/skill_groups/{gem['group']-1}/gems/{gem['index']-1}/level" if stage_index is not None else "/operations/gems"
+        source_gem=bx.index_one(bx.groups(document),gem["group"],"技能组").findall("Gem")[gem["index"]-1]
+        physical_level=int(source_gem.get("level","1"))
+        levels=gems.get(gem["id"],{}).get("level_requirements",[])
+        usable=[row for row in levels if row.get("naturally_trainable") and row["gem_level"]<=physical_level and all(type(available[key]) in (int,float) and type(row.get(key)) in (int,float) and row[key]<=available[key] for key in available)]
+        diagnostic={"code":"native_gem_requirements_unmet","action":"edit_input","location":locator,"skill_id":gem["id"],"group":gem["group"],"index":gem["index"],
+                    "actual":available,"required_gaps":gaps,"current_physical_level":physical_level,
+                    "native_level_requirements":levels,"usable_natural_levels":[row["gem_level"] for row in usable],
+                    "message":"当前角色有宝石等级/属性缺口。模型选择补属性、延期升级或更换技能；原生可用等级只描述当前属性，取得或降级成本仍需核实。延期预览只改这一颗，不自动降低其他宝石。"}
+        diagnostics.append(diagnostic)
+        if usable:
+            level=max(row["gem_level"] for row in usable)
+            operation={"gems":[{"group":gem["group"],"index":gem["index"],"level":level}]}
+            candidate=bx.apply_plan(document,{"mode":"rebuild","summary":"单颗宝石延期升级预览","operations":operation},native=result)
+            changes={"replace":{locator:level}} if stage_index is not None else {"set":{"operations":operation}}
+            variants.append((diagnostic,candidate,changes,level))
+    for offset in range(0,len(variants),12):
+        batch=variants[offset:offset+12]
+        try:
+            calculated=engine.calculate(root,xml_batch=[bx.serialise(candidate) for _,candidate,_,_ in batch])
+            bx.require(calculated["engine_fingerprint"]==result["engine_fingerprint"],"宝石预览期间引擎变化，请重算。")
+            bx.require(len(calculated["calculations"])==len(batch),"宝石预览未返回完整结果，请重算。")
+        except (ValueError,KeyError,TypeError) as exc:
+            for diagnostic,_,_,_ in batch: diagnostic["level_preview_failure"]=failure_record(exc)
+            continue
+        for (diagnostic,candidate,changes,level),preview in zip(batch,calculated["calculations"]):
+            try:
+                report=native_preview(root,candidate,result,preview,limits,usage_plan)
+                diagnostic["change_proposal"]={"proposal_type":"native_gem_level","changes":changes,"adoptable":True,"blockers":[],
+                    "selected_level":level,"skill_id":diagnostic["skill_id"],"group":diagnostic["group"],"index":diagnostic["index"],
+                    "preview":report,
+                    "scope":"当前属性下的单颗自然宝石延期升级候选，已完整原生实算并 SaveDB 回读；模型审查输出/资源代价再选择。未确认实物、训练、降级服务或其他用户目标，应用后继续完整审查。"}
+            except (ValueError,KeyError,TypeError,IndexError) as exc: diagnostic["level_preview_failure"]=failure_record(exc)
+    return diagnostics
 
 
 def failure_record(exc,location_prefix="",input_file=None):
@@ -1101,20 +1246,24 @@ def evaluate(args):
         baseline.update(context_hash=context_hash,skill_version=VERSION,intent_hash=state["intent_hash"])
         write_json(base_path,baseline)
     state["baseline_sha256"]=bx.digest(base_path.read_text(encoding="utf-8"))
-    source=original
+    source=original; input_artifacts={}
     if plan.get("template_xml"):
         path=Path(plan["template_xml"])
-        source=bx.read_document(path if path.is_absolute() else plan_path.parent/path)
+        path=(path if path.is_absolute() else plan_path.parent/path).resolve()
+        input_artifacts[str(path)]=bx.digest(path.read_bytes())
+        source=bx.read_document(path)
     resolved, crafted = materialize_items(plan,root)
     document=bx.apply_plan(prepared(source,intent,scenario=scenario),resolved,native=native)
     result=engine.calculate(root,bx.serialise(document))
     bx.require(result["engine_fingerprint"]==baseline["engine_fingerprint"]==native["engine_fingerprint"]==info["engine_fingerprint"],"计算期间引擎内容发生变化，请更新完成后重算。")
-    tree_diagnostics,tree_repairs=native_tree_diagnostics(root,document,result,tree_operations=plan.get("operations",{}).get("tree"))
+    tree_diagnostics,tree_repairs=native_tree_diagnostics(root,document,result,tree_operations=plan.get("operations",{}).get("tree"),limits=intent,usage_plan=plan)
+    gem_repairs=native_gem_diagnostics(root,document,result,limits=intent,usage_plan=plan)
     xml=roundtrip(root,result,document)
     result["xml_sha256"]=bx.digest(xml)
     assessment=assess_candidate(original,document,baseline,result,intent,plan,plan_path.parent,Path(state.get("intent_evidence_folder",str(plan_path.parent))),root=root)
-    assessment["diagnostics"]+=tree_repairs
+    assessment["diagnostics"]+=tree_repairs+gem_repairs
     bx.require(bx.digest(plan_path.read_bytes())==source_plan_sha256,"计算期间源计划变化，请重新 evaluate。",location="/source_plan",input_file=str(plan_path))
+    bx.require(all(Path(path).is_file() and bx.digest(Path(path).read_bytes())==digest for path,digest in input_artifacts.items()),"计算期间角色模板变化，请重新 evaluate。",location="/template_xml")
     destination=run/"candidates"/args.name
     requested=bx.serialise(document)
     write_text(destination/"requested.xml",requested)
@@ -1123,7 +1272,7 @@ def evaluate(args):
     outcome={"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"name":plan.get("name",args.name),"evaluated_at":now(),
              "engine_version":result["engine_version"],"engine_fingerprint":result["engine_fingerprint"],"intent_hash":state["intent_hash"],
              "original_sha256":state["original_sha256"],"xml_sha256":bx.digest(xml),"requested_sha256":bx.digest(requested),"roundtrip_verified":True,
-             "source_plan":str(plan_path),"source_plan_sha256":source_plan_sha256,
+             "source_plan":str(plan_path),"source_plan_sha256":source_plan_sha256,"input_artifacts":input_artifacts,
              "evidence_folder":str(plan_path.parent),"baseline":baseline,"result":{k:v for k,v in result.items() if k!="xml"},
              "plan":plan,"crafted_items":crafted,"tree_diagnostics":tree_diagnostics,**assessment}
     outcome["next_actions"]=delivery_actions(outcome,plan_path,destination/"evaluation.json",destination/"review.json")
@@ -1224,6 +1373,7 @@ def read_candidate(args):
     bx.require(outcome["intent_hash"]==state.get("intent_hash") and outcome["original_sha256"]==state["original_sha256"],"意图或原始角色变化，请重算。")
     source_plan=Path(outcome["source_plan"])
     bx.require(source_plan.is_file() and bx.digest(source_plan.read_bytes())==outcome["source_plan_sha256"],"源计划被修改或移动，请使用源计划重新 evaluate。",location="/source_plan",input_file=str(source_plan))
+    bx.require(input_artifacts_current(outcome),"角色模板变化，请重新 evaluate。",location="/template_xml")
     xml=(folder/"candidate.xml").read_text(encoding="utf-8")
     bx.require(bx.digest(xml)==outcome["xml_sha256"],"候选 XML 被修改，请重新 evaluate。")
     bx.require(bx.digest((folder/"requested.xml").read_text(encoding="utf-8"))==outcome["requested_sha256"],"请求 XML 被修改，请重新 evaluate。")
@@ -1468,7 +1618,7 @@ def research(args):
             "next": "读取 gems[skill_id].native 的技能原文、使用门槛和 level_requirements[].base_resources 基础资源，以及 choices 的网页章节/任务/NPC/职业。基础数据不等于完整连线实算；两类依据不能互相替代。已返回字段无需重复 catalog。未核实条目需另查，不能自填 verified。"}
 
 
-def route_snapshots(route,native,root,folder,output):
+def route_snapshots(route,native,root,folder,output,*,gems=None):
     """Materialize declared key stages through the same XML and native interfaces."""
     records={}
     for stage_index,stage in enumerate(route["stages"]):
@@ -1481,7 +1631,9 @@ def route_snapshots(route,native,root,folder,output):
                 record["reason"]="未确认角色等级，不能生成精确实算。"; continue
             if snap.get("template_xml"):
                 path=Path(snap["template_xml"])
-                source=bx.read_document(path if path.is_absolute() else folder/path)
+                path=(path if path.is_absolute() else folder/path).resolve()
+                record["input_artifacts"]={str(path):bx.digest(path.read_bytes())}
+                source=bx.read_document(path)
             else:
                 source=bx.parse(native["xml"])
             operations=copy.deepcopy(snap.get("operations",{}))
@@ -1532,10 +1684,13 @@ def route_snapshots(route,native,root,folder,output):
                 write_text(directory/"snapshot.xml",saved)
                 write_json(cache_path,{"request_sha256":bx.digest(requested),"result":calculated,
                                       "result_sha256":bx.digest(json.dumps(calculated,sort_keys=True,ensure_ascii=False,allow_nan=False))})
-            tree_details,tree_repairs=native_tree_diagnostics(root,document,calculated,op_path+"/tree",tree_operations=snap.get("operations",{}).get("tree"))
+            limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points") if stage.get(key) is not None}
+            tree_details,tree_repairs=native_tree_diagnostics(root,document,calculated,op_path+"/tree",tree_operations=snap.get("operations",{}).get("tree"),limits=limits,usage_plan=snap)
+            gem_repairs=native_gem_diagnostics(root,document,calculated,stage_index=stage_index,gems=gems,limits=limits,usage_plan=snap)
+            bx.require(all(Path(path).is_file() and bx.digest(Path(path).read_bytes())==digest for path,digest in record.get("input_artifacts",{}).items()),"计算期间阶段模板变化，请重算。",location=f"/stages/{stage_index}/snapshot/template_xml")
             record.update(status="calculated",xml_path=str(directory/"snapshot.xml"),xml_sha256=bx.digest(saved),engine_fingerprint=calculated["engine_fingerprint"],
                           result=calculated,document=document,directory=directory,crafted_items=crafts,
-                          tree_diagnostics=tree_details,diagnostics=tree_repairs,
+                          tree_diagnostics=tree_details,diagnostics=tree_repairs+gem_repairs,
                           configuration_context={**configuration,"resolved_values":calculated.get("config_values",{})})
         except (ValueError,KeyError,TypeError,IndexError,OSError) as exc:
             record.update(failure_record(exc,f"/stages/{stage_index}/snapshot"))
@@ -1603,7 +1758,7 @@ def calculate_route(args):
     registry=facts.load_evidence(route.get("evidence",[]),path.parent,context,root=root)
     claims=facts.assess_claims(route.get("claims",[]),registry,{"catalog":calculation},specification=route,engine_fingerprint=calculation["engine_fingerprint"])
     checked,warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
-    snapshots=route_snapshots(checked,calculation,root,path.parent,output)
+    snapshots=route_snapshots(checked,calculation,root,path.parent,output,gems=gems)
     for stage in checked["stages"]:
         value=snapshots.get(stage["stage_id"],{}).get("result")
         if value:
@@ -1636,7 +1791,8 @@ def calculate_route(args):
         for slot,base in stage.get("bases",{}).items():
             if actual_bases.get(slot)!=base: errors.append("快照装备与阶段声明的基底不一致："+slot)
         relevant=[c for c in claims if {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
-        audit=resources.assess(value,checked,{k:stage["snapshot"][k] for k in ("usage","timeline") if k in stage["snapshot"]},relevant)
+        limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points") if stage.get(key) is not None}
+        audit=resources.assess(value,limits,{k:stage["snapshot"][k] for k in ("usage","timeline") if k in stage["snapshot"]},relevant)
         stage_native["resources:stage:"+sid]={**audit,"engine_fingerprint":value["engine_fingerprint"],"xml_sha256":value.get("xml_sha256"),"origin":"program_assessment"}
         errors+=audit["errors"]; notes+=audit["warnings"]; gaps+=audit["pending"]
         texts=bx.item_texts(document)
@@ -1736,14 +1892,16 @@ def calculate_route(args):
                     **{k:v for k,v in s.get("calculation",{}).items() if k in {"xml_path","diagnostic","reason"}}} for s in checked["stages"]]
     bx.require(engine.fingerprint(root)==calculation["engine_fingerprint"],"路线核对期间引擎变化，旧阶段缓存自动失效；待更新完成后重试同一 route 命令。")
     bx.require(bx.digest(path.read_bytes())==input_sha256,"核对期间源路线变化，请重跑 route。",location="/input",input_file=str(path))
+    bx.require(input_artifacts_current(checked),"核对期间阶段模板变化，请重跑 route。",location="/stages")
     evidence_file=output.with_suffix(".evidence.json")
     review_file=output.with_suffix(".review.json")
     actions=delivery_actions({k:checked[k] for k in ("errors","pending","diagnostics","reference_contract")}|{"status":checked["delivery_status"]},path,evidence_file,review_file,"/checked_route")
     write_json(review_file,review)
-    write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings})
+    write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings,"next_actions":actions})
     write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))
     progress=read_json(output.with_suffix(".state.json"))
     write_json(output.with_suffix(".state.json"),{**progress,"phase":"exported","file_exported":True,"status":checked["delivery_status"],"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":calculation["engine_fingerprint"],
+               "input_artifacts":{filename:digest for stage in checked["stages"] for filename,digest in stage.get("calculation",{}).get("input_artifacts",{}).items()},
                "files":{str(p):bx.digest(p.read_bytes()) for p in (output,evidence_file,review_file)},"review_token":review["token"],
                "stages":{row["stage_id"]:{k:v for k,v in row.items() if k not in {"stage_id","name"}} for row in stage_summary if row["status"]!="not_calculated"},
                "delivery_brief":checked["delivery_brief"],"next_actions":actions})
@@ -1763,9 +1921,10 @@ def workflow_status(args):
         intact=bool(files) and all(Path(name).resolve().parent==location.parent and Path(name).is_file() and bx.digest(Path(name).read_bytes())==digest for name,digest in files.items())
         root=engine.resolve_root(args.pob)
         current=engine.fingerprint(root)==state.get("engine_fingerprint")
-        ready=unchanged and intact and current and state.get("file_exported") is True
-        return {"entrypoint":execution_entrypoint(),"phase":state["phase"],"status":state.get("status"),"failure":state.get("failure"),"delivery_brief":state.get("delivery_brief"),"file_exported":ready,"input_unchanged":unchanged,"files_intact":intact,"engine_unchanged":current,
-                "state_file":str(location),"completed_stages":[sid for sid,row in state.get("stages",{}).items() if unchanged and current and (row.get("native_calculated") or row.get("status")=="calculated")],
+        dependencies_current=input_artifacts_current(state)
+        ready=unchanged and intact and current and dependencies_current and state.get("file_exported") is True
+        return {"entrypoint":execution_entrypoint(),"phase":state["phase"],"status":state.get("status"),"failure":state.get("failure"),"delivery_brief":state.get("delivery_brief"),"file_exported":ready,"input_unchanged":unchanged,"files_intact":intact,"engine_unchanged":current,"input_artifacts_unchanged":dependencies_current,
+                "state_file":str(location),"completed_stages":[sid for sid,row in state.get("stages",{}).items() if unchanged and current and dependencies_current and (row.get("native_calculated") or row.get("status")=="calculated")],
                 "stage_summary":state.get("stages",{}),
                 "next_actions":state.get("next_actions",[]) if state.get("next_actions") and (ready or state["phase"]=="failed") else [{"action":"resume_route" if not ready else "resolve_route" if state.get("status") in {"blocked","draft"} else "review_delivery","input":str(source),"output":state.get("output"),"reference":"references/leveling.md"}],
                 "scope":"文件完成需要输入、输出与当前引擎一致；completed_stages仅指原生计算已完成，阶段合法性与依赖看stage_summary。恢复时重新核对来源与判断。"}
@@ -1812,7 +1971,10 @@ def parser():
             cmd.add_argument("--invoked",action="store_true")
             cmd.add_argument("--kind",choices=["plan","route"],required=True)
             cmd.add_argument("--file",required=True,help="唯一源方案 JSON；不存在时创建草案")
-            cmd.add_argument("--changes",required=True,help="set 增量记录、replace 精确字段/数组、remove 路径、review_claims 重新评审标识")
+            change=cmd.add_mutually_exclusive_group(required=True)
+            change.add_argument("--changes",help="set 增量记录、replace 精确字段/数组、remove 路径、review_claims 重新评审标识")
+            change.add_argument("--proposal-file",help="evaluate/route 返回的完整计算凭证；程序读取其中的提案修改")
+            cmd.add_argument("--proposal-id",help="本次 next_actions 返回的原生候选标识；无需抄写修改内容")
             cmd.add_argument("--if-sha256",help="已有文件需使用上次返回的 revision；同一请求重试自动去重")
         if name=="view":
             cmd.add_argument("--file",required=True,help="获准任务工作区中已保存的JSON")
@@ -1962,6 +2124,14 @@ def main(argv=None):
             for field in ("facts_summary","next","reply_policy","scope"):
                 if field in result and isinstance(result[field],str): result[field]=result[field][:1800]
             result.update(details_file=str(details),output_scope="终端摘要；完整数值、条件和全部缺口已保存在 details_file，请按字段读取。")
+            if args.command in {"evaluate","route"}:
+                actions=result.get("next_actions",[])
+                result["next_actions"]=[{k:v for k,v in action.items() if k!="diagnostics"} for action in actions]
+                total=len(actions)
+                while len(json.dumps(result,ensure_ascii=False))>10500 and result["next_actions"]: result["next_actions"].pop()
+                if len(result["next_actions"])<total:
+                    result["next_actions"].append({"action":"view","file":str(details),"pointer":"/next_actions","offset":len(result["next_actions"]),"limit":5})
+                result["next_actions_total"]=total
         result["entrypoint"]=execution_entrypoint()
         result["runtime"]={**engine.PERFORMANCE,"elapsed_seconds":round(time.perf_counter()-started,4)}
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, allow_nan=False))
