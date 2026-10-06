@@ -76,7 +76,7 @@ delivery_brief 从全部 errors/pending 生成状态和缺口类别；next_actio
 
 先读取 next_actions.review_current_result 指向的当前 facts.objective_coverage 和 facts.pending，再按 review_template 逐项评审。模板列出所有用户 objective_id 和判断 claim_id，scope/findings 留空；objectives 与 conclusions 分别覆盖当次全部 ID，缺 claim 的目标也必须记录未实现部分。重复 ID 报具体位置，陌生 ID 及遗漏保留 draft，coverage 列出差异。只有总评或只有判断评审的旧记录可追溯，但不能代替完整目标复核。程序只核对覆盖与摘要；这些文字不能消除原有物资、资源、目标或机械缺口，也不证明目标已经达到。
 
-token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源/预算和数值；改变后旧复核失效。`final_review:missing/stale` 保留 draft，findings/unresolved 不改写机械矛盾或其他缺口。此步骤只证明模型复核针对这一版，不证明语言无误；不要用脚本自动填 token，不能以复核记录宣称全部机制验证。
+token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源/预算和数值；改变后旧复核失效。reference_contract.identity_references 区分 character（当前原生角色状态）、input_bytes（提交给引擎的 XML 字节）与 saved_bytes（声明保存文件字节）。判断角色一致性选 character 的实际引用；原生保存可能重排 XML，使 input_bytes 改变，即使角色不变。显式引用的文件摘要改变仍须复核，不能删掉摘要校验强行放行。`final_review:missing/stale` 保留 draft，按 export 后的新 review/next_actions 核查；findings/unresolved 不改写机械矛盾或其他缺口。此步骤只证明模型复核针对这一版，不证明语言无误；不要用脚本自动填 token，不能以复核记录宣称全部机制验证。
 
 候选名称为1–48位小写英文/数字/连字符。原件、意图、请求 XML、候选记录/文件及引擎内容都有完整性校验；直接手改输出会要求重算。baseline 缓存按意图、共同场景、引擎及适配版本区分，各候选保留自己的基准。
 
@@ -84,7 +84,7 @@ probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。�
 
 export 再复算并重核来源和复核 token。blocked 只输出诊断 HTML；draft 输出配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json、review.json、delivery.json。只有 XML 与 HTML 均落盘后 delivery.file_exported 才为 true，清除同候选旧状态的另一 XML 文件；可捕获失败记录 failed/last_operation，并取消本次交付成功身份。进程被强制终止仍可能留下 preparing/exporting，由 status 核对后恢复。无 URL 的本地证据仍正常展示。
 
-publication 是 HTML、最终核验与 facts_summary 的共同事实来源，包含全部缺口类别、实际数值、所列比较和预算/时间线的三值结论，以及当前 capabilities。delivery_brief.valid_statuses 列出真实交付状态；next_actions 区分可修复依赖与接口能力缺口。聊天先沿用它的状态与事实，再解释模型取舍；预算 null、时间线 unknown 保持对应条件。尚未支持的测量不能靠补输入或填写 token 变成已支持，未来取得/进度也不必伪装成已经发生。checks 与自审仍不证明全部机制或实战效果。
+publication 是 HTML、最终核验与 facts_summary 的共同事实来源，包含全部缺口类别、实际数值、所列比较和预算/时间线的三值结论，以及当前 capabilities。资源 window.final 是 duration_seconds 时点的储量，包含末次动作之后的固定净回复；trace 最后一行是最后动作时点，不能互换。execution_coverage 单列整套动作可执行性的未测范围；各资源支付通过不能替它背书。delivery_brief.valid_statuses 列出真实交付状态；next_actions 区分可修复依赖与接口能力缺口。聊天先沿用它的状态与事实，再解释模型取舍；预算 null、时间线 unknown 保持对应条件。尚未支持的测量不能靠补输入或填写 token 变成已支持，未来取得/进度也不必伪装成已经发生。checks 与自审仍不证明全部机制或实战效果。
 
 直接交付返回路径，避免另做未经绑定的复制/改名/说明。draft 不改名为改进配装；聊天先说明 delivery_brief 的真实状态与全部剩余类别，再说明已有收益、代价和用户下一步。原生能力缺口可以保留为条件规划；已知非法输入、可修复字段遗漏和来源404不能靠填写复核 token 变成成品。
 

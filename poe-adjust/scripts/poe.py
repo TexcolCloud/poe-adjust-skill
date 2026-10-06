@@ -23,7 +23,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.10"
+VERSION = "2.8.11"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
@@ -562,6 +562,25 @@ def prepared(original, intent, *, baseline=False, scenario=None):
         root.find("Build").set("mainSocketGroup", str(intent["baseline_main_group"]))
     return root
 
+def measured_calculation(root, document, measurement):
+    result=engine.calculate(root,bx.serialise(document))
+    if not measurement: return document,result
+    selected_before={key:result.get(key) for key in ("main_skill","main_group")}
+    measured,audit=bx.apply_measurement(document,measurement,result)
+    if bx.serialise(measured)!=bx.serialise(document): result=engine.calculate(root,bx.serialise(measured))
+    for control in measurement.get("effects",[]):
+        for gem in result.get("gems",[]):
+            for effect in gem.get("granted_effects",[]):
+                if effect["id"]==control["skill_id"]:
+                    bx.require(effect.get("global_enabled")==control["enabled"],"原生效果开关没有保留共同测量条件。",location="/measurement/effects",expected=control,actual=effect)
+    for item in result.get("equipped",[]):
+        if item.get("type")=="Flask" and "flasks_enabled" in measurement:
+            bx.require(item.get("active")==measurement["flasks_enabled"],"原生药剂开关没有保留共同测量条件。",location="/measurement/flasks_enabled",expected=measurement["flasks_enabled"],actual=item)
+    result["measurement_audit"]={**audit,"selected_main_before":selected_before,
+                                 "selected_main_after":{key:result.get(key) for key in ("main_skill","main_group")}}
+    return measured,result
+
+
 def active_slot(name, result):
     slot = next((row for row in result.get("slots", []) if row["name"] == name), None)
     if slot is not None: return slot.get("active", True)
@@ -772,7 +791,8 @@ def check_constraints(original, document, before, after, intent, plan, equipment
     if intent.get("target_level") is not None and after["level"] != intent["target_level"]: errors.append("候选等级与用户确认的目标等级不一致。")
     if after["tree_version"] != before["tree_version"]: errors.append("候选天赋版本发生变化，需原生迁移及新的版本依据，不能直接改 treeVersion。")
     for flag,field,label in (("allow_class_change","class","职业"),("allow_ascendancy_change","ascendancy","升华"),("allow_main_skill_change","main_skill","主技能")):
-        if before[field] != after[field]:
+        original_value=before.get("measurement_audit",{}).get("selected_main_before",{}).get(field,before[field]) if field=="main_skill" else before[field]
+        if original_value != after[field]:
             if intent.get(flag) is False: errors.append("用户明确要求保留"+label+"。")
             elif intent.get(flag) is None: pending.append("permission:"+flag)
     if before.get("secondary_ascendancy_id") != after.get("secondary_ascendancy_id"):
@@ -886,20 +906,12 @@ def compare(before, after, comparable=True):
             result[key]={"before":a,"after":b,"delta":b-a,"percent":(b-a)/abs(a)*100 if a and comparable else None,"scope":"native_snapshot"}
     return result
 
-def semantics(result):
-    return {"class": result["class"], "ascendancy": result["ascendancy"], "secondary_ascendancy_id": result.get("secondary_ascendancy_id"), "level": result["level"], "tree_version": result["tree_version"],
-            "config_values": result.get("config_saved_values", result["config_values"]),
-            "nodes": result["nodes"], "mastery_selections":result.get("mastery_selections"), "main_skill": result["main_skill"], "main_group": result["main_group"],
-            "gems": [{key: gem.get(key) for key in ("group", "index", "id", "source", "level", "quality", "enabled", "group_enabled", "slot", "matches_socket", "socket_quality_bonus", "count", "group_count", "skill_part", "skill_stage_count", "skill_minion", "main_active_skill", "include_in_full_dps")} for gem in result["gems"]],
-            "equipped": [{key: item.get(key) for key in ("slot", "id", "name", "base", "active")} for item in result["equipped"]]}
-
-
 def roundtrip(root, result, document, plan=None):
     bx.verify_selections(document,result,(plan or {}).get('operations'))
     saved = bx.preserve_extensions(document, bx.parse(result["xml"]))
     xml = bx.serialise(saved)
     reloaded = engine.calculate(root, xml, cache=False)
-    bx.require(semantics(result) == semantics(reloaded), "XML 回读后配置、装备、天赋或技能发生变化，未通过导出检查。")
+    bx.require(engine.character_state(result) == engine.character_state(reloaded), "XML 回读后配置、装备、天赋或技能发生变化，未通过导出检查。")
     for key in result["stats"].keys() | reloaded["stats"].keys():
         a, b = result["stats"].get(key), reloaded["stats"].get(key)
         if type(a) not in (int,float) and type(b) not in (int,float):
@@ -946,6 +958,8 @@ def calculation_facts(result, claims=()):
         for ref in claim.get("evidence_refs", []):
             if "#/stats/" in ref: referenced.add(ref.split("#/stats/", 1)[1])
     return {"xml_sha256": result.get("xml_sha256") or result.get("input_xml_sha256"), "engine_fingerprint": result.get("engine_fingerprint"),
+            "character_identity":result.get("character_identity"),
+            "measurement_audit":result.get("measurement_audit",{}),
             "level": result.get("level"), "class": result.get("class"), "class_id":result.get("class_id"), "ascendancy": result.get("ascendancy"),"ascendancy_id":result.get("ascendancy_id"),
             "points":result.get("points"),"nodes":result.get("nodes"),"ascendancy_points":result.get("ascendancy_points"),"secondary_ascendancy_points":result.get("secondary_ascendancy_points"),
             "main_skill": result.get("main_skill"), "main_skill_name": result.get("main_skill_name"),
@@ -954,7 +968,7 @@ def calculation_facts(result, claims=()):
             "available_stat_keys":sorted(result.get("stats",{})),
             "stat_metadata":{k:v for k,v in result.get("stat_metadata",{}).items() if k in set(METRICS)|referenced},
             "active_skills": result.get("active_skills", []), "damage_sources": result.get("damage_sources", []),
-            "equipped":result.get("equipped",[]),"resource_rules":result.get("resource_rules",{}),
+            "gems":result.get("gems",[]),"equipped":result.get("equipped",[]),"resource_rules":result.get("resource_rules",{}),
             "scope": "当前配置与所列主体的原生快照；参考技能必须用其 skill_ref，主技能面板不能代替副技能或阶段。"}
 
 
@@ -991,6 +1005,10 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                                "text":name+" · 当前主技能主体："+str(main.get("actor","未知"))+"；伤害、吸取与回复按该主体和资源账目分别读取，面板值不能互相借用。"})
     audits=resource_audits if resource_audits is not None else {"candidate":readiness} if readiness else {}
     for name,audit in audits.items():
+        execution=audit.get("execution_coverage")
+        if execution:
+            statements.append({"kind":"execution_coverage","subject":name,**execution,
+                               "text":name+" · 整套动作执行覆盖："+execution["scope"]})
         payments=audit.get("single_payments",[])
         if payments:
             counts=Counter(row["status"] for row in payments)
@@ -1008,8 +1026,10 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                                      unknown="所列窗口支付尚未证实，具体费用/窗口缺口见时间线。")
         for resource in audit.get("timeline",{}).get("resources",[]) if audit.get("timeline") else []:
             state=resource["status"] if finite else "supported" if resource["status"]=="supported" and resource["repeatable"] else "refuted" if resource["status"]=="refuted" else "unknown"
+            window={"at":resource["duration_seconds"],"initial":resource["initial"],"final":resource.get("final"),"last_event_at":resource["trace"][-1]["at"] if resource["trace"] else None,"gaps":resource["gaps"]}
+            values=f" 窗口起点 {window['initial']:g}，{window['at']:g} 秒终点 {window['final']:g}；终点包含最后动作后的固定净回复。" if bx.finite_number(window["initial"]) and bx.finite_number(window["final"]) else " 未测得完整窗口终点；不能用最后一次动作储量替代。"
             statements.append({"kind":"resource","calculation":name,"subject":resource["resource_id"],"status":state,
-                               "text":name+" · "+resource["resource_id"]+"："+resource_messages[state]})
+                               "window":window,"text":name+" · "+resource["resource_id"]+"："+resource_messages[state]+values})
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
             "facts_summary":"\n\n".join([s["text"] for s in statements]+[m["text"] for m in measurements]),
             "scope":"仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
@@ -1247,6 +1267,17 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     pending = native_gaps + constraint_pending + audit["pending"] + coverage_pending
     scene_diagnostics=facts.configuration_diagnostics(claims,{"candidate":result})
     if scene_diagnostics: pending.append("config:scenario")
+    measurement=plan.get("measurement",{})
+    measurement_diagnostics=[]
+    if measurement and not facts.has_claim(claims,"measurement"):
+        pending.append("condition:measurement")
+        measurement_diagnostics.append({"code":"measurement_review_missing","action":"review_configuration","location":"/measurement","subject":"measurement",
+            "message":"按两份实际 gems.granted_effects、equipped 和 measurement_audit 评审共同条件；配置开关不能证明实际效果覆盖。"})
+    for control in measurement.get("effects",[]):
+        instances=[row for calculation in (baseline,result) for row in calculation.get("measurement_audit",{}).get("effects",[]) if row["skill_id"]==control["skill_id"] and row["status"]=="applied"]
+        if not instances:
+            pending.append("condition:measurement:"+control["skill_id"])
+            measurement_diagnostics.append({"code":"measurement_effect_absent","action":"edit_input","location":"/measurement/effects","subject":control["skill_id"],"message":"两份角色均没有此效果；核对本次效果 ID 或删除无关测量条件。"})
     pending += ["claim_revision:"+claim["claim_id"] for claim in claims if any(d["code"] in {"claim_binding_stale","claim_binding_missing"} for d in claim["diagnostics"])]
     pending += ["claim_check:"+claim["claim_id"] for claim in claims if claim["check_status"] in {"refuted","unknown"}]
     pending += ["material:"+value for value in budget["unresolved"]]
@@ -1278,7 +1309,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
          "pending": list(dict.fromkeys(pending)), "errors": errors}, assessment)
     pending += review_pending
     errors, pending = list(dict.fromkeys(errors)), list(dict.fromkeys(pending))
-    diagnostics=list(audit.get("diagnostics",[]))+goal_diagnostics+scene_diagnostics+facts.claim_diagnostics(claims)
+    diagnostics=list(audit.get("diagnostics",[]))+goal_diagnostics+scene_diagnostics+measurement_diagnostics+facts.claim_diagnostics(claims)
     for objective in coverage:
         diagnostics.extend({**row,"subject":objective["required_subject"],"category":"input","status":"unknown"} for row in objective["diagnostics"])
     for category,messages in (("mechanical",mechanical_errors),("user_constraint",constraint_errors),("usage",audit["errors"]),("budget",["已知采购成本下界超过用户预算。"] if budget["over_budget"] else [])):
@@ -1295,7 +1326,8 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
                           "usage":"failed" if audit["errors"] else "unknown" if audit["pending"] else "model_assessed",
                           "target_version":version["status"], "goal":"model_assessed" if "goal_assessment" not in pending else "unresolved",
                           "scope":"程序核对结构、可用原生事实和证据引用；目标取舍、来源语义、效果覆盖仍是模型判断，不是实战保证。"},
-            "configuration_audit":{"original_inputs":[dict(n.attrib) for n in bx.active_config(original).findall("Input")],"common_changes":plan.get("scenario",{}),"user_required":intent.get("scenario",{}),"candidate_changes":plan.get("operations",{}).get("config",{}),"baseline_actual":baseline.get("config_values",{}),"candidate_actual":result.get("config_values",{})},
+            "configuration_audit":{"original_inputs":[dict(n.attrib) for n in bx.active_config(original).findall("Input")],"common_changes":plan.get("scenario",{}),"measurement":measurement,
+                "measurement_actual":{"baseline":baseline.get("measurement_audit",{}),"candidate":result.get("measurement_audit",{})},"user_required":intent.get("scenario",{}),"candidate_changes":plan.get("operations",{}).get("config",{}),"baseline_actual":baseline.get("config_values",{}),"candidate_actual":result.get("config_values",{})},
             "diagnostics":diagnostics,"reference_contract":references,"budget":budget,"readiness":audit,"objective_coverage":coverage,"claims":claims,"evidence":evidence,"target_version_evidence":version,
             "review_packet":review,
             "equipment_changes":equipment,"actual_changes":actual_changes(baseline,result,equipment),"comparison_notes":comparison_notes,"comparison":compare(baseline,result,not comparison_notes)}
@@ -1320,14 +1352,14 @@ def evaluate(args):
     engine.validate_game_version(intent.get("game_version"), intent["league"], info.get("data_version"))
     native = engine.calculate(root, catalog="rules")
     scenario = plan.get("scenario", {})
-    context_hash = bx.digest(json.dumps({"intent":state["intent_hash"], "scenario":scenario,"engine":info["engine_fingerprint"],"skill":VERSION},sort_keys=True,ensure_ascii=False,allow_nan=False))
+    context_hash = bx.digest(json.dumps({"intent":state["intent_hash"], "scenario":scenario,"measurement":plan.get("measurement",{}),"engine":info["engine_fingerprint"],"skill":VERSION},sort_keys=True,ensure_ascii=False,allow_nan=False))
     base_path = run / "baseline.json"
     cached = read_json(base_path) if base_path.exists() else {}
     if (cached.get("context_hash")==context_hash and cached.get("skill_version")==VERSION and cached.get("engine_fingerprint")==info["engine_fingerprint"]
             and bx.digest(base_path.read_text(encoding="utf-8"))==state.get("baseline_sha256")):
         baseline=cached
     else:
-        baseline=engine.calculate(root,bx.serialise(prepared(original,intent,baseline=True,scenario=scenario)))
+        _,baseline=measured_calculation(root,prepared(original,intent,baseline=True,scenario=scenario),plan.get("measurement",{}))
         baseline.update(context_hash=context_hash,skill_version=VERSION,intent_hash=state["intent_hash"])
         write_json(base_path,baseline)
     state["baseline_sha256"]=bx.digest(base_path.read_text(encoding="utf-8"))
@@ -1339,7 +1371,7 @@ def evaluate(args):
         source=bx.read_document(path)
     resolved, crafted = materialize_items(plan,root)
     document=bx.apply_plan(prepared(source,intent,scenario=scenario),resolved,native=native)
-    result=engine.calculate(root,bx.serialise(document))
+    document,result=measured_calculation(root,document,plan.get("measurement",{}))
     bx.require(result["engine_fingerprint"]==baseline["engine_fingerprint"]==native["engine_fingerprint"]==info["engine_fingerprint"],"计算期间引擎内容发生变化，请更新完成后重算。")
     tree_diagnostics,tree_repairs=native_tree_diagnostics(root,document,result,tree_operations=plan.get("operations",{}).get("tree"),limits=intent,usage_plan=plan)
     gem_repairs=native_gem_diagnostics(root,document,result,limits=intent,usage_plan=plan)
@@ -1577,7 +1609,8 @@ def export(args):
     verification=engine.calculate(root,xml,cache=False)
     verification["xml_sha256"]=bx.digest(xml)
     bx.require(verification["engine_fingerprint"]==outcome["engine_fingerprint"],"最终复算期间引擎变化。")
-    bx.require(semantics(verification)==semantics(outcome["result"]),"最终复算角色状态与候选记录不同，请重算。")
+    bx.require(engine.character_state(verification)==engine.character_state(outcome["result"]),"最终复算角色状态与候选记录不同，请重算。")
+    if "measurement_audit" in outcome["result"]: verification["measurement_audit"]=outcome["result"]["measurement_audit"]
     for key in verification["stats"].keys()|outcome["result"]["stats"].keys():
         a,b=verification["stats"].get(key),outcome["result"]["stats"].get(key)
         equal=math.isclose(a,b,rel_tol=1e-8,abs_tol=1e-5) if type(a) in (int,float) and type(b) in (int,float) else a==b

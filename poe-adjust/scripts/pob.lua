@@ -347,6 +347,20 @@ table.sort(result.nodes)
 for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
   for gemIndex, gem in ipairs(group.gemList) do
     local grantedEffect = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
+    local grantedEffects = setmetatable({}, {__jsontype = "array"})
+    for effectIndex, effect in ipairs(gem.gemData and gem.gemData.grantedEffectList or {grantedEffect}) do
+      local types, present = setmetatable({}, {__jsontype = "array"}), false
+      for name, id in pairs(SkillType) do if effect.skillTypes and effect.skillTypes[id] then table.insert(types, name) end end
+      table.sort(types)
+      for _, skill in ipairs(mainEnv.player.activeSkillList) do
+        if skill.activeEffect.srcInstance == gem and skill.activeEffect.grantedEffect == effect then present = true; break end
+      end
+      table.insert(grantedEffects, {index = effectIndex, id = effect.id, name = effect.name,
+        has_global_effect = effect.hasGlobalEffect == true, global_enabled = gem["enableGlobal"..effectIndex] == true,
+        skill_types = types, support = effect.support == true, active_skill_present = present})
+      -- The editable spelling is an interface field, its meaning comes from this effect's position.
+      if effect.hasGlobalEffect and effectIndex <= 2 then grantedEffects[#grantedEffects].operation_field = "enable_global"..effectIndex end
+    end
     if (group.enabled or groupIndex == result.main_group) and group.slotEnabled and gem.enabled then
       for effectIndex, effect in ipairs(gem.gemData and gem.gemData.grantedEffectList or {grantedEffect}) do
         if effect.skillTypes and effect.skillTypes[SkillType.Guard] and effect.hasGlobalEffect and not gem["enableGlobal"..effectIndex] then
@@ -361,6 +375,8 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
     table.sort(supported)
     table.insert(result.gems, {group = groupIndex, index = gemIndex, id = gem.skillId, name = gem.nameSpec,
       enabled = gem.enabled, group_enabled = group.enabled, slot = group.slot, source = group.source, level = gem.level, quality = gem.quality,
+      slot_enabled = group.slotEnabled, enable_global1 = gem.enableGlobal1 == true, enable_global2 = gem.enableGlobal2 == true,
+      granted_effects = grantedEffects,
       count = gem.count or 1, group_count = group.groupCount or 1,
       skill_part = gem.skillPart, skill_stage_count = gem.skillStageCount, skill_minion = gem.skillMinion,
       -- SkillsTab.Load uses first active and false when these optional fields
@@ -380,6 +396,13 @@ end
 for name, slot in pairs(build.itemsTab.slots) do
   local item = build.itemsTab.items[slot.selItemId]
   if item then
+    local nativeSlot = slot.weaponSet == 2 and name:gsub(" Swap", "") or name
+    local effective = mainEnv.player.itemList[nativeSlot]
+    local included = effective == item and (not slot.weaponSet or slot.weaponSet == (build.itemsTab.activeItemSet.useSecondWeaponSet and 2 or 1))
+    if item.type == "Flask" then included = mainEnv.flasks[item] == true
+    elseif item.type == "Tincture" then included = mainEnv.tinctures[item] == true end
+    local allocated
+    if slot.nodeId then allocated = mainEnv.allocNodes[slot.nodeId] ~= nil end
     local unparsed = {}
     for _, field in ipairs({"implicitModLines", "explicitModLines", "enchantModLines", "scourgeModLines", "crucibleModLines"}) do
       for _, mod in ipairs(item[field] or {}) do
@@ -387,6 +410,10 @@ for name, slot in pairs(build.itemsTab.slots) do
       end
     end
     table.insert(result.equipped, {slot = name, id = slot.selItemId, name = item.name, base = item.baseName, base_recognised = item.base ~= nil,
+      type = item.type, text = item:BuildRaw(), assigned = true,
+      socket_node_id = slot.nodeId, socket_allocated = allocated,
+      effective_in_calculation = included,
+      activity_source = "Native MAIN player.itemList/flasks/tinctures; assignment and activation flag are separate from effective inclusion",
       active = slot.active, sockets = item.sockets, weapon_set = slot.weaponSet,
       valid_for_slot = build.itemsTab:IsItemValidForSlot(item, name) == true,
       socket_colours_always_match = item.sockets and item.sockets.colourAlwaysMatches or false,

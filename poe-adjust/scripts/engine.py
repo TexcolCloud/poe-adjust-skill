@@ -299,6 +299,17 @@ def validate_game_version(game_version, league, data_version=None, version_sourc
         raise EngineError(f"目标游戏版本 {game_version} 与本机机制/宝石数据 {data_version} 不一致。仅切换旧天赋树不能还原旧版规则，需要维护者提供经过验证的对应引擎。",diagnostic={"code":"unsupported_context","location":"/game_version","expected":data_version,"actual":game_version,"action":"select_matching_engine","retryable":False})
 
 
+def character_state(result):
+    """Canonical native active role; transport bytes and cached panels are separate."""
+    return {**{key:result.get(key) for key in ("class","class_id","ascendancy","ascendancy_id","secondary_ascendancy_id","level","tree_version","main_skill","main_group","use_second_weapon_set")},
+            "config_values":result.get("config_saved_values",result.get("config_values",{})),
+            "nodes":sorted(result.get("nodes",[])),"mastery_selections":result.get("mastery_selections"),
+            "gems":[{key:gem.get(key) for key in ("group","index","id","source","level","quality","enabled","group_enabled","slot","slot_enabled","matches_socket","socket_quality_bonus","count","group_count","skill_part","skill_stage_count","skill_minion","main_active_skill","include_in_full_dps","enable_global1","enable_global2","granted_effects")}
+                    for gem in sorted(result.get("gems",[]),key=lambda row:(row.get("group",0),row.get("index",0)))],
+            "equipped":[{key:item.get(key) for key in ("slot","id","name","base","text","active","socket_node_id","socket_allocated","effective_in_calculation")}
+                        for item in sorted(result.get("equipped",[]),key=lambda row:row.get("slot",""))]}
+
+
 def validate_contract(result, *, catalog_only=False):
     """Check the requested interface, not unrelated gameplay capabilities."""
     if catalog_only:
@@ -511,6 +522,8 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     for calculation in result.get("calculations", [result]):
         validate_contract(calculation, catalog_only=bool(catalog or queries) and not health_probe and not xml_batch and not crafts)
         calculation.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
+        calculation["character_identity"]={"digest":bx.digest(json.dumps(character_state(calculation),ensure_ascii=False,sort_keys=True,allow_nan=False)),
+            "basis":"current_native_active_state","scope":"当前原生配置、天赋、技能效果开关与装备规格；不等于输入 XML 字节摘要，不证明机制或实战可行。"}
         if info["available_tree_versions"] and calculation.get("latest_tree_version") and calculation["latest_tree_version"] not in info["available_tree_versions"]:
             raise EngineError("运行中的天赋数据与安装元数据不一致，请等更新完成后重试。")
         entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("secondary_ascendancies", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", []) + calculation.get("granted_passives", [])

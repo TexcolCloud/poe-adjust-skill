@@ -377,8 +377,11 @@ def assess(result, intent, plan, claims=None):
             errors.append(message);diagnostics.append({"code":"single_payment_unaffordable","location":row["cost_source"]["skill_pointer"],"subject":row["skill_ref"],"resource_id":row["resource_id"],"expected":{"pool":row["pool"],"life_must_remain_positive":row["resource_id"]=="Life"},"actual":row["payment"],"message":message,"action":"inspect_error"})
         elif row["status"]=="unknown": pending.append("native:single_payment:"+str(row["skill_ref"])+":"+row["resource_id"])
     finite=timeline is not None and not timeline["repeat"]
+    execution={"status":"unknown","scope":"未测得整套动作实际可执行；逐次支付、同技能间隔与跨技能动作互斥、触发实现、效果覆盖分别判断。",
+               "payment_schedule_status":timeline["status"] if timeline else "not_requested",
+               "cross_skill_action_exclusion":"unmeasured","trigger_realization":"unmeasured","effect_coverage":"unmeasured"}
     sustained={"status":timeline["status"] if timeline and (not finite or timeline["status"]=="refuted") else "unknown",
                "basis":"finite_window_only" if finite else "discrete_timeline_at_native_net_regen" if timeline else "no_common_timeline",
                "scope":"本次仅检查所列有限窗口；没有核对重复接缝，窗口支付通过不证明持续重复。" if finite else capabilities()["timeline"]["scope"] if timeline else "仅有资源快照与独立支付事实；连续动作、启动/中断和效果覆盖未测得。"}
-    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"point_budgets":point_budgets,"timeline":timeline,"single_payments":payments,"sustained_use":sustained,
+    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"point_budgets":point_budgets,"timeline":timeline,"single_payments":payments,"sustained_use":sustained,"execution_coverage":execution,
             "conditions":{"guard_active":guard,"active_flasks":flasks,"flask_facts":flask_facts,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。药剂局部数据不证明持续补充，无持续覆盖测量时保留 capability 缺口。"},"resources":resources,"additional_native_costs":extra_costs,"diagnostics":diagnostics}

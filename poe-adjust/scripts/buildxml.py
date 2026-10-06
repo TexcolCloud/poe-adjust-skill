@@ -13,7 +13,7 @@ import zlib
 MAX_XML = 8 * 1024 * 1024
 GEM_FIELDS = {"skill_id": "skillId", "level": "level", "quality": "quality", "enabled": "enabled", "enable_global1": "enableGlobal1", "enable_global2": "enableGlobal2", "count": "count", "skill_part": "skillPart", "skill_stage_count": "skillStageCount", "skill_minion": "skillMinion"}
 GROUP_FIELDS = {"enabled": "enabled", "slot": "slot", "label": "label", "include_in_full_dps": "includeInFullDPS", "main_active_skill": "mainActiveSkill", "group_count": "groupCount"}
-PLAN_FIELDS={"schema_version", "name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "inventory", "assumptions", "migration_steps", "legality_notes", "scenario", "claims", "usage", "timeline", "assessment", "evidence"}
+PLAN_FIELDS={"schema_version", "name", "mode", "summary", "template_xml", "operations", "sources", "shopping", "inventory", "assumptions", "migration_steps", "legality_notes", "scenario", "measurement", "claims", "usage", "timeline", "assessment", "evidence"}
 OPERATION_FIELDS={"gems", "groups", "replace_skills", "items", "equip", "tree", "level", "main_group", "config", "weapon_set"}
 TREE_FIELDS={"nodes", "nodes_add", "nodes_remove", "class_id", "ascendancy_id", "secondary_ascendancy_id", "masteries", "masteries_add"}
 _UNSET = object()
@@ -365,6 +365,49 @@ def verify_selections(document, result, operations=None):
                 require(expected==actual,"原生保存改写了请求的技能状态。",code="native_selection_changed",location=location,expected=expected,actual=actual)
 
 
+def measurement_shape(measurement):
+    require_keys(measurement,{"effects","flasks_enabled"},"/measurement")
+    if "flasks_enabled" in measurement:
+        require(type(measurement["flasks_enabled"]) is bool,"flasks_enabled 应为布尔值。",location="/measurement/flasks_enabled",expected="boolean",actual=measurement["flasks_enabled"])
+    if "effects" in measurement:
+        rows=measurement["effects"];require(isinstance(rows,list),"effects 为数组。",location="/measurement/effects",expected="array",actual=type(rows).__name__)
+        seen=set()
+        for index,row in enumerate(rows):
+            path=f"/measurement/effects/{index}";require_keys(row,{"skill_id","enabled"},path)
+            require(isinstance(row.get("skill_id"),str) and row["skill_id"] and row["skill_id"] not in seen,"使用当前 granted_effects 的唯一效果 ID。",location=path+"/skill_id",expected="unique native effect ID",actual=row.get("skill_id"))
+            require(type(row.get("enabled")) is bool,"enabled 应为布尔值。",location=path+"/enabled",expected="boolean",actual=row.get("enabled"))
+            seen.add(row["skill_id"])
+
+
+def apply_measurement(source, measurement, native):
+    """Resolve common effect controls through the current native gem instances."""
+    measurement_shape(measurement)
+    root=copy.deepcopy(source);audit={"effects":[],"flasks":[]}
+    for index,control in enumerate(measurement.get("effects",[])):
+        row={**control,"status":"absent","instances":[]}
+        for gem in native.get("gems",[]):
+            for effect in gem.get("granted_effects",[]):
+                if effect["id"]!=control["skill_id"]: continue
+                field=effect.get("operation_field");path=f"/measurement/effects/{index}"
+                require(effect.get("has_global_effect") and field in GEM_FIELDS,"此效果没有已适配的原生全局开关。",location=path+"/skill_id",expected="native global effect with operation_field",actual=effect)
+                group=index_one(groups(root),gem["group"],"效果所属技能组",location=path)
+                actual=index_one(group.findall("Gem"),gem["index"],"效果所属宝石",location=path)
+                require(actual.get("skillId")==gem["id"],"原生效果与 XML 宝石归属不符。",location=path,expected=gem["id"],actual=actual.get("skillId"))
+                actual.set(GEM_FIELDS[field],attr(control["enabled"]))
+                row["instances"].append({"group":gem["group"],"index":gem["index"],"gem_id":gem["id"],"operation_field":field})
+                row["status"]="applied"
+        audit["effects"].append(row)
+    if "flasks_enabled" in measurement:
+        items=active_set(root,"Items","ItemSet","activeItemSet")
+        for item in native.get("equipped",[]):
+            if item.get("type")!="Flask": continue
+            slot=next((slot for slot in items.findall("Slot") if slot.get("name")==item["slot"]),None)
+            require(slot is not None and slot.get("itemId")==str(item["id"]),"药剂测量条件与 XML 槽位归属不符。",location="/measurement/flasks_enabled",expected=item["slot"],actual=None if slot is None else slot.attrib)
+            slot.set("active",attr(measurement["flasks_enabled"]))
+            audit["flasks"].append({"slot":item["slot"],"item_id":item["id"],"enabled":measurement["flasks_enabled"]})
+    return root,audit
+
+
 def plan_shape(plan, *, complete=True):
     require_keys(plan,PLAN_FIELDS,"/","计划包含未知字段。")
     if complete or "mode" in plan: require(isinstance(plan.get("mode"),str) and plan["mode"] in {"refine","rebuild"},"mode 应为 refine 或 rebuild。",location="/mode",expected=["refine","rebuild"],actual=plan.get("mode"))
@@ -372,6 +415,7 @@ def plan_shape(plan, *, complete=True):
         if key in plan or complete and key=="summary": require(isinstance(plan.get(key),str) and plan[key].strip(),key+" 应为非空文字。",location="/"+key,expected="nonempty string",actual=plan.get(key))
     operations_shape(plan.get("operations",{}),complete=complete)
     if "scenario" in plan: config_shape(plan["scenario"],"/scenario")
+    if "measurement" in plan: measurement_shape(plan["measurement"])
     for key in ("claims","usage","evidence","inventory","shopping"):
         if key in plan: require(isinstance(plan[key],list),key+" 应为数组。",location="/"+key,expected="array",actual=type(plan[key]).__name__)
     return plan

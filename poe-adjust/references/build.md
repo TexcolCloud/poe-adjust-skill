@@ -47,7 +47,7 @@
 
 ## plan.json：修改与决策
 
-方向确认后用 [增量保存](commands.md#增量保存方案) 保存头部，再补操作和证据。最初可计算计划为 `schema_version:2, mode:"refine或rebuild", summary:"具体目的", operations:{...}`，evaluate 返回草案缺口及本次技能引用。完整字段是：schema_version、name、mode、summary、template_xml、operations、scenario、sources、shopping、inventory、assumptions、migration_steps、legality_notes、evidence、claims、usage、timeline、assessment。sources/assumptions/legality_notes 是说明，不自动充当已验证证据；用 claims 关联实际来源。
+方向确认后用 [增量保存](commands.md#增量保存方案) 保存头部，再补操作和证据。最初可计算计划为 `schema_version:2, mode:"refine或rebuild", summary:"具体目的", operations:{...}`，evaluate 返回草案缺口及本次技能引用。完整字段是：schema_version、name、mode、summary、template_xml、operations、scenario、measurement、sources、shopping、inventory、assumptions、migration_steps、legality_notes、evidence、claims、usage、timeline、assessment。sources/assumptions/legality_notes 是说明，不自动充当已验证证据；用 claims 关联实际来源。
 
 | operations 字段 | 格式/作用 |
 |---|---|
@@ -64,7 +64,11 @@
 
 `main_active_skill` 是当前物化组的主动技能选项序号，不等于宝石位置或宝石数。`inspect --calculate` 的 `calculation.skill_selections` 给出当前各组 choices（index/id/name/gem_index）；采用新组合后重新计算。非法选项或原生静默改写会返回 `native_selection_changed`、请求/实际值及 `available_options`。模型决定选哪一项，程序不自动替换；省略字段的原生默认值和无主动技能空组的默认占位可以正常保存。
 
-宝石额外字段：enabled、enable_global1、enable_global2、count、skill_part、skill_stage_count、skill_minion，沿用当前本机语义。关闭守护收益与仍装备/触发/支付费用分开。禁用普通组不会释放 slot；确实卸下需显式 `slot:""`。
+宝石额外字段：enabled、enable_global1、enable_global2、count、skill_part、skill_stage_count、skill_minion。`gems[].granted_effects` 按当前原生顺序给出每个效果的 index/id/name、has_global_effect、global_enabled、operation_field、skill_types、active_skill_present。一个宝石可能提供多个不同效果；按实际 ID 和 operation_field 操作，效果序号不自带“普通/临时”含义。active_skill_present 是原生列表观察，不证明实际触发或覆盖。关闭守护收益与仍装备/触发/支付费用分开。禁用普通组不会释放 slot；确实卸下需显式 `slot:""`。
+
+`measurement` 是模型选择的共同测量条件：`{"flasks_enabled":false,"effects":[{"skill_id":"本次 granted_effects 的效果 ID","enabled":false}]}`。它在原方案和候选完成各自改造后应用，再分别实算；开启/排除哪些效果由本次用户目标、当前描述及覆盖依据决定。effects 会设置两份角色中此 ID 的全部实例的原生全局开关，不改宝石 enabled、等级、品质或物品文本。某份没有该效果时 measurement_audit 标 absent；两份都没有时返回输入修订诊断，不能证明已排除。无已适配全局开关的效果返回具体错误，不由程序猜一个替代操作。flasks_enabled 设置当次原生类型为 Flask 的已装药剂开关，不删除实物。两份实际应用在 configuration_audit.measurement_actual，selected_main_before/after 记录测量前后主技能；共同条件改变主输出时，仍按原始主技能核对用户许可，不能用改过的基准绕开保留要求。写 subjects 含 `measurement` 的 claim 评审这些条件，并按需同时关联 `configuration:candidate`。整体换流派时，分别说明只在某份存在的效果及其意义。
+
+`equipped[].assigned` 表示保存了槽位映射，`active` 是原生槽位开关，`socket_allocated` 是珠宝孔当次实际分配状态，`effective_in_calculation` 从原生 MAIN 的 player.itemList、flasks、tinctures 列表读取。active=false 不表示普通装备未穿戴；位置保留也不表示珠宝仍生效。模型结合用户的保留意图判断可否调整生效状态。`text` 是当前原生物品原文，角色状态摘要同时绑定这份规格。
 
 tree.masteries/masteries_add 使用节点 ID 字符串到效果 ID 的映射；nodes 全量不能混用增量，masteries 全量不能混用局部；保留其他专精。模板路径相对 plan 所在目录，仍须核对实际来源与迁移步骤。
 

@@ -1053,6 +1053,22 @@ class ReadOnlyDataTests(unittest.TestCase):
 
 
 class FinalReviewTests(unittest.TestCase):
+    def test_character_identity_tracks_effects_specs_and_real_config_but_not_transport(self):
+        value={'class':'fixture','ascendancy':'fixture','level':12,'tree_version':'future',
+               'nodes':[2,1],'main_skill':'future-effect','main_group':1,
+               'config_values':{'native_default':False},'config_saved_values':{},
+               'gems':[{'group':1,'index':1,'id':'future-gem','enable_global1':False,'enable_global2':True}],
+               'equipped':[{'slot':'Boots','id':1,'name':'fixture','base':'fixture','text':'actual spec','active':False}],
+               'input_xml_sha256':'requested','xml_sha256':'saved'}
+        identity=engine.character_state(value)
+        changed=copy.deepcopy(value);changed.update(input_xml_sha256='reloaded',xml_sha256='reformatted');changed['nodes'].reverse()
+        self.assertEqual(engine.character_state(changed),identity)
+        for section,key,new in [('gems','enable_global1',True),('equipped','text','different spec')]:
+            changed=copy.deepcopy(value);changed[section][0][key]=new
+            self.assertNotEqual(engine.character_state(changed),identity)
+        changed=copy.deepcopy(value);changed['config_saved_values']['non_default']=False
+        self.assertNotEqual(engine.character_state(changed),identity)
+
     def test_each_skill_mean_drain_uses_fixed_net_regen_and_excludes_leech(self):
         result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":False}
         result["stats"].update(ManaUnreserved=240,ManaRegenRecovery=18,ManaDegen=3,ManaLeechGainRate=500)
@@ -1174,9 +1190,9 @@ class FinalReviewTests(unittest.TestCase):
         common={"class":"fixture","ascendancy":"fixture","level":1,"tree_version":"future","nodes":[],"main_skill":"x","main_group":1,"gems":[],"equipped":[]}
         explicit={**common,"config_values":{"default_false":False,"default_true":False},"config_saved_values":{"default_true":False}}
         omitted={**common,"config_values":{"default_true":False},"config_saved_values":{"default_true":False}}
-        self.assertEqual(poe.semantics(explicit),poe.semantics(omitted))
+        self.assertEqual(engine.character_state(explicit),engine.character_state(omitted))
         changed={**common,"config_values":{},"config_saved_values":{}}
-        self.assertNotEqual(poe.semantics(explicit),poe.semantics(changed))
+        self.assertNotEqual(engine.character_state(explicit),engine.character_state(changed))
 
     def test_review_binds_facts_conditions_prose_and_source_content(self):
         spec={"summary":"A conditional recommendation","assessment":{"scope":"fixture"}}
@@ -1251,6 +1267,40 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_common_measurement_cannot_hide_a_locked_main_skill_change(self):
+        before={'level':86,'tree_version':'future','class':'fixture','ascendancy':'fixture','main_skill':'changed-by-control','gems':[],'equipped':[],
+                'measurement_audit':{'selected_main_before':{'main_skill':'original-main'}}}
+        after=copy.deepcopy(before);original=bx.parse(SAMPLE);plan={'mode':'refine'}
+        errors,pending=poe.check_constraints(original,original,before,after,{'allow_main_skill_change':False},plan)
+        self.assertTrue(errors)
+        errors,pending=poe.check_constraints(original,original,before,after,{},plan)
+        self.assertIn('permission:allow_main_skill_change',pending)
+        errors,pending=poe.check_constraints(original,original,before,after,{'allow_main_skill_change':True},plan)
+        self.assertFalse(errors);self.assertNotIn('permission:allow_main_skill_change',pending)
+
+    def test_measurement_resolves_native_effect_order_and_keeps_physical_assignment(self):
+        document=bx.parse(SAMPLE)
+        gem=bx.groups(document)[0].find('Gem')
+        gem.set('enableGlobal1','true');gem.set('enableGlobal2','false')
+        native={'gems':[{'group':1,'index':1,'id':gem.get('skillId'),
+                 'granted_effects':[{'id':'future-steady','index':1,'has_global_effect':True,'operation_field':'enable_global1'},
+                                    {'id':'future-burst','index':2,'has_global_effect':True,'operation_field':'enable_global2'}]}],
+                'equipped':[{'slot':'Boots','id':1,'type':'Armour','active':False}]}
+        controls={'effects':[{'skill_id':'future-steady','enabled':False},{'skill_id':'future-burst','enabled':True}]}
+        changed,audit=bx.apply_measurement(document,controls,native)
+        actual=bx.groups(changed)[0].find('Gem')
+        self.assertEqual((actual.get('enableGlobal1'),actual.get('enableGlobal2')),('false','true'))
+        self.assertEqual(actual.get('enabled'),gem.get('enabled'))
+        self.assertEqual(bx.item_texts(changed),bx.item_texts(document))
+        self.assertEqual(audit['effects'][0]['instances'][0]['gem_id'],gem.get('skillId'))
+        controls['effects'][0]['skill_id']='not-in-this-build'
+        _,audit=bx.apply_measurement(document,controls,native)
+        self.assertEqual(audit['effects'][0]['status'],'absent')
+        controls['effects'][0]['skill_id']='future-steady';native['gems'][0]['granted_effects'][0]['has_global_effect']=False
+        with self.assertRaises(bx.ContractError):bx.apply_measurement(document,controls,native)
+        for invalid in ({'flasks_enabled':0},{'effects':[{'skill_id':'x','enabled':True},{'skill_id':'x','enabled':False}]},{'effects':[{'skill_id':'x','enabled':'false'}]}):
+            with self.subTest(invalid=invalid),self.assertRaises(bx.ContractError):bx.measurement_shape(invalid)
+
     def test_probe_damage_observation_keeps_selected_skill_and_actor_context(self):
         with tempfile.TemporaryDirectory() as folder:
             run=Path(folder);poe.write_text(run/'original.xml',SAMPLE)
@@ -1731,6 +1781,18 @@ class ResourceRegressionTests(unittest.TestCase):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_finite_window_keeps_payment_and_execution_scopes_separate(self):
+        result,timeline=self.fixture();timeline['repeat']=False
+        audit=resources.assess(result,{}, {'timeline':timeline})
+        self.assertEqual(audit['timeline']['status'],'supported')
+        self.assertEqual(audit['execution_coverage']['status'],'unknown')
+        packet=poe.publication('draft',[],audit['pending'],{'status':'unknown'},{},readiness=audit)
+        execution=next(row for row in packet['statements'] if row['kind']=='execution_coverage')
+        self.assertEqual(execution['status'],'unknown')
+        resource=next(row for row in packet['statements'] if row['kind']=='resource' and row['subject']=='Mana')
+        self.assertEqual(resource['window']['final'],audit['timeline']['resources'][0]['final'])
+        self.assertEqual(resource['window']['at'],timeline['duration_seconds'])
+
     def fixture(self):
         result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":False}
         for index,cost in enumerate((20,10)):
@@ -2693,6 +2755,73 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
 
 
 class RealEngineTests(unittest.TestCase):
+    def test_native_named_effects_common_measurement_and_jewel_activity(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        multiple=next(gem for gem in current['gems'] if len(gem['granted_effects'])>1 and all(effect['has_global_effect'] for effect in gem['granted_effects']))
+        controls={'flasks_enabled':False,'effects':[{'skill_id':effect['id'],'enabled':False} for effect in multiple['granted_effects']]}
+        document,result=poe.measured_calculation(self.pob,self.original,controls)
+        actual=next(gem for gem in result['gems'] if gem['group']==multiple['group'] and gem['index']==multiple['index'])
+        self.assertEqual([(effect['index'],effect['id']) for effect in actual['granted_effects']],[(effect['index'],effect['id']) for effect in multiple['granted_effects']])
+        self.assertTrue(all(not effect['global_enabled'] and not effect['active_skill_present'] for effect in actual['granted_effects']))
+        self.assertTrue(all(not item['active'] and not item['effective_in_calculation'] for item in result['equipped'] if item['type']=='Flask'))
+        self.assertEqual(bx.item_texts(document),bx.item_texts(self.original))
+        saved=poe.roundtrip(self.pob,result,document)
+        self.assertEqual(result['character_identity'],engine.calculate(self.pob,saved,cache=False)['character_identity'])
+        empty=bx.apply_plan(self.original,{'mode':'refine','summary':'Native inclusion test, not a build proposal','operations':{'tree':{'nodes':[]}}},native=current)
+        unallocated=engine.calculate(self.pob,bx.serialise(empty))
+        jewels=[item for item in unallocated['equipped'] if item.get('socket_node_id')]
+        self.assertTrue(jewels)
+        self.assertTrue(all(item['assigned'] and item['socket_allocated'] is False and item['effective_in_calculation'] is False for item in jewels))
+
+    def test_native_role_reference_survives_transport_change_without_ignoring_byte_claims(self):
+        document=poe.prepared(self.original,self.intent,baseline=True)
+        original=engine.calculate(self.pob,bx.serialise(document))
+        xml=poe.roundtrip(self.pob,original,document);original['xml_sha256']=bx.digest(xml)
+        saved=engine.calculate(self.pob,xml,cache=False);saved['xml_sha256']=bx.digest(xml)
+        self.assertEqual(original['character_identity'],saved['character_identity'])
+        self.assertNotEqual(original['input_xml_sha256'],saved['input_xml_sha256'])
+        contract=facts.reference_contract({'candidate':original})['candidate']['identity_references']
+        self.assertEqual(set(contract),{'character','input_bytes','saved_bytes'})
+        for role,expected_stale in (('character',False),('input_bytes',True)):
+            claim={'claim_id':'identity','text':'Observed identity for this scope','subjects':['goal'],'evidence_refs':[contract[role]['reference']]}
+            specification={'claims':[claim]};evidence={}
+            first=facts.assess_claims([claim],evidence,{'candidate':original},specification=specification,engine_fingerprint=original['engine_fingerprint'])
+            packet,_=facts.final_review(specification,evidence,first,{'role':original['character_identity']},{})
+            review={'review':{'token':packet['token'],'findings':'Native identity scope only','unresolved':[],
+                             'conclusions':[{'claim_id':'identity','scope':'Observed identity only','findings':'Transport and role are distinguished'}]}}
+            current=facts.assess_claims([claim],evidence,{'candidate':saved},specification=specification,engine_fingerprint=saved['engine_fingerprint'])
+            _,pending=facts.final_review(specification,evidence,current,{'role':saved['character_identity']},review)
+            self.assertEqual('final_review:stale' in pending,expected_stale)
+
+    def test_native_common_measurement_baseline_cache_and_export_review(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        multiple=next(gem for gem in current['gems'] if len(gem['granted_effects'])>1 and all(effect['has_global_effect'] for effect in gem['granted_effects']))
+        plan=copy.deepcopy(self.refine)
+        plan['measurement']={'flasks_enabled':False,'effects':[{'skill_id':effect['id'],'enabled':False} for effect in multiple['granted_effects']]}
+        plan['claims']=[{'claim_id':'measurement','text':'Same declared native effect controls; no gameplay coverage guarantee',
+                        'subjects':['measurement','configuration:candidate','goal'],
+                        'evidence_refs':['native:baseline#/measurement_audit','native:candidate#/measurement_audit','native:candidate#/character_identity/digest']}]
+        plan['assessment']={'goal_claim_ids':['measurement'],'scope':'Native measurement interface fixture'}
+        first=self.evaluate_plan(plan,'common-measurement')
+        first_details=poe.read_json(self.run_dir/'candidates/common-measurement/evaluation.json')
+        for name in ('baseline','result'):
+            self.assertTrue(all(not item['active'] for item in first_details[name]['equipped'] if item['type']=='Flask'))
+        template=poe.read_json(self.run_dir/'candidates/common-measurement/review.json')['review_template']
+        plan['assessment']['review']={**template,'findings':'Only the native interface scope is reviewed',
+            'objectives':[{**row,'scope':'Fixture scope only','findings':'Unresolved gameplay dependencies retained'} for row in template['objectives']],
+            'conclusions':[{**row,'scope':'Native control mapping only','findings':'Two roles use the chosen controls; no temporal guarantee'} for row in template['conclusions']]}
+        second=self.evaluate_plan(plan,'common-measurement')
+        self.assertEqual(first['review_token'],second['review_token'])
+        exported=poe.export(args(run=str(self.run_dir),name='common-measurement'))
+        self.assertNotIn('final_review:stale',exported['pending'])
+        actual=poe.read_json(self.run_dir/'output/common-measurement/final-assessment.json')
+        self.assertEqual(actual['configuration_audit']['measurement_actual'],first_details['configuration_audit']['measurement_actual'])
+        plan['measurement']['flasks_enabled']=True;plan['assessment'].pop('review')
+        changed=self.evaluate_plan(plan,'common-measurement')
+        details=poe.read_json(self.run_dir/'candidates/common-measurement/evaluation.json')
+        self.assertNotEqual(first_details['baseline']['context_hash'],details['baseline']['context_hash'])
+        self.assertTrue(any(item['active'] for item in details['baseline']['equipped'] if item['type']=='Flask'))
+
     @classmethod
     def setUpClass(cls):
         # Offline engine tests use an explicit source-boundary stub, not live web.
@@ -3486,7 +3615,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(summon["selected_skill_id"],minion["id"]);self.assertEqual(summon["actor"],"minion")
         self.assertGreater(summon["value"],0)
         if "detail" not in summon: self.assertEqual(summon["status"],"unsupported");self.assertIn("No native breakdown",summon["reason"])
-        self.assertEqual(poe.semantics(result),poe.semantics(baseline));self.assertEqual(result["stats"],baseline["stats"])
+        self.assertEqual(engine.character_state(result),engine.character_state(baseline));self.assertEqual(result["stats"],baseline["stats"])
         before,after=bx.summary(bx.parse(baseline["xml"])),bx.summary(bx.parse(result["xml"]))
         for value in (before,after):
             for key in ("slots","jewels","items","config"): value[key]=sorted(value[key],key=lambda row:json.dumps(row,sort_keys=True))
@@ -3838,7 +3967,7 @@ class RealEngineTests(unittest.TestCase):
         seed=engine.calculate(self.pob,xml)
         probed=engine.calculate(self.pob,xml,equipment_layouts=layouts)
         self.assertEqual(probed["stats"],seed["stats"])
-        self.assertEqual(poe.semantics(probed),poe.semantics(seed))
+        self.assertEqual(engine.character_state(probed),engine.character_state(seed))
         self.assertEqual(bx.item_texts(bx.parse(probed["xml"])),bx.item_texts(bx.parse(seed["xml"])))
         unknown=probed["equipment_layouts"][-1]["checks"]["Weapon 2"]
         self.assertNotIn("valid_for_slot",unknown);self.assertIn("Weapon 1",unknown["unresolved_context"])

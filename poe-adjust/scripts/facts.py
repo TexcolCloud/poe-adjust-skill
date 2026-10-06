@@ -358,7 +358,11 @@ def claim_bindings(document, claim, engine_fingerprint):
 def reference_contract(native):
     """Describe the current evidence roots, independently of output-file paths."""
     return {name:{"prefix":"native:"+name+"#","origin":value.get("origin","program_calculation"),
-                  "fields":{key:"native:"+name+"#/"+key.replace("~","~0").replace("/","~1") for key in sorted(value)}}
+                  "fields":{key:"native:"+name+"#/"+key.replace("~","~0").replace("/","~1") for key in sorted(value)},
+                  "identity_references":{key:{"reference":"native:"+name+"#"+locator,"meaning":meaning} for key,locator,meaning in (
+                      ("character","/character_identity/digest","当前原生角色状态；适合角色一致性判断"),
+                      ("input_bytes","/input_xml_sha256","本次提交给引擎的 XML 字节；保存回读后可改变"),
+                      ("saved_bytes","/xml_sha256","已声明保存文件的字节；用于文件完整性")) if locator.split('/')[1] in value}}
             for name,value in native.items()}
 
 
@@ -379,6 +383,7 @@ def resolve_reference(reference, evidence, native=None):
         record = {"evidence_id": reference, "kind": "native", "subject": name, "locator": locator, "value": value,
                   "status": "native_observed", "origin": calculation.get("origin","program_calculation"), "digest": bx.digest(json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)),
                   "context": {"engine_fingerprint": calculation.get("engine_fingerprint"), "xml_sha256": calculation.get("xml_sha256") or calculation.get("input_xml_sha256") or (bx.digest(calculation["xml"]) if calculation.get("xml") else None),
+                              "character_identity":calculation.get("character_identity"),
                               "config_values":calculation.get("config_values",{}),"class_id":calculation.get("class_id"),"ascendancy_id":calculation.get("ascendancy_id"),"main_skill":calculation.get("main_skill"),
                               "main_skill_ref":main.get("skill_ref"),"main_skill_name":main.get("name") or calculation.get("main_skill_name"),"main_group":calculation.get("main_group")},
                   "meaning":reference_meaning(calculation,locator)}
@@ -392,6 +397,13 @@ def reference_meaning(calculation, locator):
     """Keep current native labels, qualified identities and uncertainty together."""
     tokens=locator.split("/")[1:]
     metric=tokens[-1] if tokens else ""
+    if locator in {"/character_identity/digest","/input_xml_sha256","/xml_sha256"}:
+        meanings={"/character_identity/digest":("原生角色状态摘要","native_active_character"),
+                  "/input_xml_sha256":("本次输入 XML 字节摘要","input_transport_bytes"),
+                  "/xml_sha256":("声明保存 XML 字节摘要","saved_file_bytes")}
+        label,identity_scope=meanings[locator]
+        return {"label":label,"unit":None,"unit_status":"not_applicable","display_multiplier":1,"object_identity":{},"actor":None,"status":"identity_observed","identity_scope":identity_scope,
+                "scope":"文件字节和角色状态分别判断；保存格式变化可改变输入字节，真实角色、引用、文字或条件变化仍使旧复核失效。"}
     metadata=calculation.get("stat_metadata",{})
     meanings=metadata.get("Minion"+metric,metadata.get(metric,[])) if tokens and tokens[0]=="minion" else metadata.get(metric,[]) if tokens and tokens[0]=="stats" else []
     units=[]
