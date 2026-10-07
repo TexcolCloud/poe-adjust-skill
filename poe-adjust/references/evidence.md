@@ -18,6 +18,8 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 缺引用、来源未解决、过期绑定、uncertainties 非空或 checks 未通过，保持 unresolved。model_assessed 表示模型作了有引用的判断；check_status/verification_scope 才说明所列可比较命题的测量范围。objective_coverage.declared_checks_status 与 publication.declared_checks 展示实际比较，不能把 judgment 当作数值证明。
 
+交付使用程序返回的 judgments 展示投影：claim_id/subjects/status 保留对应关系，text/conditions/uncertainties 与 HTML 共用当前规则；revision_pending=true 时旧正文和条件暂不作为操作建议，diagnostics 指向重新评审。当前但未解决或比较不成立的判断仍保留其说明、条件和诊断，不提升状态。完整源 claims、绑定和原文保留在 review 文件用于核对。终端字段被分页时，从 continuations 读取 judgments；展示投影不证明自由文字或配装取舍正确。
+
 用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项明确达到/未达到并解释当前对象、依据、条件、代价与未解决项。用户要求的技能、天赋、装备和操作必须在最终方案落实；旧计划文字或关联一个数值不能证明已实现。objective_coverage 只核对来源与关联，不证明目标完整或已经达到。整体 goal 判断说明总体取舍；修复改了组成后重新判断，不继承旧结论。
 
 计算场景也关联当前事实：配装判断使用 subjects:`["configuration:candidate"]`，阶段使用 `["configuration:stage:<stage_id>"]`，引用对应 `native:<计算名>#/config_values`、`config_controls` 或具体字段。config_controls 的 value、default 与 value_basis 分开；false 是关闭，null 是未知。核对当前本机配置原文、进度与实际解析值，决定显式覆盖或明示假设。涉及某效果开关的结论同时声明该实际值的 eq/true 或 eq/false 检查；计数、主体和持续覆盖另找依据，不能由装备存在推定。effect_state 给出护卫、药剂、各实际宝石效果及布尔配置快照，原生观察的 context 同时携带它。缺少当前场景评审会保留 config:scenario；存在引用不自动证明场景选择正确。

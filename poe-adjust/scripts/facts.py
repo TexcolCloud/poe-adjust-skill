@@ -538,6 +538,21 @@ def assess_claims(claims, evidence, native=None, *, specification=None, engine_f
     return result
 
 
+def claim_display(claim):
+    """Project assessed prose for delivery; preserve the full claim for audit."""
+    diagnostics=claim.get("diagnostics",[])
+    invalidated=any(row.get("code") in {"claim_binding_stale","claim_binding_missing"} for row in diagnostics)
+    return {"claim_id":claim.get("claim_id"),"status":claim.get("status","unresolved"),"subjects":list(claim.get("subjects",[])),
+            "revision_pending":invalidated,
+            "text":"此说明尚未与本次方案同步；按当前对象和证据重新评审后提供操作建议。" if invalidated else claim.get("rendered_text",claim.get("text","未取得此判断。")),
+            "conditions":[] if invalidated else list(claim.get("conditions",[])),
+            "uncertainties":[] if invalidated else list(claim.get("uncertainties",[])),
+            "evidence_refs":list(claim.get("evidence_refs",[])),
+            "check_status":claim.get("check_status","not_requested"),
+            "verification_scope":claim.get("verification_scope","模型解释；未验证可比较命题"),
+            "diagnostics":diagnostics}
+
+
 def has_claim(claims, subject):
     return any(row["status"] == "model_assessed" and subject in row["subjects"] for row in claims)
 
