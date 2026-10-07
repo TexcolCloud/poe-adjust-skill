@@ -10,7 +10,7 @@
 | 源码冻结 | 16 个源码/测试文件前后及合并后字节一致 | 15 交付文件，加测试文件；源码提交 e87932d |
 | 包和安装 | 15 文件源码/ZIP/安装一致，205001 字节 | 包 SHA256 见下文，未改运行中的 skill |
 | 已安装 doctor | 5.094 秒，启动/目录/保存/回读通过 | 当前机器的实际能力 |
-| 原件和历史 | 原角色、原生设置/缓存、历史首份/原评分保持 | 原件未覆盖；最终全量保护核验待收尾 |
+| 原件和历史 | 2726 冻结文件、18 份历史模块分、两作者原分及原附录核验通过 | 原件未覆盖；复核完成后再做最终全量保护核验 |
 
 本机观察到 PoB 2.67.2、数据 3.29；这是此次检测结果，不是支持版本白名单。相关内容和适配器参与指纹，升级后需要重新核验。当前引擎指纹：`143138fcdb90bab054cf2c24237e779c128cf0245756329ec95dd00469ec9ad5`。
 
@@ -38,6 +38,8 @@
 
 续航正文使用 3.06 次/秒和约 550 次，实际为 2.446153846/秒和 441 次；准备终点写 56，实际窗口为 152；“全程满血”不符离散付款后余额，同场景旧 DPS 47704.2 不对应当前共同基线 41063.7096。护卫仍启用且 12 魔力未安排，Mana 时间线 unknown；这不证明实际不可支付或死亡，也不能宣称三资源及护卫持续全通过。六条判断外部引用不可解析，最终复核 stale，27 项 pending 未收束。
 
+两作者还将当前 Champion／冠军写作“勇士”；实际 XML 保留检查依然通过。此项在评分后以补充诊断附录留存，原分和首份保持，不将文字误称理解为实际改换升华。
+
 ## 评审限制
 
 新任务来自实际上一轮问题与不同自然玩家目标，不建立固定配装答案库，不将原回放当盲测。原始角色、首份与原评分保留，修订不覆盖历史。未知国服、无关任务点和声明条件本身不单独作核心失败；放行范围必须与实际证据相符。
@@ -56,7 +58,7 @@ python -B -m unittest discover -s tests -v
 
 `POECHARM_PATH` 可指定原生 PoB 根目录。`RealEngineTests` 使用 `POE_TEST_XML` 或引擎内约定盾牌样本；缺样本会跳过。`NativeSelectionIntegrityTests` 的前两项仍直接读取 `Builds/夷陵盾牌S29 原始配装.xml`，不会采用 `POE_TEST_XML`。这是一项跨机测试维护限制，本轮冻结后未更改；不能提供随机角色或把缺样本/跳过解释为 316 项通过。私人样本不随仓库上传。
 
-不依赖原生引擎的 251 项可单独运行：
+下列交接命令已实际运行 251 项、6.683 秒通过，无失败/错误/跳过；不依赖原生引擎：
 
 ```powershell
 python -B -c "import sys, unittest; sys.path.insert(0, 'tests'); import test_workflow as t; suite=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromTestCase(c) for n,c in vars(t).items() if isinstance(c,type) and issubclass(c,unittest.TestCase) and n not in ('RealEngineTests','NativeSelectionIntegrityTests')); result=unittest.TextTestRunner(verbosity=1).run(suite); sys.exit(not result.wasSuccessful())"
