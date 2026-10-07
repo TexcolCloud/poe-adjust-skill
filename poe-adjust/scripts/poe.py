@@ -23,7 +23,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.15"
+VERSION = "2.8.16"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
@@ -1019,7 +1019,7 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
             if key not in calculation.get("stats",{}): continue
             ref="native:"+name+"#/stats/"+key
             row=facts.resolve_reference(ref,registry,calculations)
-            measurements.append({"reference":ref,"subject":name,"metric":key,"value":row["value"],"meaning":row["meaning"],"context":row["context"],"text":row["formatted_fact"]})
+            measurements.append({"reference":ref,"subject":name,"metric":key,"value":row["value"],"meaning":row["meaning"],"context":row["context"],"text":row["formatted_fact"],"text_templates":row["text_templates"]})
     within=budget.get("within_limit")
     budget_text=("已有对应来源的成本下界超过预算。" if within is False else "在所列报价或已声明库存条件下，已核对成本区间在预算内；购买前仍需复核。" if within is True else "预算是否满足尚未证实；现有估算或缺失报价不能作为预算内买齐的承诺。" if budget.get("limit") is not None else "尚未约定预算；物资与价格核验状态："+budget["status"]+"。")
     statements=[{"kind":"delivery","status":status,"text":brief["message"]},
@@ -1042,6 +1042,10 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                                "text":name+" · 当前主技能主体："+str(main.get("actor","未知"))+"；伤害、吸取与回复按该主体和资源账目分别读取，面板值不能互相借用。"})
     audits=resource_audits if resource_audits is not None else {"candidate":readiness} if readiness else {}
     for name,audit in audits.items():
+        snapshot_scopes=list(dict.fromkeys(row["scope"] for row in audit.get("resources",[]) if row.get("scope")))
+        if snapshot_scopes:
+            statements.append({"kind":"resource_snapshot","subject":name,"status":"observed","scope":snapshot_scopes,
+                               "text":name+" · 资源快照范围："+" ".join(snapshot_scopes)})
         if audit.get("timeline"):
             statements.append({"kind":"timeline_scope","subject":name,"status":"observed",
                                "text":name+" · 时间线测量范围："+audit["timeline"]["scope"]})
@@ -1060,12 +1064,18 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
             statements.append({"kind":"sustained_use","subject":name,"status":state,"text":name+" · "+{"supported":"所列离散时间线可在固定净回复下重复；范围不含吸取、充能、药剂补充、动作互斥及条件变化。","refuted":"所列时间线有无法支付、耗尽或频率矛盾，不能作持续使用保证。","unknown":"持续使用尚未测得；资源快照的正余额或独立单次支付不能证明启动、连续动作及效果覆盖。"}[state]})
         resource_messages={"supported":"所列窗口的逐次支付通过；此项仅覆盖窗口内支付，持续使用结论另列。未计吸取、充能与药剂补充。",
                            "refuted":"时间线中有无法支付或耗尽的时点。","unknown":"所列窗口支付尚未证实，具体费用/窗口缺口见时间线。"}
-        for resource in audit.get("timeline",{}).get("resources",[]) if audit.get("timeline") else []:
-            state=resource["status"]
-            window={"at":resource["duration_seconds"],"initial":resource["initial"],"final":resource.get("final"),"last_event_at":resource["trace"][-1]["at"] if resource["trace"] else None,"gaps":resource["gaps"]}
-            values=f" 窗口起点 {window['initial']:g}，{window['at']:g} 秒终点 {window['final']:g}；终点包含最后动作后的固定净回复。" if bx.finite_number(window["initial"]) and bx.finite_number(window["final"]) else " 未测得完整窗口终点；不能用最后一次动作储量替代。"
-            statements.append({"kind":"resource","calculation":name,"subject":resource["resource_id"],"status":state,
-                               "window":window,"text":name+" · "+resource["resource_id"]+"："+resource_messages[state]+values})
+        timeline=audit.get("timeline") or {}
+        phases=[("preparation",timeline.get("preparation") or {}),("combat",timeline)]
+        for phase,phase_timeline in phases:
+            for resource in phase_timeline.get("resources",[]):
+                state=resource["status"]
+                window={"at":resource["duration_seconds"],"initial":resource["initial"],"final":resource.get("final"),"last_event_at":resource["trace"][-1]["at"] if resource["trace"] else None,"gaps":resource["gaps"],
+                        "repeat":phase_timeline.get("repeat"),"event_count":len(phase_timeline["events"]) if isinstance(phase_timeline.get("events"),list) else None}
+                values=f" 窗口起点 {window['initial']:g}，{window['at']:g} 秒终点 {window['final']:g}；终点包含最后动作后的固定净回复。" if bx.finite_number(window["initial"]) and bx.finite_number(window["final"]) else " 未测得完整窗口终点；不能用最后一次动作储量替代。"
+                if window["event_count"] is not None: values+=f" 本阶段记录 {window['event_count']} 次动作。"
+                if bx.finite_number(window["last_event_at"]): values+=f" 最后动作在 {window['last_event_at']:g} 秒。"
+                statements.append({"kind":"resource","calculation":name,"phase":phase,"subject":resource["resource_id"],"status":state,
+                                   "window":window,"text":name+" · "+{"preparation":"战前准备","combat":"战斗"}[phase]+" · "+resource["resource_id"]+"："+resource_messages[state]+values})
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
             "facts_summary":"\n\n".join([s["text"] for s in statements]+[m["text"] for m in measurements]),
             "scope":"仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}

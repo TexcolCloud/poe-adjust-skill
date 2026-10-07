@@ -1,6 +1,6 @@
 ---
 name: poe-adjust
-description: 仅在用户明确调用“POE 配装助手”或 poe-adjust 后，为 PoE1 国服进行多轮问询、联网研究、本机 PoECharm 实算、配装优化或整体换流派、开荒路线及文件交付。普通游戏问答和技能设计讨论不启动流程。
+description: 仅在用户明确调用“POE 配装助手”或 poe-adjust 后，为 PoE1 国服进行多轮问询、联网研究、本机 PoECharm 实算、配装优化或整体换流派、已有交付复核、开荒路线及文件交付。普通游戏问答和技能设计讨论不启动流程。
 name_cn: POE 配装助手
 description_cn: 聊清目标，复用本机 PoECharm 设计配装或开荒路线，交付角色 XML 和程序生成的中文 HTML 说明。
 ---
@@ -24,6 +24,7 @@ description_cn: 聊清目标，复用本机 PoECharm 设计配装或开荒路线
 首次读取 [调用约定](references/commands.md)，其余资料按当前操作读取：
 
 - 有角色 XML 或纯 PoB 分享码，做微调/换流派：读取 [配装协议](references/build.md)。`start --invoked` 保存原件并自检，后续沿用同一 run；先前任务用 `status --run` 恢复。
+- 只复核已有 XML 和作者说明：读取 [已有交付复核](references/build.md#复核已有交付) 与 [证据协议](references/evidence.md)。保留作者原件，核对原目标和已交付证据的实际范围，再给复核结论。
 - 没有角色 XML，做开荒/成长路线：读取 [路线协议](references/leveling.md)。用 `route --invoked`；关键阶段在 route.snapshot 填完整假设，由程序生成 XML 并实算。
 - 查询对象、合法值、描述/机制或外部事实：读取 [资料协议](references/data.md)。先 catalog；缺信息再 data；国服当前规则、取得和行情联网核实。
 - 写 claims、usage、库存/报价或准备交付：读取 [证据协议](references/evidence.md)。首次可以先计算草案，依据返回的引用、规格和待办完善输入。

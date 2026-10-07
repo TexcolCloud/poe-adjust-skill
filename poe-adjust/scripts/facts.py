@@ -405,6 +405,8 @@ def resolve_reference(reference, evidence, native=None):
                               "main_skill_ref":main.get("skill_ref"),"main_skill_name":main.get("name") or calculation.get("main_skill_name"),"main_group":calculation.get("main_group")},
                   "meaning":reference_meaning(calculation,locator)}
         record["formatted_fact"]=format_observation(record)
+        record["text_templates"]={"fact":"{{fact:"+reference+"}}",
+                                  **({"value":"{{value:"+reference+"}}"} if type(value) in (int,float,bool,str) else {})} if not re.search(r"[{}]",reference) else {}
         evidence[reference] = record
     bx.require(reference in evidence, "未找到证据引用：" + reference)
     return evidence[reference]
@@ -531,7 +533,7 @@ def assess_claims(claims, evidence, native=None, *, specification=None, engine_f
         row["status"] = "model_assessed" if row["evidence_refs"] and not missing and not row["uncertainties"] and row["check_status"] in {"supported","not_requested"} else "unresolved"
         row["missing_evidence"] = missing
         row["diagnostics"] = diagnostics
-        row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "origin", "status", "scope", "meaning", "formatted_fact", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
+        row["observations"] = [{"reference": ref, **{k: evidence[ref][k] for k in ("value", "origin", "status", "scope", "meaning", "formatted_fact", "text_templates", "context", "digest", "content_sha256", "source", "line", "count") if k in evidence[ref]}}
                                for ref in row["evidence_refs"] if ref in evidence and evidence[ref].get("status") != "unresolved"]
         row["scope"] = "checks 仅证明所声明数值命题；model_assessed 仍为模型判断。完整事实含本机标签、单位及上下文，自由文字蕴含关系与因果未自动证明。"
         result.append(row)
@@ -692,7 +694,7 @@ def final_review(specification, evidence, claims, observations, assessment):
                           "required_objective_ids":required_objectives,"missing_objective_ids":missing_objectives,"unknown_objective_ids":unexpected_objectives},
               "review_template":{"token":token,"findings":"","unresolved":[],"conclusions":[{"claim_id":key,"scope":"","findings":""} for key in required],
                                  "objectives":[{"objective_id":key,"scope":"","findings":""} for key in required_objectives]},
-              "check": "先逐项核对 facts.objective_coverage 的用户要求及 facts.pending 的全部依赖，再记录 objectives 和 conclusions 的实际范围、依据与未实现部分。检查数字及主体/阶段、因果、排除理由、进入条件与最终保证。修改后重新生成本包，再填写 assessment.review；不要自动回填 token。",
+              "check": "先核对 facts.objective_coverage 的各项原要求及 facts.pending 的全部依赖，再记录 objectives 和 conclusions。说明当前对象、数字、因果、进入条件及实际范围为何足以或不足以支持该目标；按实际阶段窗口核对安排，基础时间、独立单次与平均投影分别说明。修改后重新生成本包，再填写 assessment.review；不要自动回填 token。",
               "scope": "摘要绑定防止旧复核沿用到新方案；同一模型自审，不能证明自由文字无误或等同独立模型/实战验证。"}
     return packet, pending
 
