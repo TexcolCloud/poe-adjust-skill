@@ -1400,6 +1400,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
             variants=Path(folder)/'variants.json';poe.write_json(variants,{'variants':[{'id':'observed-switch','operations':{'config':{'future-switch':True}}}]})
             native={'xml':SAMPLE,'stats':{'CombinedDPS':100},'engine_fingerprint':'fixture','main_skill':'fixture-main',
                     'points':1,'ascendancy_points':0,'secondary_ascendancy_points':0,'active_skills':[],
+                    'nodes':[1,2],'equipped':[],
                     'config_types':{'future-switch':'check'},'config_lists':{},
                     'config_controls':{'future-switch':{'type':'check','value':False}}}
             def calculate(*pos,**kw):
@@ -1500,7 +1501,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
             variant_file=run/'variants.json';poe.write_json(variant_file,{'variants':[{'id':'secondary-change','operations':{}}]})
             baseline={'stats':{'CombinedDPS':100},'main_skill':'fixture-main','main_skill_name':'Fixture main','main_group':1,'config_values':{'native-scene':True},'engine_fingerprint':'fixture','input_xml_sha256':'before',
                       'active_skills':[{'id':'fixture-main','name':'Fixture main','skill_ref':'qualified-main','is_main':True,'actor':'player'}],
-                      'nodes':[1,2],
+                      'nodes':[1,2],'equipped':[],
                       'stat_metadata':{'CombinedDPS':[{'label':'Combined DPS','format':'.1f','actor':'player'}]}}
             candidate=copy.deepcopy(baseline);candidate.update(input_xml_sha256='after',points=1,ascendancy_points=0,secondary_ascendancy_points=0)
             record=(run,{'intent':{}},{'plan':{'mode':'refine'},'engine_fingerprint':'fixture','baseline':baseline},SAMPLE,run)
@@ -4053,6 +4054,14 @@ class RealEngineTests(unittest.TestCase):
             self.assertEqual(row["xml_sha256"],bx.digest(bx.serialise(changed)))
             self.assertEqual(row["stats"]["Life"],measured["stats"]["Life"])
             self.assertAlmostEqual(row["stats"]["CombinedDPS"],measured["stats"]["CombinedDPS"],places=6)
+            changes=row['equipment_changes']['changes']
+            if variant['operations'].get('equip'):
+                change=next(change for change in changes if change['slot']=='Belt')
+                actual=next(item for item in measured['equipped'] if item['slot']=='Belt')
+                self.assertEqual(change['after'],actual)
+                self.assertTrue(any('Belt' in text for text in row['actual_changes']))
+            else:
+                self.assertEqual(changes,[])
         self.assertEqual(bx.digest(candidate.read_bytes()),original_hash)
         screen=poe.probe(args(run=str(self.run_dir),name="combined-probe",node_ids=str(node["id"])))
         self.assertEqual(screen["alternatives"][0]["status"],"screened")
