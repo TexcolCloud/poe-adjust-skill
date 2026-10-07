@@ -63,6 +63,8 @@ plan 使用 `--kind plan`。change.json 的四种操作共用一个入口：
 
 每次沿用返回 revision；源文件变化会拒绝陈旧修改，同一成功请求仅在源文件和引擎上下文一致时幂等重放。counts、actual_changes、invalidated_claims 和 facts_summary 是实际操作结果；大结果完整保存在 receipt_file，通过 view 分页读取。
 
+修改使判断失效时，next_actions 指出需要重新评审的 ID。先重算读取当前 observations，再修正文句和引用并提交 review_claims；程序不自动让旧结论通过。HTML 将未同步判断标为待复核，摘要在本次最终复核后展示；当前实际改动和数值始终可读。
+
 判断草案可以先只存 claim_id，随后用同一标识补 text/subjects/引用；保存草案不等于完成判断，完整评估仍要求正文及关联。
 
 artifacts 标注文件用途：source 是可编辑方案，persistent_state 是持久状态与重放凭证，temporary 是程序可清理的临时文件清单。`.edit.json` 属于 persistent_state，交付与恢复期间保留；程序自行处理内部临时文件。按 facts_summary 报告结果，直接使用 counts，不重新猜数量。

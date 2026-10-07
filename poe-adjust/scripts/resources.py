@@ -16,7 +16,12 @@ def input_shape(document, *, complete=True):
     seen=set()
     for index,row in enumerate(usage):
         path=f"/usage/{index}"
-        bx.require_keys(row,{"skill_ref","casts_per_second","active_seconds","recovery_seconds","continuous","claim_id"},path,"usage 字段无效。")
+        bx.require_keys(row,{"skill_ref","casts_per_second","active_seconds","recovery_seconds","continuous","claim_id","phase"},path,"usage 字段无效。")
+        if 'phase' in row:
+            bx.require(row['phase'] in ('preparation','combat') and (not complete or 'timeline' in document),'phase 在共同时间线中使用 preparation/combat。',location=path+'/phase',expected=['preparation','combat'],actual=row['phase'])
+            if complete and row['phase']=='preparation':
+                declared=document.get('timeline')
+                bx.require(isinstance(declared,dict) and 'preparation' in declared,'准备阶段需要声明实际时长及动作。',location='/timeline/preparation',expected={'duration_seconds':'positive seconds','events':'array'},actual=declared.get('preparation') if isinstance(declared,dict) else declared)
         for key in ("skill_ref","claim_id"):
             if key in row or complete and key=="skill_ref": bx.require(isinstance(row.get(key),str) and row[key].strip(),key+" 应为非空引用。",location=path+"/"+key,expected="nonempty string",actual=row.get(key))
         ref=row.get("skill_ref")
@@ -24,10 +29,17 @@ def input_shape(document, *, complete=True):
         for key in ("casts_per_second","active_seconds","recovery_seconds"):
             if key in row: bx.require(number(row,key) is not None and row[key]>=0,key+" 需要有限非负数。",location=path+"/"+key,expected="finite nonnegative number",actual=row[key])
         if "continuous" in row: bx.require(type(row["continuous"]) is bool,"usage.continuous 应为布尔值。",location=path+"/continuous",expected="boolean",actual=row["continuous"])
-        if "timeline" in document: bx.require(not set(row)&{"casts_per_second","active_seconds","recovery_seconds","continuous"},"共同时间线已定义频率/窗口；usage 只关联技能和判断。",location=path,expected=["skill_ref","claim_id"],actual=sorted(row))
+        if "timeline" in document: bx.require(not set(row)&{"casts_per_second","active_seconds","recovery_seconds","continuous"},"共同时间线已定义频率/窗口；usage 关联技能、判断及准备/战斗阶段。",location=path,expected=["skill_ref","claim_id","phase"],actual=sorted(row))
     if "timeline" not in document: return
     timeline=document["timeline"]
-    bx.require_keys(timeline,{"duration_seconds","events","repeat"},"/timeline")
+    bx.require_keys(timeline,{"duration_seconds","events","repeat","preparation"},"/timeline")
+    if 'preparation' in timeline:
+        preparation=timeline['preparation']
+        bx.require_keys(preparation,{'duration_seconds','events'},'/timeline/preparation')
+        try: input_shape({'timeline':{**preparation,'repeat':False}},complete=complete)
+        except bx.ContractError as exc:
+            exc.diagnostic['location']=exc.diagnostic['location'].replace('/timeline','/timeline/preparation',1)
+            raise
     if "repeat" in timeline: bx.require(type(timeline["repeat"]) is bool,"repeat 应为布尔值；false 检查有限窗口，true 检查重复周期。",location="/timeline/repeat",expected="boolean",actual=timeline["repeat"])
     duration=number(timeline,"duration_seconds")
     if complete or "duration_seconds" in timeline: bx.require(duration is not None and duration>0,"时间线需要有限正时长。",location="/timeline/duration_seconds",expected="positive seconds",actual=timeline.get("duration_seconds"))
@@ -129,21 +141,56 @@ def capabilities():
             "scope":"当前配置固定净回复下的离散费用时间线；未计敌人伤害、额外资源损失、命中吸取、充能、药剂补充、动作互斥或条件变化，也不改变原生 DPS。未测量部分可能使实际结果更好或更差。"}}
 
 
-def timeline_assessment(result, timeline):
+def timeline_assessment(result, timeline, usage=None):
+    """Project declared preparation once, then combat using the resulting balances."""
+    input_shape({'timeline':timeline,'usage':usage or []})
+    skills={s['skill_ref']:s for s in result.get('active_skills',[]) if s.get('skill_ref') and not s.get('disabled')}
+    prepared={row['skill_ref'] for row in usage or [] if row.get('phase')=='preparation'}
+    preparation=None;initial=None
+    if 'preparation' in timeline:
+        declared=timeline['preparation']
+        requested=prepared|{event['skill_ref'] for event in declared['events']}
+        for ref in requested:
+            bx.require(ref in skills,'准备动作使用本次原生 skill_ref。',location='/timeline/preparation/events',expected=list(skills),actual=ref)
+        preparation=_timeline_window(result,{**declared,'repeat':False},{ref:skills[ref] for ref in requested},location='/timeline/preparation')
+        initial={row['resource_id']:row.get('final') if row['status']=='supported' else None for row in preparation['resources']}
+        preparation['scope']='仅声明的准备动作及当前固定净回复；未安排的自动效果、其他损失、条件变化和准备效果在战斗中的覆盖未测得。余额按实际终点带入战斗，不自动回满。'
+    combat_refs={event['skill_ref'] for event in timeline['events']}
+    combat={ref:skill for ref,skill in skills.items() if ref not in prepared or skill.get('trigger') or ref in combat_refs}
+    outcome=_timeline_window(result,timeline,combat,initial=initial)
+    if preparation:
+        for ref,scheduled in outcome['skill_schedules'].items():
+            previous=preparation['skill_schedules'].get(ref,{})
+            first,last=scheduled['first_at'],previous.get('last_at')
+            rate=scheduled['native_rate']
+            if first is not None and last is not None and rate and rate>0 and declared['duration_seconds']+first-last<1/rate-1e-8:
+                index=next(event['source_index'] for event in outcome['events'] if event['skill_ref']==ref)
+                outcome['errors'].append('准备到战斗的同技能动作间隔不足：'+ref)
+                outcome['diagnostics'].append({'code':'timeline_transition_interval','location':f'/timeline/events/{index}/at','skill_ref':ref,
+                                               'expected':{'minimum_interval_seconds':1/rate},'actual':declared['duration_seconds']+first-last,
+                                               'action':'edit_input','message':'核对准备末次到战斗首次动作的原生间隔；准备只执行一次，战斗重复接缝另查。'})
+        outcome['preparation']=preparation
+        outcome['combat_status']=outcome['status']
+        for field in ('errors','pending','diagnostics'): outcome[field]=preparation[field]+outcome[field]
+        outcome['pending']=list(dict.fromkeys(outcome['pending']))
+        outcome['status']='refuted' if outcome['errors'] else 'unknown' if outcome['pending'] else 'supported'
+        outcome['scope']=preparation['scope']+' '+outcome['scope']
+    return outcome
+
+
+def _timeline_window(result, timeline, skills, *, initial=None, location='/timeline'):
     """Replay discrete payments on one clock using constant native net regen.
 
     This bounded projection excludes leech, recharge and flask refills. Channels
     and automatic effects without a complete declared native-rate payment pattern
     stay unknown. A payment projection never certifies the trigger actually fires.
     """
-    input_shape({"timeline":timeline})
     duration=number(timeline,"duration_seconds")
     repeating=timeline.get("repeat",True)
     events=timeline.get("events")
-    skills={s["skill_ref"]:s for s in result.get("active_skills",[]) if s.get("skill_ref") and not s.get("disabled")}
     rows=[]; diagnostics=[]; pending=[]; errors=[]; previous={}; automatic_schedules={}
     for index,event in enumerate(events):
-        path=f"/timeline/events/{index}"
+        path=f"{location}/events/{index}"
         ref,at=event.get("skill_ref"),number(event,"at")
         bx.require(ref in skills,"时间线动作使用当前原生 skill_ref。",location=path+"/skill_ref",expected=list(skills),actual=ref)
         rows.append({**event,"source_index":index})
@@ -154,7 +201,7 @@ def timeline_assessment(result, timeline):
         if rate is None or rate<=0: pending.append("capability:timeline:frequency:"+ref)
         elif ref in previous and at-previous[ref]<1/rate-1e-8:
             message="时间线同技能动作间隔短于当前原生频率："+ref
-            errors.append(message);diagnostics.append({"code":"timeline_frequency_exceeded","location":f"/timeline/events/{event['source_index']}/at","expected":{"minimum_interval_seconds":1/rate},"actual":at-previous[ref],"message":message,"action":"edit_input"})
+            errors.append(message);diagnostics.append({"code":"timeline_frequency_exceeded","location":f"{location}/events/{event['source_index']}/at","expected":{"minimum_interval_seconds":1/rate},"actual":at-previous[ref],"message":message,"action":"edit_input"})
         previous[ref]=at
     # The wraparound interval is also part of a claimed repeating cycle.
     for ref,last in previous.items() if repeating else []:
@@ -162,7 +209,7 @@ def timeline_assessment(result, timeline):
         rate=native_trigger_rate(skills[ref]) if skills[ref].get("trigger") else native_rate(skills[ref])
         if rate and rate>0 and duration-last+first<1/rate-1e-8:
             errors.append("时间线重复周期的同技能间隔不足："+ref)
-            diagnostics.append({"code":"timeline_repeat_interval","location":"/timeline/duration_seconds","skill_ref":ref,"expected":{"minimum_duration_seconds":last-first+1/rate},"actual":duration,"action":"edit_input","message":"重复周期需要核对末次到下周期首次动作的间隔。"})
+            diagnostics.append({"code":"timeline_repeat_interval","location":location+"/duration_seconds","skill_ref":ref,"expected":{"minimum_duration_seconds":last-first+1/rate},"actual":duration,"action":"edit_input","message":"重复周期需要核对末次到下周期首次动作的间隔。"})
     for ref,skill in skills.items():
         if not skill.get("trigger"): continue
         rate=native_trigger_rate(skill)
@@ -180,9 +227,10 @@ def timeline_assessment(result, timeline):
     for resource,cost_key in (("Mana","Mana"),("Life","Life"),("EnergyShield","ES")):
         stats=result["stats"]
         pool=available_pool(stats,resource)
+        starting=initial.get(resource) if initial is not None else pool
         regen=fixed_net_regeneration(stats,resource)
         payments={ref:payment(s.get("costs",{}),cost_key,eb,s.get("no_cost") is True) for ref,s in skills.items()}
-        gaps=[]
+        gaps=['preparation_balance_unavailable'] if initial is not None and starting is None else []
         for ref,skill in skills.items():
             single=payments[ref];full=number(skill.get("costs",{}),cost_key+"PerSecondCost")
             rate=native_trigger_rate(skill) if skill.get("trigger") else native_rate(skill)
@@ -193,19 +241,20 @@ def timeline_assessment(result, timeline):
                 gaps.append("automatic:"+ref)
                 code='timeline_automatic_rate_unavailable' if rate is None or rate<=0 else 'timeline_automatic_schedule_incomplete'
                 pending.append(('capability:timeline:trigger:' if code.endswith('unavailable') else 'resource:'+resource+':timeline_schedule:')+ref)
-                diagnostics.append({'code':code,'location':'/timeline/events','skill_ref':ref,'resource_id':resource,'actual':automatic_schedules[ref],
+                diagnostics.append({'code':code,'location':location+'/events','skill_ref':ref,'resource_id':resource,'actual':automatic_schedules[ref],
                                     'action':'inspect_capability' if code.endswith('unavailable') else 'edit_input',
                                     'message':'带费用的自动技能需要当前原生 SkillTriggerRate 和完整声明的固定频率支付安排；模型确定相位、补事件或修改源方案后重算。此投影不证明实际触发或条件覆盖。'})
-            if any(e["skill_ref"]==ref for e in rows) and (single is None or full is None or (single!=0 or full!=0) and (rate is None or not math.isclose(full,single*rate,rel_tol=1e-5,abs_tol=1e-5))): gaps.append("payment_projection:"+ref)
+            if single is None or full is None or (single!=0 or full!=0) and (rate is None or not math.isclose(full,single*rate,rel_tol=1e-5,abs_tol=1e-5)):
+                gaps.append("payment_projection:"+ref)
             if single and single>0 and not any(e["skill_ref"]==ref for e in rows) and not skill.get("trigger"):
                 gaps.append("unscheduled:"+ref)
                 pending.append("resource:"+resource+":timeline_schedule:"+ref)
-                diagnostics.append({"code":"timeline_skill_unscheduled","location":"/timeline/events","skill_ref":ref,"resource_id":resource,"payment":single,"action":"edit_input","message":"当前启用的有费用技能未安排到共同时间线；由模型补实际动作或调整源方案并重算。这是输入缺口，不是冷却技能一律无法测量。"})
-        known=pool is not None and pool>=0 and regen is not None and not gaps
-        record={"resource_id":resource,"duration_seconds":duration,"initial":pool,"net_regeneration_per_second":regen,
+                diagnostics.append({"code":"timeline_skill_unscheduled","location":location+"/events","skill_ref":ref,"resource_id":resource,"payment":single,"action":"edit_input","message":"此阶段启用的有费用技能未安排到共同时间线；由模型补实际动作或修阶段声明后重算。准备不替代战斗中的效果覆盖。"})
+        known=pool is not None and pool>=0 and starting is not None and starting>=0 and regen is not None and not gaps
+        record={"resource_id":resource,"duration_seconds":duration,"initial":starting,"capacity":pool,"net_regeneration_per_second":regen,
                 "included_recovery":"native_net_regen_only","excluded_recovery":capabilities()["timeline"]["excluded_recovery"],"status":"unknown","trace":[],"initial_pool_restored":None,"gaps":gaps}
         if known:
-            balance=pool;last=0;failed=False
+            balance=starting;last=0;failed=False
             for event in rows:
                 balance=min(pool,balance+regen*(event["at"]-last));before=balance
                 cost=payments[event["skill_ref"]];balance-=cost;last=event["at"]
@@ -214,12 +263,16 @@ def timeline_assessment(result, timeline):
                 record["trace"].append({"at":last,"skill_ref":event["skill_ref"],"before":before,"payment":cost,"after":balance,"affordable":affordable})
             balance=min(pool,balance+regen*(duration-last))
             if (resource=="Life" and balance<=0) or (resource!="Life" and balance<0): failed=True
-            record.update(final=balance,status="refuted" if failed else "supported",initial_pool_restored=not failed and balance>=pool-1e-8)
+            record.update(final=balance,status="refuted" if failed else "supported",initial_pool_restored=not failed and balance>=starting-1e-8)
             if failed: errors.append("共同时间线中存在无法支付或耗尽的资源："+resource)
             elif repeating and not record["initial_pool_restored"]: pending.append("resource:"+resource+":timeline_repeat")
-        elif pool is None or pool<0 or regen is None or any(not gap.startswith("unscheduled:") for gap in gaps): pending.append("capability:timeline:"+resource)
+        elif pool is None or pool<0 or regen is None or any(gap.startswith(('payment_','negative_payment:')) for gap in gaps): pending.append("capability:timeline:"+resource)
+        if initial is not None and starting is None: pending.append('resource:'+resource+':preparation_balance')
         records.append(record)
-    return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"automatic_schedules":automatic_schedules,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
+    schedules={ref:{'skill_ref':ref,'event_count':sum(event['skill_ref']==ref for event in rows),
+                    'first_at':next((event['at'] for event in rows if event['skill_ref']==ref),None),
+                    'last_at':previous.get(ref),'native_rate':native_trigger_rate(skill) if skill.get('trigger') else native_rate(skill)} for ref,skill in skills.items()}
+    return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"skill_schedules":schedules,"automatic_schedules":automatic_schedules,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
             "scope":capabilities()["timeline"]["scope"]}
 
 
@@ -269,7 +322,14 @@ def assess(result, intent, plan, claims=None):
             message="使用频率超过本机当前技能频率："+ref
             errors.append(message)
             diagnostics.append({"code":"usage_frequency_exceeded","location":f"/usage/{index}/casts_per_second","subject":ref,"actual":rate,"native_limit":limit,"message":message,"status":"failed"})
-        if not any(c["claim_id"]==row.get("claim_id") and c["status"]=="model_assessed" and "skill:"+ref in c["subjects"] for c in claims): needs("skill:"+ref)
+        linked=next((c for c in claims if c['claim_id']==row.get('claim_id')),None)
+        subject='skill:'+ref
+        if not linked or subject not in linked['subjects'] or linked['status']!='model_assessed':
+            needs(subject)
+            diagnostics.append({'code':'usage_claim_missing' if not linked else 'usage_claim_subject_missing' if subject not in linked['subjects'] else 'usage_claim_unresolved',
+                                'location':f'/usage/{index}/claim_id','actual':row.get('claim_id'),
+                                'expected':[c['claim_id'] for c in claims if subject in c['subjects']],
+                                'required_subject':subject,'action':'link_claim','message':'关联本次实际存在、覆盖此技能并已评审的判断；按当前事实修正文句或对象关系后重算。'})
     for skill in active:
         ref = skill.get("skill_ref") or skill.get("id")
         if skill.get("generals_cry"): needs("dependency:" + ref)
@@ -387,7 +447,7 @@ def assess(result, intent, plan, claims=None):
         resources.append(record)
     timeline=None
     if "timeline" in plan:
-        timeline=timeline_assessment(result,plan["timeline"])
+        timeline=timeline_assessment(result,plan["timeline"],usage)
         errors+=timeline["errors"];pending+=timeline["pending"];diagnostics+=timeline["diagnostics"]
         pending=[p for p in pending if not p.startswith("native:resource:") or next((r["status"] for r in timeline["resources"] if "native:resource:"+r["resource_id"]==p),"unknown")=="unknown"]
         for row in timeline["resources"]:

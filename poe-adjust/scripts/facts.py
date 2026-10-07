@@ -140,7 +140,7 @@ def pointer(value, locator):
             value = value[int(token)]
         else:
             bx.require(isinstance(value, dict) and token in value, "证据字段不存在：" + locator,
-                       location=parent,expected={"type":"object","fields":sorted(value)} if isinstance(value,dict) else {"type":"object","actual_type":type(value).__name__},actual=token)
+                       location=parent,expected={"type":"object","fields":sorted(value)[:100],"total_fields":len(value)} if isinstance(value,dict) else {"type":"object","actual_type":type(value).__name__},actual=token)
             value = value[token]
     return value
 
@@ -356,9 +356,10 @@ def claim_bindings(document, claim, engine_fingerprint):
     return result
 
 
-def reference_contract(native):
+def reference_contract(native, artifacts=None):
     """Describe the current evidence roots, independently of output-file paths."""
     return {name:{"prefix":"native:"+name+"#","origin":value.get("origin","program_calculation"),
+                  **({"artifact":artifacts[name]} if name in (artifacts or {}) else {}),
                   "fields":{key:"native:"+name+"#/"+key.replace("~","~0").replace("/","~1") for key in sorted(value)},
                   "identity_references":{key:{"reference":"native:"+name+"#"+locator,"meaning":meaning} for key,locator,meaning in (
                       ("character","/character_identity/digest","当前原生角色状态；适合角色一致性判断"),
@@ -378,7 +379,21 @@ def resolve_reference(reference, evidence, native=None):
             calculation = native[name]
             value = pointer(calculation, locator)
         except bx.ContractError as exc:
-            exc.diagnostic["reference_contract"]=reference_contract(native or {})
+            exc.diagnostic["reference_roots"]=sorted(native or {})
+            parent=exc.diagnostic.get("location","")
+            if name in (native or {}) and (not parent or parent.startswith("/")):
+                try: value=pointer(native[name],parent)
+                except bx.ContractError: parent='';value=native[name]
+                prefix="native:"+name+"#"+parent
+                exc.diagnostic["reference_prefix"]=prefix
+                identity_keys=("resource_id","skill_ref","id","stage_id","claim_id","objective_id","group","index","slot","name")
+                entries=list(enumerate(value)) if isinstance(value,list) else list(value.items()) if isinstance(value,dict) else []
+                exc.diagnostic["available_reference_count"]=len(entries)
+                exc.diagnostic["available_references"]=[
+                    {"index" if isinstance(value,list) else "field":key,
+                     "reference":prefix+"/"+str(key).replace("~","~0").replace("/","~1"),
+                     **({"identity":{k:row[k] for k in identity_keys if k in row}} if isinstance(row,dict) else {})}
+                    for key,row in entries[:10]]
             raise
         main=next((s for s in calculation.get("active_skills",[]) if s.get("is_main") and not s.get("disabled")),{})
         record = {"evidence_id": reference, "kind": "native", "subject": name, "locator": locator, "value": value,

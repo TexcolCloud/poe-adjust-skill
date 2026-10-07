@@ -870,6 +870,19 @@ class NativeBoundaryTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_bad_array_reference_returns_current_indexed_choices_without_full_registry(self):
+        native={'resources':{'timeline':{'resources':[{'resource_id':'Mana','status':'unknown'},
+                                                      {'resource_id':'Life','status':'supported'}]}},
+                'candidate':{'unrelated_'+str(i):None for i in range(200)}}
+        with self.assertRaises(bx.ContractError) as caught:
+            facts.resolve_reference('native:resources#/timeline/resources/Life/status',{},native)
+        diagnostic=caught.exception.diagnostic
+        self.assertLess(len(json.dumps(diagnostic)),2500)
+        choices=diagnostic['available_references']
+        self.assertEqual(choices[1]['identity'],{'resource_id':'Life'})
+        self.assertEqual(choices[1]['reference'],'native:resources#/timeline/resources/1')
+        self.assertEqual(facts.resolve_reference(choices[1]['reference']+'/status',{},native)['value'],'supported')
+
     def test_native_reference_diagnostics_recover_without_aliasing_old_values(self):
         native={"candidate":{"stats":{"FutureValue":None}},
                 "resources":{"entries":[{"future/value":4}],"origin":"program_assessment"},
@@ -884,10 +897,11 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(row["status"],"unresolved")
                 self.assertNotIn(reference,evidence)
                 diagnostic=row["diagnostics"][0]["source_diagnostic"]
-                contract=diagnostic["reference_contract"]
-                self.assertEqual(set(contract),set(native))
-                self.assertEqual(contract["resources"]["prefix"],"native:resources#")
-                self.assertEqual(contract["stage:future"]["fields"]["config_values"],"native:stage:future#/config_values")
+                self.assertEqual(set(diagnostic['reference_roots']),set(native))
+                self.assertNotIn('reference_contract',diagnostic)
+                if reference.startswith('native:resources#'):
+                    self.assertEqual(diagnostic['reference_prefix'],'native:resources#/entries')
+                    self.assertEqual(diagnostic['available_references'][0]['reference'],'native:resources#/entries/0')
                 self.assertIn("expected",diagnostic)
                 self.assertIn("location",diagnostic)
         valid="native:resources#/entries/0/future~1value"
@@ -1379,6 +1393,46 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_view_returns_current_native_references_for_projected_array_rows(self):
+        native={'timeline':{'resources':[{'resource_id':'Mana','status':'unknown'},
+                                         {'resource_id':'Life','status':'supported','future/value':False}]}}
+        contract=facts.reference_contract({'resources':native})
+        contract['resources']['artifact']={'pointer':'/readiness'}
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'evaluation.json'
+            poe.write_json(source,{'readiness':native,'reference_contract':contract})
+            page=poe.view_json(args(file=str(source),pointer='/readiness/timeline/resources',fields='resource_id,status,future/value',keys=False,query='',offset=1,limit=1))
+            ref=page['native_references']['/readiness/timeline/resources/1/future~1value']
+            self.assertEqual(ref,'native:resources#/timeline/resources/1/future~1value')
+            self.assertIs(facts.resolve_reference(ref,{}, {'resources':native})['value'],False)
+            self.assertNotIn('/readiness/timeline/resources/0/status',page['native_references'])
+            self.assertEqual(page['revision'],bx.digest(source.read_bytes()))
+            source_before=source.read_bytes()
+            keys=poe.view_json(args(file=str(source),pointer='/readiness/timeline/resources/1',fields='',keys=True,query='future',offset=0,limit=1))
+            self.assertEqual(keys['native_references']['/readiness/timeline/resources/1/future~1value'],ref)
+            self.assertEqual(source.read_bytes(),source_before)
+
+    def test_report_distinguishes_inactive_slot_and_disabled_gems_from_enabled_group(self):
+        native={'config_values':{},'config_labels':{},'gems':[
+            {'group':1,'index':1,'id':'future-reserve','level':3,'quality':2,'slot':'Weapon 2 Swap',
+             'group_enabled':True,'slot_enabled':False,'enabled':True,'granted_effects':[]},
+            {'group':2,'index':1,'id':'future-disabled','level':4,'quality':0,'slot':'Helmet',
+             'group_enabled':True,'slot_enabled':True,'enabled':False,'granted_effects':[]}]}
+        budget={'materials':[],'status':'unknown','totals_complete':False,'low':None,'high':None,'currency':None,'limit':None}
+        outcome={'name':'Current activation','plan':{'summary':'Pending model review'},'result':native,'budget':budget,
+                 'status':'draft','errors':[],'pending':[],'warnings':[],'comparison':{},'readiness':{'resources':[]},
+                 'claims':[],'objective_coverage':[],'evidence':{},'actual_changes':[],'comparison_notes':[],
+                 'publication':{'statements':[],'measurements':[],'scope':'Observed only'},'validation':{'scope':'Observed only'},
+                 'xml_sha256':'fixture','engine_fingerprint':'fixture','engine_version':'future'}
+        rendered=poe.report_html({'intent':{'goal':'Use currently active effects'}},outcome)
+        self.assertIn('槽位未启用',rendered)
+        self.assertIn('future-disabled 4/0（宝石未启用）',rendered)
+        self.assertNotIn('参与计算',rendered)
+        outcome['claims']=[{'claim_id':'stale','status':'unresolved','rendered_text':'Enable future-disabled for the old arrangement',
+                            'conditions':[],'uncertainties':[],'evidence_refs':[],
+                            'diagnostics':[{'code':'claim_binding_stale'}]}]
+        self.assertNotIn('Enable future-disabled for the old arrangement',poe.report_html({'intent':{'goal':'Use currently active effects'}},outcome))
+
     def test_stage_config_type_failure_has_its_actual_stage_location(self):
         native={'xml':SAMPLE,'classes':[{'id':4,'name':'Duelist','ascendancies':[]}],
                 'config_types':{'future-switch':'check'},'config_lists':{},'engine_fingerprint':'fixture'}
@@ -1978,6 +2032,91 @@ class ResourceRegressionTests(unittest.TestCase):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_preparation_phase_with_invalid_timeline_is_a_located_input_error(self):
+        for value in (None,[],{},'invalid'):
+            with self.subTest(value=value):
+                with self.assertRaises(bx.ContractError) as caught:
+                    resources.input_shape({'usage':[{'skill_ref':'future','phase':'preparation'}],'timeline':value})
+                self.assertEqual(caught.exception.diagnostic['location'],'/timeline/preparation')
+
+    def test_unplanned_skill_with_unknown_native_fee_is_not_treated_as_free(self):
+        result,timeline=self.fixture()
+        result['active_skills'].append({'skill_ref':'future-unknown-fee','actor':'player',
+                                        'costs':{'Speed':2,'LifeCost':0,'LifePerSecondCost':0,'ESCost':0,'ESPerSecondCost':0}})
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit['resources'][0]['status'],'unknown')
+        self.assertIn('payment_projection:future-unknown-fee',audit['resources'][0]['gaps'])
+        self.assertEqual(audit['resources'][1]['status'],'supported')
+
+    def test_preparation_needs_real_duration_and_checks_transition_frequency(self):
+        result,timeline,usage=self.preparation_fixture()
+        missing=copy.deepcopy(timeline);del missing['preparation']
+        with self.assertRaises(bx.ContractError) as caught: resources.assess(result,{}, {'timeline':missing,'usage':usage})
+        self.assertEqual(caught.exception.diagnostic['location'],'/timeline/preparation')
+        timeline['preparation']['duration_seconds']=.55
+        timeline['events'].append({'skill_ref':'future-startup','at':0})
+        audit=resources.assess(result,{}, {'timeline':timeline,'usage':usage})
+        self.assertTrue(any(row['code']=='timeline_transition_interval' and row['skill_ref']=='future-startup' for row in audit['diagnostics']))
+        self.assertEqual(audit['timeline']['status'],'refuted')
+
+    def test_unknown_preparation_balance_propagates_and_auto_fees_remain_in_combat(self):
+        result,timeline,usage=self.preparation_fixture()
+        del result['stats']['ManaRegenRecovery']
+        audit=resources.assess(result,{}, {'timeline':timeline,'usage':usage})
+        self.assertIsNone(audit['timeline']['resources'][0]['initial'])
+        self.assertEqual(audit['timeline']['resources'][0]['status'],'unknown')
+        result,timeline=self.automatic_fixture()
+        timeline['events']=[event for event in timeline['events'] if event['skill_ref']!='future-auto']
+        timeline['preparation']={'duration_seconds':4,'events':[{'skill_ref':'future-auto','at':0},{'skill_ref':'future-auto','at':2}]}
+        audit=resources.assess(result,{}, {'timeline':timeline,'usage':[{'skill_ref':'future-auto','phase':'preparation'}]})
+        self.assertEqual(audit['timeline']['preparation']['status'],'supported')
+        self.assertIn('automatic:future-auto',audit['timeline']['resources'][0]['gaps'])
+        self.assertEqual(audit['sustained_use']['status'],'unknown')
+
+    def test_usage_diagnoses_missing_claim_identifier_with_current_subject_choices(self):
+        result,timeline=self.fixture()
+        claims=[{'claim_id':'actual-payment','subjects':['skill:main'],'status':'model_assessed'}]
+        audit=resources.assess(result,{}, {'timeline':timeline,'usage':[{'skill_ref':'main','claim_id':'absent'}]},claims)
+        diagnostic=next(row for row in audit['diagnostics'] if row['code']=='usage_claim_missing')
+        self.assertEqual(diagnostic['location'],'/usage/0/claim_id')
+        self.assertEqual(diagnostic['actual'],'absent')
+        self.assertEqual(diagnostic['expected'],['actual-payment'])
+        self.assertEqual(diagnostic['required_subject'],'skill:main')
+
+    def preparation_fixture(self):
+        result,timeline=self.fixture()
+        costs={'ManaCost':30,'ManaPerSecondCost':60,'LifeCost':0,'LifePerSecondCost':0,'ESCost':0,'ESPerSecondCost':0,'Speed':2}
+        result['active_skills'].append({'skill_ref':'future-startup','actor':'player','costs':costs})
+        timeline['preparation']={'duration_seconds':1,'events':[{'skill_ref':'future-startup','at':0},{'skill_ref':'future-startup','at':.5}]}
+        usage=[{'skill_ref':'future-startup','claim_id':'setup','phase':'preparation'}]
+        return result,timeline,usage
+
+    def test_preparation_carries_its_actual_balance_into_combat_without_pool_reset(self):
+        result,timeline,usage=self.preparation_fixture()
+        audit=resources.assess(result,{}, {'timeline':timeline,'usage':usage})
+        self.assertEqual(audit['timeline']['preparation']['resources'][0]['final'],10)
+        self.assertEqual(audit['timeline']['resources'][0]['initial'],10)
+        self.assertEqual(audit['timeline']['resources'][0]['status'],'refuted')
+        timeline['preparation']['duration_seconds']=2
+        ready=resources.assess(result,{}, {'timeline':timeline,'usage':usage})
+        self.assertEqual(ready['timeline']['preparation']['resources'][0]['final'],30)
+        self.assertEqual(ready['timeline']['resources'][0]['initial'],30)
+        self.assertEqual(ready['timeline']['status'],'supported')
+        self.assertNotIn('unscheduled:future-startup',ready['timeline']['resources'][0]['gaps'])
+        self.assertEqual(ready['execution_coverage']['effect_coverage'],'unmeasured')
+        self.assertEqual(ready['timeline']['skill_schedules']['main']['event_count'],2)
+        self.assertEqual(ready['timeline']['skill_schedules']['move']['event_count'],1)
+
+    def test_preparation_declaration_without_actual_events_remains_an_input_gap(self):
+        result,timeline,usage=self.preparation_fixture()
+        timeline['preparation']['events']=[]
+        audit=resources.assess(result,{}, {'timeline':timeline,'usage':usage})
+        self.assertEqual(audit['timeline']['preparation']['status'],'unknown')
+        self.assertEqual(audit['sustained_use']['status'],'unknown')
+        missing=next(row for row in audit['diagnostics'] if row['code']=='timeline_skill_unscheduled')
+        self.assertEqual(missing['location'],'/timeline/preparation/events')
+        self.assertEqual(missing['skill_ref'],'future-startup')
+
     def automatic_fixture(self):
         result,timeline=self.fixture();timeline['repeat']=False
         costs={'ManaCost':10,'ManaPerSecondCost':5,'LifeCost':0,'LifePerSecondCost':0,'ESCost':0,'ESPerSecondCost':0,'SkillTriggerRate':.5}
@@ -3035,6 +3174,36 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
 
 
 class RealEngineTests(unittest.TestCase):
+    def test_native_preparation_projection_and_saved_view_share_current_payment_evidence(self):
+        before=engine.calculate(self.pob,bx.serialise(self.original))
+        plan={'mode':'rebuild','summary':'Two native standalone actions',
+              'operations':{'replace_skills':[{'gems':[{'skill_id':'Fireball','level':1}]},
+                                            {'gems':[{'skill_id':'Fireball','level':1}]}],'main_group':1}}
+        document=bx.apply_plan(self.original,plan,native=before)
+        native=engine.calculate(self.pob,bx.serialise(document),cache=False)
+        skills=[row for row in native['active_skills'] if row['id']=='Fireball' and not row.get('disabled')]
+        self.assertEqual(len(skills),2)
+        main=next(row for row in skills if row.get('is_main'));startup=next(row for row in skills if row is not main)
+        timeline={'duration_seconds':1,'repeat':False,'events':[{'skill_ref':main['skill_ref'],'at':0}],
+                  'preparation':{'duration_seconds':.1,'events':[{'skill_ref':startup['skill_ref'],'at':0}]}}
+        audit=resources.assess(native,{}, {'timeline':timeline,'usage':[{'skill_ref':startup['skill_ref'],'phase':'preparation'}]})
+        preparation=next(row for row in audit['timeline']['preparation']['resources'] if row['resource_id']=='Mana')
+        self.assertEqual(preparation['status'],'supported')
+        self.assertEqual(preparation['trace'][0]['payment'],startup['costs']['ManaCost'])
+        self.assertLess(preparation['final'],preparation['capacity'])
+        mana=next(row for row in audit['timeline']['resources'] if row['resource_id']=='Mana')
+        self.assertEqual(mana['initial'],preparation['final'])
+        self.assertEqual(mana['trace'][0]['payment'],main['costs']['ManaCost'])
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'evaluation.json'
+            contract=facts.reference_contract({'resources':audit},{'resources':{'pointer':'/readiness'}})
+            poe.write_json(source,{'readiness':audit,'reference_contract':contract})
+            index=next(index for index,row in enumerate(audit['timeline']['resources']) if row['resource_id']=='Mana')
+            page=poe.view_json(args(file=str(source),pointer='/readiness/timeline/resources',fields='resource_id,initial,status',keys=False,query='',offset=index,limit=1))
+            reference=page['native_references'][f'/readiness/timeline/resources/{index}/initial']
+            self.assertEqual(facts.resolve_reference(reference,{}, {'resources':audit})['value'],preparation['final'])
+        self.assertEqual(bx.digest(self.sample.read_bytes()),self.original_hash)
+
     def test_native_explicit_skill_requests_compare_observed_source_state(self):
         current=engine.calculate(self.pob,bx.serialise(self.original))
         selected=next(gem for gem in current['gems'] if gem.get('source') and gem.get('enabled') is True)

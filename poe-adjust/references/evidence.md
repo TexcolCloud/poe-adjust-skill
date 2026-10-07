@@ -10,7 +10,7 @@
 - web：url 与正文实际包含的 excerpt，由脚本读取公开官方/PoEDB 页面，输出 source_observed。其他公开来源可用 TeleAgent 联网工具读取，再使用 artifact。
 - artifact：path 相对声明源 JSON 所在目录解释（intent 文件目录或 plan/route 文件目录），限该目录及子目录内不超过 2 MB 的文本。source_base 返回实际基准目录，越界诊断给出 /evidence/<位置>/path、允许目录与实际路径；需要的联网/探针记录先保存到该目录。excerpt 必须确实存在，记录摘要与采集 URL/时间。artifact_observed 只证明片段可追溯，不证明文件必定来自声称的网站或其中数字已被原生测量。不能用此路径读取平台内部输出目录。
 - local_data：使用 `data read` 的 evidence_template（source/line/count/content_sha256），补 evidence_id/subject。程序从本机重新读取，不接受替代 text/path/url。输出 local_data_observed 只证明原文及摘要，不证明含义与当前方案相关、当季可得或游戏内实测。
-- 原生引用使用本次 reference_contract 中的 prefix/fields，无需声明 evidence。next_actions 指向完整契约；字段和证据根来自当前实际结果。view 的 pointer 在输出文件中定位，native 的 locator 则在对应证据根中定位，两者分别使用。配装文件的 `/result` 对应 candidate，`/readiness` 对应 resources；例如持续状态引用 `native:resources#/sustained_use/status`。路线有当次成功计算的 `stage:<id>` 及其派生 `resources:stage:<id>`，未计算阶段没有这些根。只能访问本次已有字段，指针不执行代码；引用值与引擎/计算 XML 绑定，数组索引按当前数据确认。失败时 source_diagnostic 给出现有父对象字段或数组长度及 reference_contract，修实际引用。
+- 原生引用无需声明 evidence。next_actions 指向本次 reference_contract；prefix/fields 描述逻辑根，artifact 指出所在 JSON 的 pointer 和可选 file。用 view 定位、分页读取具体对象，直接复制返回的 native_references；它使用当前数组索引及转义字段名，与文件 revision 一同返回。路线阶段的原生/资源根定位到各自 evaluation.json，未计算阶段没有这些根。只能访问本次已有字段，引用值与引擎/计算 XML 绑定。失败时 source_diagnostic 给出实际父对象、reference_prefix、前10项 available_references 及总数；根据对象身份选择准确引用，更多条目用 view 分页，不从名称猜数组索引。
 
 claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks`，可声明 `claim_type`。字符串数组与 checks 格式见下文。可比较命题使用 `claim_type:"comparison"`，checks 必须非空；门槛、指标和取舍由模型选择。默认 judgment 只表示模型解释，不证明数值达标。程序不从自由文字猜测阈值。
 
@@ -40,11 +40,15 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 简单频率/同一窗口用 usage，每行 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。skill_ref 来自本次 active_skills，对应 claim.subjects:`skill:<引用>`。频率为次/秒，窗口为秒，有限非负；未知省略。程序核对原生动作频率、单次支付和满速费用，只有费用符合单次支付乘频率时才线性投影。同一窗口可合并，不同窗口不会借用主技能窗口放行；混合动作使用下文 timeline。降频不沿用满速吸取，未重算的 DPS 仍为原生快照。资源缺口和启动前不足不能被 prose 消除。
 
+usage.claim_id 关联当前实际存在的判断；缺标识、技能 subject 不符或判断未评审均给出具体位置和当次可选 ID。按最终对象修正关系和正文，不能用另一个自造 ID 代替已有判断。
+
 readiness.single_payments 列出所有当前启用技能对三资源的独立单次支付、可用储量、原生定位和三值状态，包括尚未声明 usage 的副技能。每项从满可用储量独立检查，不证明连续动作或任意时点都可支付；生命支付后须存活，EB 与能盾恢复上限从当前原生规则读取，缺字段保持 unknown。resources.snapshot_balance_nonnegative 只比较当前账目中的声明频率与假设回复。timeline.resources[].initial_pool_restored 仅表示窗口支付成功且终点恢复起始储量；readiness.resources 中对应事实为 timeline_initial_pool_restored。旧 repeatable/ repeatable_at_native_regen_only 字段已删除，重复支付统一看 sustained_use 的当前状态及范围；finite_window_only 为 unknown。execution_coverage 另列整套动作实际执行、触发与效果覆盖的未测量部分。无共同时间线时，即使面板吸取大于消耗也不能写成已证实持续恢复。
 
 每行 mean_use 给出当前技能原生满速 cost_per_second、fixed_net_regeneration_per_second 及相减后的 net_drain_per_second。固定净回复优先用当前 Net<Resource>Regen，否则要求同时读到回复和持续伤害；缺值不填零。mean_pool_depletion_seconds 仅在正净消耗下给平均储量耗尽估算，生命保留正储量；非正净消耗或缺值为 null，不宣称无限续航。它是独立平均投影，不模拟离散扣费、其他动作、命中吸取、充能、药剂或效果变化；准确动作支付与混合节奏用 timeline。
 
 共同时间线为 `timeline:{duration_seconds:时长秒数,repeat:false,events:[{skill_ref:"当前引用",at:窗口内秒数}]}`。模型按目标选择：repeat=false 检查一次有限窗口；repeat=true 检查重复周期，省略时保留已有周期输入的语义。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，核对同技能动作间隔；重复周期另查循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
+
+有战前准备时，在同一 timeline 增加 `preparation:{duration_seconds:准备总时长,events:[{skill_ref,at}]}`；usage 为对应技能声明 `phase:"preparation"`，其他默认 combat。阶段由模型决定，不按技能名分类。准备从当前可用储量开始只执行一次，允许的等待也计入其时长；实际结束余额带入战斗，不自动回满。未安排的准备动作仍为输入缺口，准备未知余额向战斗传播。战斗中再次使用的技能仍在战斗 events 安排；当前带费用自动技能仍需战斗支付证据。程序检查准备到战斗的同技能间隔；skill_schedules 列出每个实际引用的事件数及首末时点。预先施放、没有再施放的事件与效果存活/持续生效分别判断，后者保留具体条件或未知。
 
 时间线检查范围只有离散费用和固定净回复，未计敌人伤害、额外资源损失、吸取、能盾充能、药剂补充、动作互斥或条件变化；缺项可能使实际更好或更差。自动技能可投影声明的固定原生频率支付：读取 SkillTriggerRate 与每秒费用，模型选相位并在 events 安排完整窗口，程序检查相邻间隔、首尾缺口和重复接缝，同时核对每秒费用等于单次费用×该频率。automatic_schedules 说明所验证的支付安排；实际触发、启动、目标和效果变化仍未测得。缺安排为 edit_input，缺原生触发频率/支付规则、非离散费用或回复量为 unknown；零费用自动技能无需虚构支付。手动技能频率可由当前原生速度或零速度技能的冷却倒数得到，读取 usage_rate.basis/metric/repeats，不按技能名猜。有限窗口支付通过只证明所列储量、固定回复和动作；sustained_use 仍保持 unknown。重复周期还需接缝合法且结束恢复起始储量；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
 

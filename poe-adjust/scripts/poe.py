@@ -23,7 +23,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.13"
+VERSION = "2.8.14"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
@@ -349,6 +349,9 @@ def edit_document(args):
               "artifacts":{"source":[{"path":str(path),"role":"editable_plan"}],"persistent_state":[{"path":str(receipt),"role":"revision_and_retry_receipt"}],"temporary":[]},
               "next_actions":[{"action":"edit_or_calculate","file":str(path),"revision":revision,"reference":"references/leveling.md" if args.kind=="route" else "references/build.md"}],
               "scope":"已保存输入草案及稳定标识；没有计算、确认游戏合法性或自动完成模型评审。"}
+    if invalidated:
+        response['next_actions'].append({'action':'review_claims','file':str(path),'revision':revision,'claim_ids':invalidated,
+                                         'instruction':'先计算当前方案，按新结果核对这些失效判断的正文与依据，修正源文字后重新评审。计算结果会给出可读取的 observations；程序不会自动刷新旧结论。'})
     if args.kind=="route": response["stage_instances"]=[{"stage_id":s["stage_id"],"instances":[{k:g.get(k) for k in ("instance_id","skill_id","level")} for group in s.get("skill_groups",[]) for g in group.get("gems",[])]} for s in result.get("stages",[])]
     if adoption: response["adopted_proposal"]=adoption
     response["facts_summary"]=f"已保存草案；实际修改 {len(response['actual_changes'])} 处，阶段 {response['counts']['stages']} 个、技能组 {response['counts']['skill_groups']} 组、宝石 {response['counts']['gems']} 颗、判断 {response['counts']['claims']} 条。待重新评审判断 {len(invalidated)} 条。持久状态凭证保留在 {receipt}；程序临时文件已自动处理。此操作没有计算或证明配装达标。"
@@ -371,16 +374,44 @@ def view_json(args):
     bx.require(path.suffix.lower()==".json","view 读取任务工作区已有 JSON，游戏原文使用 data。")
     bx.require(1<=args.limit<=12000 and args.offset>=0,"limit 为正整数，offset为非负整数。",location="/pagination",expected="limit 1..12000, offset >=0",actual={"limit":args.limit,"offset":args.offset})
     revision=bx.digest(path.read_bytes())
-    selected=facts.pointer(read_json(path),args.pointer)
+    document=read_json(path)
+    selected=facts.pointer(document,args.pointer)
     bx.require(bx.digest(path.read_bytes())==revision,"读取期间文件变化；重读当前字段与 revision。",location="/file",actual=str(path))
     fields=args.fields.split(",") if args.fields else []
     bx.require(len(fields)<=100 and all(field.strip()==field and field for field in fields) and len(fields)==len(set(fields)),"fields 使用最多100个不同的直接字段名，逗号分隔。",location="/fields")
     if args.keys:
         bx.require(isinstance(selected,dict) and not fields,"keys 列出当前对象字段；不与 fields 同用。",location=args.pointer)
         selected=sorted(selected)
+        indices=list(selected)
+    else: indices=list(range(len(selected))) if isinstance(selected,list) else []
     if args.query:
         bx.require(isinstance(selected,list) and all(isinstance(value,str) for value in selected),"query 筛选文本数组或 keys 的字段名；对象数组先用 pointer/fields 定位。",location=args.pointer)
-        selected=[value for value in selected if args.query.casefold() in value.casefold()]
+        filtered=[(index,value) for index,value in zip(indices,selected) if args.query.casefold() in value.casefold()]
+        indices=[index for index,_ in filtered];selected=[value for _,value in filtered]
+    checked=document.get('checked_route')
+    contract=document.get("reference_contract",checked.get("reference_contract",{}) if isinstance(checked,dict) else {})
+    def native_reference(pointer):
+        matches=[]
+        for name,entry in contract.items() if isinstance(contract,dict) else []:
+            if not isinstance(entry,dict) or entry.get('prefix')!='native:'+name+'#': continue
+            artifact=entry.get('artifact',{});base=artifact.get('pointer') if isinstance(artifact,dict) else None
+            file=artifact.get('file')
+            if not isinstance(base,str) or not base.startswith('/') or file is not None and (not isinstance(file,str) or Path(file).resolve()!=path): continue
+            if pointer==base or pointer.startswith(base+'/'): matches.append((len(base),entry['prefix']+pointer[len(base):]))
+        return max(matches)[1] if matches else None
+    def references(value):
+        located={}
+        def add(pointer):
+            ref=native_reference(pointer)
+            if ref: located[pointer]=ref
+        add(args.pointer)
+        entries=zip(indices[args.offset:args.offset+len(value)],value) if isinstance(value,list) else value.items() if isinstance(value,dict) else []
+        for token,row in entries:
+            pointer=args.pointer+'/'+str(token).replace('~','~0').replace('/','~1')
+            add(pointer)
+            if isinstance(value,list) and not args.keys and isinstance(row,dict):
+                for key in row: add(pointer+'/'+key.replace('~','~0').replace('/','~1'))
+        return located
     missing=[]
     def project(value,index=None):
         if not fields: return value
@@ -389,14 +420,14 @@ def view_json(args):
         if absent: missing.append({"index":index,"fields":absent})
         return {key:value[key] for key in fields if key in value}
     result={"file":str(path),"revision":revision,"pointer":args.pointer,"fields":fields,"keys":args.keys,"query":args.query,"offset":args.offset,
-            "missing_fields":missing,"read_only":True,"next_actions":[],
+            "missing_fields":missing,"read_only":True,"next_actions":[],"native_references":{},
             "scope":"当前JSON分页；缺字段保持缺失。offset 对应 page_unit。deferred_values 按子 pointer 继续读取；next_offset 继续同一字段。未重算。"}
     fits=lambda value: len(json.dumps(value,ensure_ascii=False,allow_nan=False))<=9500
     bx.require(len(json.dumps(result,ensure_ascii=False))<=6000,"读取参数过长，请缩小 fields/query。",location="/pagination",expected="bounded reader parameters",actual={"fields_count":len(fields),"query_characters":len(args.query or "")})
     if isinstance(selected,str):
         bx.require(not fields,"字符串用 pointer/offset/limit 分页。",location="/fields")
         total=len(selected);end=min(total,args.offset+args.limit)
-        result.update(total=total,page_unit="characters",value=selected[args.offset:end],next_offset=end if end<total else None)
+        result.update(total=total,page_unit="characters",value=selected[args.offset:end],next_offset=end if end<total else None,native_references=references(None))
         while not fits(result) and end>args.offset:
             end=args.offset+(end-args.offset)//2
             result.update(value=selected[args.offset:end],next_offset=end if end<total else None)
@@ -408,18 +439,19 @@ def view_json(args):
         total=len(entries);end=min(total,args.offset+args.limit)
         def page(stop):
             return [project(row,args.offset+i) for i,row in enumerate(entries[args.offset:stop])] if is_array else {k:selected[k] for k in entries[args.offset:stop]}
-        result.update(total=total,page_unit="items" if is_array else "fields",value=page(end),next_offset=end if end<total else None)
+        value=page(end)
+        result.update(total=total,page_unit="items" if is_array else "fields",value=value,next_offset=end if end<total else None,native_references=references(value))
         while not fits(result) and end-args.offset>1:
             end=args.offset+(end-args.offset)//2
-            missing.clear();result.update(value=page(end),next_offset=end if end<total else None)
+            missing.clear();value=page(end);result.update(value=value,next_offset=end if end<total else None,native_references=references(value))
         if not fits(result) and args.offset<total:
-            key=str(args.offset) if is_array else entries[args.offset]
+            key=str(indices[args.offset]) if is_array else entries[args.offset]
             pointer=args.pointer+"/"+key.replace("~","~0").replace("/","~1")
-            result.update(value=[] if is_array else {},deferred_values=[pointer],next_offset=args.offset+1 if args.offset+1<total else None,
+            result.update(value=[] if is_array else {},deferred_values=[pointer],next_offset=args.offset+1 if args.offset+1<total else None,native_references=references(None)|({pointer:native_reference(pointer)} if native_reference(pointer) else {}),
                           next_actions=[{"action":"view","file":str(path),"pointer":pointer,"offset":0,"limit":20}])
     else:
         bx.require(args.offset==0 and not fields,"标量没有分页字段。",location="/offset",expected=0,actual=args.offset)
-        result.update(total=1,page_unit="scalar",value=selected,next_offset=None)
+        result.update(total=1,page_unit="scalar",value=selected,next_offset=None,native_references=references(None))
     bx.require(fits(result),"本页元数据过大，请缩小读取参数。",location="/pagination",expected="bounded page",actual={"characters":len(json.dumps(result,ensure_ascii=False))})
     return result
 
@@ -1058,7 +1090,7 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
                             "instruction":"view 用 preview_pointer/preview_fields 先读点数和缺口；comparison 先 keys 再按用户目标选择字段，active_skills 分页读费用。决定采用后 edit --proposal-file 指向 details_file、--proposal-id 使用本标识、--if-sha256 使用 input_revision；程序读取完整修改。保存后重算并复核全部用户目标。"})
     claim_reviews=[row for row in outcome.get("diagnostics",[]) if row.get("action")=="review_claims" and row.get("claim_id")]
     ids=list(dict.fromkeys(row["claim_id"] for row in claim_reviews))
-    repairs=[row for row in outcome.get("diagnostics",[]) if row.get("action") in {"edit_input","link_claim","record_user_basis","revise_conclusion"} and row.get("location")
+    repairs=[row for row in outcome.get("diagnostics",[]) if row.get("action") in {"edit_input","link_claim","record_user_basis","revise_conclusion","repair_evidence"} and row.get("location")
              and not (row.get("code")=="goal_claim_unresolved" and isinstance(row.get("actual"),dict) and row["actual"].get("claim_id") in ids)]
     if outcome["errors"] or repairs:
         actions.append({**shared,"action":"repair_input","pointer":details_pointer+("/errors" if outcome["errors"] else "/diagnostics"),
@@ -1263,7 +1295,8 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     # themselves by merely referring to their own resulting budget status.
     report_context={"engine_fingerprint":result["engine_fingerprint"],"xml_sha256":result.get("xml_sha256"),"origin":"program_assessment"}
     native.update(budget={**budget,**report_context},resources={**audit,**report_context})
-    references=facts.reference_contract(native)
+    references=facts.reference_contract(native,{name:{"pointer":pointer} for name,pointer in
+                                              (("baseline","/baseline"),("candidate","/result"),("budget","/budget"),("resources","/readiness"))})
     claims = facts.assess_claims(plan.get("claims",[]),evidence,native,specification=plan,engine_fingerprint=result["engine_fingerprint"])
     coverage,coverage_pending=facts.objective_coverage(intent.get("objectives",[]),evidence,claims)
     if budget["over_budget"]: errors.append("已知采购成本下界超过用户预算。")
@@ -1461,13 +1494,20 @@ def report_html(state, outcome):
     rows="".join(f"<tr><td>{esc(METRICS.get(key,key))}</td><td>{show(row['before'])}</td><td>{show(row['after'])}</td><td>{show(row['delta'])}</td></tr>" for key,row in outcome["comparison"].items() if key in displayed)
     resources="".join(f"<tr><td>{esc(row['resource'])}</td><td>{show(row['pool'])}</td><td>{show(row['single_cost'])}</td><td>{show(row['cost_per_second'])}</td><td>{show(row['regeneration'])}</td><td>{show(row['leech_on_hit'])}</td><td>{show(row['net_cost'])}</td></tr>" for row in outcome["readiness"]["resources"])
     materials="".join(f"<tr><td>{esc(row['requirement_id'])}</td><td>{row['quantity']}</td><td>{row['declared_owned']}</td><td>{esc(row['status'])}</td></tr>" for row in budget["materials"])
-    claims="".join(f"<li><b>{esc(c['claim_id'])}</b> [{esc(c['status'])}] {esc(c['rendered_text'])}{bullets(c['conditions']+c['uncertainties'])}<small>依据：{esc(', '.join(c['evidence_refs']))}</small></li>" for c in outcome["claims"])
+    def current_claim_text(claim):
+        if any(row.get('code') in ('claim_binding_stale','claim_binding_missing') for row in claim.get('diagnostics',[])):
+            return '此说明尚未与本次方案同步；按当前对象和证据重新评审后提供操作建议。'
+        return claim['rendered_text']
+    claims="".join(f"<li><b>{esc(c['claim_id'])}</b> [{esc(c['status'])}] {esc(current_claim_text(c))}{bullets(c['conditions']+c['uncertainties'])}<small>依据：{esc(', '.join(c['evidence_refs']))}</small></li>" for c in outcome["claims"])
+    summary=plan['summary'] if outcome.get('review_packet',{}).get('status')=='model_reviewed' else '模型摘要尚待当前结果复核；实际操作与缺口见本次改动及核验数据。'
     objectives=bullets([row['text']+'：'+row['status']+'；判断 '+', '.join(row['claim_ids']) for row in outcome['objective_coverage']])
     evidence="".join(f"<li>{esc(key)}：{esc(row['status'])}；{esc(row.get('origin',''))}；{esc(row.get('excerpt',row.get('text',row.get('value',''))))} {('<a href='+chr(34)+esc(row['url'])+chr(34)+'>来源</a>') if isinstance(row.get('url'),str) and row['url'].startswith(('https://','http://')) else ''}</li>" for key,row in outcome["evidence"].items())
     groups={}
     for gem in result["gems"]: groups.setdefault(gem["group"],[]).append(gem)
     damage=esc(json.dumps(result.get("damage_sources",[]),ensure_ascii=False,indent=2))
-    links=bullets([f"{gems[0].get('slot') or '未装备'} / {'参与计算' if gems[0].get('group_enabled') else '不参与计算但非空槽仍占孔'}："+" — ".join(str(g.get('display_name',g.get('name',g.get('id'))))+f" {g.get('level')}/{g.get('quality')}" for g in gems) for gems in groups.values()])
+    def activation(value,label): return label+('已启用' if value is True else '未启用' if value is False else '状态未知')
+    links=bullets([f"{gems[0].get('slot') or '未装备'} / {activation(gems[0].get('group_enabled'),'组')}、{activation(gems[0].get('slot_enabled'),'槽位')}；非空槽仍占孔："+
+                   " — ".join(str(g.get('display_name',g.get('name',g.get('id'))))+f" {g.get('level')}/{g.get('quality')}（{activation(g.get('enabled'),'宝石')}）" for g in gems) for gems in groups.values()])
     detail=esc(json.dumps({"usage":plan.get("usage",[]),"resources":outcome["readiness"]["resources"],"config":result.get("config_values",{}),"assessment":plan.get("assessment",{}),"budget":budget,"crafted_items":outcome.get("crafted_items",[]),"xml_sha256":outcome["xml_sha256"],"engine_fingerprint":outcome["engine_fingerprint"]},ensure_ascii=False,indent=2))
     current_facts=bullets([s["text"] for s in outcome["publication"]["statements"]]+[m["text"] for m in outcome["publication"]["measurements"]])
     detail+="\n"+esc(json.dumps({"single_payments":outcome["readiness"].get("single_payments",[]),"sustained_use":outcome["readiness"].get("sustained_use")},ensure_ascii=False,indent=2))
@@ -1477,7 +1517,7 @@ def report_html(state, outcome):
 <style>body{{font:16px/1.7 system-ui;background:#f5f6f8;color:#202a38;max-width:1050px;margin:auto;padding:28px}}section{{background:white;padding:24px;margin:18px 0;border-radius:12px}}table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}small{{color:#526174}}h1{{margin-bottom:6px}}</style>
 <h1>{esc(outcome['name'])}</h1><p>{esc(status)} · PoECharm {esc(outcome['engine_version'])}</p>
 <section><h2>当前核验结论</h2>{current_facts}<p>{esc(outcome['publication']['scope'])}</p></section>
-<section><h2>目标与结论</h2><p>{esc(state['intent']['goal'])}</p><p>{esc(brief['message'])}</p>{objectives}<p>模型方案摘要（以当前校验和所列条件为限）：{esc(plan['summary'])}</p><p>{esc(outcome['validation']['scope'])}</p>{bullets(outcome['errors']+outcome['pending']+outcome['warnings'])}</section>
+<section><h2>目标与结论</h2><p>{esc(state['intent']['goal'])}</p><p>{esc(brief['message'])}</p>{objectives}<p>模型方案摘要（以当前校验和所列条件为限）：{esc(summary)}</p><p>{esc(outcome['validation']['scope'])}</p>{bullets(outcome['errors']+outcome['pending']+outcome['warnings'])}</section>
 <section><h2>实际改动与准备</h2>{bullets(outcome['actual_changes'])}{bullets(plan.get('migration_steps',[]))}<p>{esc(scenario_summary(result))}</p>{bullets(outcome['comparison_notes'])}</section>
 <section><h2>原生计算数值</h2><p>下表为当前配置快照；使用频率或覆盖时间改变后，未重算的 DPS 不能作为持续输出。</p><table><tr><th>指标</th><th>原方案</th><th>候选</th><th>数值差</th></tr>{rows}</table></section>
 <section><h2>技能与资源</h2>{links}<table><tr><th>资源</th><th>可用池</th><th>单次费用</th><th>每秒费用</th><th>净秒回</th><th>命中吸取</th><th>净消耗</th></tr>{resources}</table><p>吸取需要命中；充能、时序与额外操作的条件见依据及明细。未知项不按零计算。</p></section>
@@ -1612,7 +1652,10 @@ def probe(args):
                          "errors":errors+ce+audit["errors"],"pending":pending+cp+audit["pending"],"warnings":warnings+audit["warnings"],"readiness":audit})
     computed=sum('stats' in row for row in rows)
     status='screened' if computed==len(variants) else 'partial' if computed else 'failed' if any(row['status']=='failed' for row in rows) else 'blocked'
-    return {"status":status,"source_mode":"input_xml" if input_file else "evaluated_candidate","source_xml_sha256":bx.digest(xml),"requested_variants":len(variants),"calculated_variants":computed,"baseline_effect_state":engine.effect_state(baseline),"baseline_damage_observation":damage_observation(baseline,"baseline"),"alternatives":rows,"next":"逐变体列出结果或明确失败；有 stats 的变体才通过本次原生实算及请求选择核对。比较前核对实际效果开关、damage_observation 的技能/主体、XML、场景与目标。组合必须单列变体，不能相加单项收益。--input 仅观察已有角色，不建立交付认证。未继承旧操作/证据判断，不改输入或候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
+    return {"status":status,"source_mode":"input_xml" if input_file else "evaluated_candidate","source_xml_sha256":bx.digest(xml),
+            "comparison_basis":{"source_xml_sha256":bx.digest(xml),"source_character":baseline.get('character_identity'),
+                                "scope":"所有 delta 均是相对本次传入 XML 的局部或组合差分；不是自动相对玩家原角色的整套收益。整体代价另比较原角色与最终角色的实际条件。因果归属须在其余输入一致时观测对应组件。"},
+            "requested_variants":len(variants),"calculated_variants":computed,"baseline_effect_state":engine.effect_state(baseline),"baseline_damage_observation":damage_observation(baseline,"baseline"),"alternatives":rows,"next":"逐变体列出结果或明确失败；有 stats 的变体才通过本次原生实算及请求选择核对。比较前核对实际效果开关、damage_observation 的技能/主体、XML、场景与目标。组合必须单列变体，不能相加单项收益。--input 仅观察已有角色，不建立交付认证。未继承旧操作/证据判断，不改输入或候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
 
 
 def export(args):
@@ -1928,6 +1971,7 @@ def calculate_route(args):
             equipment[stage["stage_id"]]={"bases":stage.get("bases",{}),"checks":checks,
                                           "context":{"basis":"snapshot_xml","xml_sha256":value.get("xml_sha256"),"tree":value.get("tree_context"),"scope":"Actual native equipment and tree in this stage XML; not proof of availability."}}
     stage_native={"catalog":calculation,**{"stage:"+sid:r["result"] for sid,r in snapshots.items() if "result" in r}}
+    stage_artifacts={}
     if snapshots:
         claims=facts.assess_claims(route.get("claims",[]),registry,stage_native,specification=route,engine_fingerprint=calculation["engine_fingerprint"])
         checked,warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
@@ -1974,7 +2018,10 @@ def calculate_route(args):
         record.update(status="blocked" if errors else "draft" if gaps else "calculated",native_calculated=True,stats={k:value["stats"].get(k) for k in metrics},errors=errors,pending=gaps,
                       config_values=value["config_values"],readiness=audit,main_skill=value["main_skill"],active_skills=value["active_skills"],roundtrip_verified=True,
                       material_specs=material_specs,entry_checks=condition_checks,facts=calculation_facts(value,relevant))
-        write_json(directory/"evaluation.json",{**record,"native":{k:v for k,v in value.items() if k!="xml"}})
+        locations={'stage:'+sid:{'pointer':'/native'},'resources:stage:'+sid:{'pointer':'/readiness'}}
+        stage_artifacts.update({name:{**locator,'file':str(directory/'evaluation.json')} for name,locator in locations.items()})
+        write_json(directory/"evaluation.json",{**record,"native":{k:v for k,v in value.items() if k!="xml"},
+                                                'reference_contract':facts.reference_contract({'stage:'+sid:value,'resources:stage:'+sid:stage_native['resources:stage:'+sid]},locations)})
         record["evidence_path"]=str(directory/"evaluation.json")
         stage["calculation"]=record
         route_errors += [sid+"："+error for error in errors]
@@ -2006,7 +2053,7 @@ def calculate_route(args):
     budget=budget_summary({**route,"inventory":list({**owned,**declared}.values())},route,list(requirements.values()),registry,claims)
     checked["budget_assessment"]=budget
     stage_native["budget"]={**budget,"engine_fingerprint":calculation["engine_fingerprint"],"origin":"program_assessment"}
-    checked["reference_contract"]=facts.reference_contract(stage_native)
+    checked["reference_contract"]=facts.reference_contract(stage_native,{**stage_artifacts,'budget':{'pointer':'/checked_route/budget_assessment'}})
     claims=facts.assess_claims(route.get("claims",[]),registry,stage_native,specification=route,engine_fingerprint=calculation["engine_fingerprint"])
     final_checked,final_warnings=routes.validate(route,gems,calculation.get("data_version"),calculation["classes"],links,nodes,bases=bases,slots=calculation["slots"],equipment=equipment,evidence=registry,claims=claims)
     checked["pending"]=[p for p in checked["pending"] if p not in validation_pending]+final_checked["pending"]
