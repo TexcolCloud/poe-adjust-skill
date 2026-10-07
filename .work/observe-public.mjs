@@ -20,5 +20,7 @@ export async function observePublic({ sky, fs, window }, manifestPath) {
   }
   manifest.state_capture_addendum = 'Screenshot-backed UI capture; the caller discards image blocks and receives only public task status and permission labels. This capture method does not imply a client restart or prove delivery completion or model quality.';
   await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
-  return { window: actualWindow, observed_at_utc: at, tasks: rows, permission_labels: tree.split('\n').filter(line => /按钮.*(?:允许|拒绝)|文本.*(?:授权确认|目录授权)/.test(line)) };
+  return { window: actualWindow, observed_at_utc: at, tasks: rows, permission_labels: tree.split('\n').filter(line =>
+    /^\s*\d+ 按钮(?:\s|\().*(?:允许|拒绝)/.test(line) ||
+    /^\s*\d+ 文本(?:\s+\([^)]*\))?\s+(?:授权确认|目录授权(?:请求)?)\s*$/.test(line)) };
 }
