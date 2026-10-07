@@ -21,9 +21,9 @@ _UNSET = object()
 
 class ContractError(ValueError):
     """An input error with a concrete field and observable repair information."""
-    def __init__(self, message, *, code="invalid_input", location=None, expected=None, actual=_UNSET, input_file=None, available_options=None):
+    def __init__(self, message, *, code="invalid_input", action="edit_input", location=None, expected=None, actual=_UNSET, input_file=None, available_options=None):
         super().__init__(message)
-        self.diagnostic={"code":code,"message":message,"action":"edit_input","retryable":False}
+        self.diagnostic={"code":code,"message":message,"action":action,"retryable":False}
         for key,value in (("location",location),("expected",expected),("input_file",input_file),("available_options",available_options)):
             if value is not None: self.diagnostic[key]=value
         if actual is not _UNSET: self.diagnostic["actual"]=actual
@@ -110,6 +110,46 @@ def config_shape(values, location):
         require(key and key not in {"customMods","customModsExtra"},"使用真实配置字段和装备，不接受自定义数值补丁。",location=path,expected="nonempty native config key excluding customMods/Extra",actual=key)
         require(value is None or type(value) in (str,int,float,bool),"配置值为文本、数值、布尔或 null。",location=path,expected="scalar or null",actual=value)
         require(type(value) not in (int,float) or finite_number(value),"配置数值应有限。",location=path,expected="finite representable number",actual=value)
+
+
+def same_scalar(left, right):
+    """Lua numeric values may be ints/floats; booleans never equal 0/1."""
+    return (type(left) is type(right) or type(left) in (int,float) and type(right) in (int,float)) and left == right
+
+
+def config_value_shape(key, value, native, location):
+    """Validate current native input types, without inventing gameplay limits."""
+    if value is None: return  # Deleting an override also permits clearing an obsolete field.
+    types=native.get("config_types")
+    require(isinstance(types,dict) and native.get("capabilities",{}).get("native_config_types",True) is True,"本机未提供配置字段类型；不能猜测配置输入。",code="native_capability_unavailable",action="inspect_capability",location=location,expected="current native config_types",actual=types)
+    require(key in types,"本机未识别配置字段："+key,code="unknown_native_config",location=location,expected="current native config key",actual=key,available_options=sorted(types))
+    kind=types[key]
+    if kind=="list":
+        lists=native.get("config_lists");options=lists.get(key) if isinstance(lists,dict) else None
+        require(isinstance(options,list) and options,"本机未提供配置合法选项："+key,code="native_capability_unavailable",action="inspect_capability",location=location,expected="nonempty current native options",actual=options)
+        require(any(same_scalar(value,option) for option in options),f"无效配置值：{key}={value!r}；请使用本次 catalog config 的 val。",location=location,expected=options,actual=value,available_options=options)
+        return
+    if kind=="check": valid,expected=type(value) is bool,"boolean"
+    elif kind in {"count","integer","countAllowZero","float"}: valid,expected=finite_number(value),"finite number"
+    elif kind=="text": valid,expected=type(value) is str,"string"
+    else:
+        raise ContractError("当前配置控件类型尚未适配："+str(kind),code="native_capability_unavailable",action="inspect_capability",location=location,expected="supported native input type",actual=kind)
+    require(valid,f"配置 {key} 的本机类型为 {kind}，需要 {expected}；实际为 {value!r}。",location=location,expected=expected,actual=value)
+
+
+def config_input_value(entry, location):
+    """Read the actual XML value; never reinterpret truthy strings as false."""
+    kinds=[key for key in ("string","number","boolean") if key in entry.attrib]
+    require(len(kinds)==1,"配置 XML 需要恰好一种值类型。",location=location,expected="one string/number/boolean attribute",actual=dict(entry.attrib))
+    kind=kinds[0]; raw=entry.get(kind)
+    if kind=="string": return raw
+    if kind=="boolean":
+        require(raw in ("true","false"),"配置 XML 布尔值需要 true 或 false。",location=location,expected="true or false",actual=raw)
+        return raw=="true"
+    try: value=float(raw)
+    except (ValueError,TypeError): value=None
+    require(finite_number(value),"配置 XML 数值需要有限数。",location=location,expected="finite number",actual=raw)
+    return value
 
 
 def item_shape(item, location, *, complete=True):
@@ -276,8 +316,11 @@ def active_config(root):
     return active_set(root, "Config", "ConfigSet", "activeConfigSet")
 
 
-def set_config(root, values):
-    config_shape(values,"/operations/config")
+def set_config(root, values, *, native=None, location="/operations/config"):
+    config_shape(values,location)
+    if native is not None:
+        for key,value in values.items():
+            config_value_shape(key,value,native,location+"/"+key.replace("~","~0").replace("/","~1"))
     config = active_config(root)
     for key, value in values.items():
         for element in list(config):
@@ -514,7 +557,7 @@ def apply_plan(source, plan, native=None):
     if "main_group" in operations:
         index_one(groups(root), operations["main_group"], "主技能组",location="/operations/main_group")
         build.set("mainSocketGroup", str(operations["main_group"]))
-    if "config" in operations: set_config(root, operations["config"])
+    if "config" in operations: set_config(root, operations["config"],native=native)
     parse(serialise(root))
     return root
 

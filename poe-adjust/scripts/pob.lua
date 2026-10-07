@@ -313,6 +313,8 @@ end
 result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet
 local configOptions = LoadModule("Modules/ConfigOptions")
 result.config_keys, result.config_lists = {}, {}
+result.config_types = setmetatable({}, {__jsontype = "object"})
+result.capabilities.native_config_types = true
 result.config_values = scalarTable(mainEnv.configInput)
 result.config_defaults = setmetatable({}, {__jsontype = "object"})
 result.config_saved_values = setmetatable({}, {__jsontype = "object"})
@@ -328,6 +330,7 @@ result.config_controls = setmetatable({}, {__jsontype = "object"})
 for _, entry in ipairs(configOptions) do
   if entry.var then
     table.insert(result.config_keys, entry.var)
+    result.config_types[entry.var] = entry.type or json.null
     local control = build.configTab.varControls and build.configTab.varControls[entry.var]
     local ok, shown = false, nil
     if control and type(control.IsShown) == "function" then ok, shown = pcall(control.IsShown, control) end

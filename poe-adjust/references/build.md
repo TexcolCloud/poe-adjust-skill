@@ -60,7 +60,9 @@
 | tree | nodes 全量或 nodes_add/nodes_remove 增量，均填写实际分配节点及连接点；class_id、ascendancy_id、secondary_ascendancy_id 从当前目录选择；masteries 全量或 masteries_add 局部映射 |
 | level | 目标角色等级，由实际引擎核对保留值与使用要求 |
 | weapon_set | XML 支持的1或2；这是接口格式，非武器组合策略 |
-| config | 候选专有配置变化；null 显式删除。共同场景写顶层 scenario，未知字段保留未覆盖 |
+| config | 候选专有配置变化；null 显式删除。共同场景写顶层 scenario；新增值按本次原生字段与类型校验 |
+
+`config` 与共同 `scenario` 使用同一校验：本次 `config_types` 的 check 只接受 JSON 布尔值，数值控件只接受有限数值且不接受布尔值，text 接受字符串，list 使用当前 options[].val 并区分 false 与 0。类型、合法选项缺失或出现未适配控件时返回能力诊断，不猜新赛季格式。null 删除覆盖并允许原生默认值，不等于关闭或数值 0；可以清除旧版字段。旧 XML 中未知字段原样保留并提示未覆盖，已识别字段的错误类型阻止交付。数值范围、原生截断/默认贡献与作用条件仍按当前原文和实算判断，不复制赛季常数。
 
 `main_active_skill` 是当前物化组的主动技能选项序号，不等于宝石位置或宝石数。`inspect --calculate` 的 `calculation.skill_selections` 给出当前各组 choices（index/id/name/gem_index）；采用新组合后重新计算。非法选项或原生静默改写会返回 `native_selection_changed`、请求/实际值及 `available_options`。模型决定选哪一项，程序不自动替换；省略字段的原生默认值和无主动技能空组的默认占位可以正常保存。
 

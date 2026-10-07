@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import xml.etree.ElementTree as ET
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +58,72 @@ def resource_fixture():
 class DocumentTests(unittest.TestCase):
     def setUp(self):
         self.root = bx.parse(SAMPLE)
+
+    def test_native_checkbox_rejects_truthy_strings_and_numbers_before_materialization(self):
+        native={'config_types':{'future-checkbox':'check'},'config_lists':{}}
+        original=bx.serialise(self.root)
+        for value in ('false','true',0,1):
+            with self.subTest(value=value):
+                with self.assertRaises(bx.ContractError) as caught:
+                    bx.apply_plan(self.root,{'mode':'refine','summary':'Native input type fixture','operations':{'config':{'future-checkbox':value}}},native=native)
+                self.assertEqual(caught.exception.diagnostic['location'],'/operations/config/future-checkbox')
+                self.assertEqual(bx.serialise(self.root),original)
+        document=bx.apply_plan(self.root,{'mode':'refine','summary':'Native boolean fixture','operations':{'config':{'future-checkbox':False}}},native=native)
+        self.assertEqual(bx.active_config(document).find('Input').attrib,{'name':'future-checkbox','boolean':'false'})
+
+    def test_shared_scenario_uses_the_current_native_input_type_contract(self):
+        native={'config_types':{'future-checkbox':'check','future-count':'countAllowZero','future-text':'text','future-enum':'list'},
+                'config_lists':{'future-enum':[False,'new-season-option',3]}}
+        for key,value in [('future-checkbox','false'),('future-count',True),('future-text',1),('future-enum',0)]:
+            with self.subTest(key=key):
+                with self.assertRaises(bx.ContractError) as caught:
+                    poe.prepared(self.root,{'scenario':{key:value}},native=native)
+                self.assertEqual(caught.exception.diagnostic['location'],'/scenario/'+key)
+                intent=intent_for(self.root);intent['scenario']={key:value}
+                with self.assertRaises(bx.ContractError) as intent_error:
+                    poe.validate_intent(intent,self.root,native)
+                self.assertEqual(intent_error.exception.diagnostic['location'],'/scenario/'+key)
+        source=poe.prepared(self.root,{'scenario':{'future-checkbox':False,'future-count':2,'future-text':'abc','future-enum':False}},native=native)
+        self.assertEqual(len(bx.active_config(source).findall('Input')),4)
+
+    def test_config_validation_is_atomic_and_keeps_clear_distinct_from_false(self):
+        native={'config_types':{'future-switch':'check','future-count':'float'},'config_lists':{}}
+        bx.set_config(self.root,{'future-switch':True,'obsolete-field':'preserve'})
+        original=bx.serialise(self.root)
+        with self.assertRaises(bx.ContractError):
+            bx.set_config(self.root,{'future-switch':False,'future-count':True},native=native)
+        self.assertEqual(bx.serialise(self.root),original)
+        bx.set_config(self.root,{'future-switch':None,'obsolete-field':None},native=native)
+        self.assertEqual(bx.active_config(self.root).findall('Input'),[])
+        with self.assertRaises(bx.ContractError):
+            poe.prepared(self.root,{'scenario':{'future-switch':False}},scenario={'future-switch':0},native=native)
+
+    def test_missing_or_future_config_metadata_returns_a_capability_diagnostic(self):
+        for native in ({},{'config_types':{'future-field':'check'},'capabilities':{'native_config_types':False}},
+                       {'config_types':{'future-field':'new-native-control'}},
+                       {'config_types':{'future-field':'list'},'config_lists':{'future-field':[]}}):
+            with self.subTest(native=native),self.assertRaises(bx.ContractError) as caught:
+                bx.set_config(self.root,{'future-field':False},native=native)
+            self.assertEqual(caught.exception.diagnostic['action'],'inspect_capability')
+            self.assertEqual(caught.exception.diagnostic['location'],'/operations/config/future-field')
+        with self.assertRaises(bx.ContractError) as caught:
+            bx.set_config(self.root,{'unknown-new-field':True},native={'config_types':{'current-field':'check'}})
+        self.assertEqual(caught.exception.diagnostic['code'],'unknown_native_config')
+        self.assertEqual(caught.exception.diagnostic['available_options'],['current-field'])
+
+    def test_xml_config_values_cannot_hide_ambiguous_or_invalid_types(self):
+        for attributes in ({'string':'false','boolean':'false'},{'boolean':'False'},{'number':'NaN'},{'number':'abc'},{}):
+            with self.subTest(attributes=attributes),self.assertRaises(bx.ContractError):
+                bx.config_input_value(ET.Element('Input',{'name':'future-field',**attributes}),'/config/future-field')
+        self.assertIs(bx.config_input_value(ET.Element('Input',{'boolean':'false'}),'/config/future-field'),False)
+        self.assertEqual(bx.config_input_value(ET.Element('Input',{'string':'false'}),'/config/future-field'),'false')
+
+    def test_invalid_native_checkbox_observation_is_unknown_in_effect_state(self):
+        for value in ('false',0,1):
+            with self.subTest(value=value):
+                state=engine.effect_state({'config_controls':{'future-switch':{'type':'check','value':value}}})
+                self.assertIsNone(state['config_switches']['future-switch'])
+                self.assertEqual(state['invalid_config_switch_values'],{'future-switch':value})
 
     def test_saved_catalog_summary_points_to_actual_fields_and_entries(self):
         examples=[{"total":2,"entries":[{"id":1,"stats":["native effect"]},{"id":2,"future_field":False}]},
@@ -1267,12 +1334,28 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_stage_config_type_failure_has_its_actual_stage_location(self):
+        native={'xml':SAMPLE,'classes':[{'id':4,'name':'Duelist','ascendancies':[]}],
+                'config_types':{'future-switch':'check'},'config_lists':{},'engine_fingerprint':'fixture'}
+        stage={'stage_id':'future-stage','level':12,'ascendancy_allocated_nodes':[],
+               'skill_groups':[{'name':'main','slot':'','gems':[{'skill_id':'Fireball','level':1}]}],
+               'snapshot':{'operations':{'config':{'future-switch':'false'}}}}
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder)/'route.html';poe.write_json(output.with_suffix('.state.json'),{})
+            with patch.object(engine,'calculate',side_effect=AssertionError('Invalid config must fail before native calculation')):
+                result=poe.route_snapshots({'class_id':4,'stages':[stage]},native,Path(folder),Path(folder),output)['future-stage']
+            self.assertEqual(result['status'],'blocked')
+            self.assertEqual(result['diagnostic']['location'],'/stages/0/snapshot/operations/config/future-switch')
+            self.assertEqual(result['diagnostic']['actual'],'false')
+            self.assertFalse(any(Path(folder).rglob('snapshot.xml')))
+
     def test_input_xml_probe_reuses_variant_operations_without_writing_the_role(self):
         with tempfile.TemporaryDirectory() as folder:
             source=Path(folder)/'supplied.xml';poe.write_text(source,SAMPLE)
             variants=Path(folder)/'variants.json';poe.write_json(variants,{'variants':[{'id':'observed-switch','operations':{'config':{'future-switch':True}}}]})
             native={'xml':SAMPLE,'stats':{'CombinedDPS':100},'engine_fingerprint':'fixture','main_skill':'fixture-main',
                     'points':1,'ascendancy_points':0,'secondary_ascendancy_points':0,'active_skills':[],
+                    'config_types':{'future-switch':'check'},'config_lists':{},
                     'config_controls':{'future-switch':{'type':'check','value':False}}}
             def calculate(*pos,**kw):
                 if 'xml_batch' in kw:
@@ -2884,6 +2967,31 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
 
 
 class RealEngineTests(unittest.TestCase):
+    def test_native_config_types_reject_truthy_checkbox_variants_without_changing_input(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original),cache=False)
+        self.assertTrue(current['capabilities']['native_config_types'])
+        self.assertEqual(set(current['config_keys']),set(current['config_types']))
+        control=next(row for row in current['config_controls'].values() if row['type']=='check' and row['value'] is False and row.get('if_skill'))
+        selected=control['id'];self.assertEqual(current['config_types'][selected],'check')
+        missing=copy.deepcopy(current);missing['config_types'].pop(selected)
+        with self.assertRaises(engine.EngineError):engine.validate_contract(missing)
+        invalid=copy.deepcopy(self.original)
+        bx.set_config(invalid,{selected:'false'})  # Imported malformed XML, not an authorized typed mutation.
+        self.assertTrue(any(selected in error for error in poe.mechanical_issues(invalid,current,{})[0]))
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'角色.xml';source.write_bytes(self.sample.read_bytes());before=source.read_bytes()
+            values=[False,True,'false',0,1]
+            variants=Path(folder)/'variants.json';poe.write_json(variants,{'variants':[{'id':f'observation-{index}','operations':{'config':{selected:value}}} for index,value in enumerate(values)]})
+            arguments=args(input=str(source),variants=str(variants));arguments.pob=str(self.pob)
+            response=poe.probe(arguments);self.assertEqual(response['calculated_variants'],2)
+            rows={row['id']:row for row in response['alternatives']}
+            for index,value in enumerate(values[:2]):self.assertIs(rows[f'observation-{index}']['effect_state']['config_switches'][selected],value)
+            for index in range(2,len(values)):
+                row=rows[f'observation-{index}'];self.assertEqual(row['status'],'blocked')
+                self.assertEqual(row['diagnostic']['location'],f'/variants/{index}/operations/config/{selected}')
+                self.assertEqual(row['diagnostic']['expected'],'boolean')
+            self.assertEqual(source.read_bytes(),before);self.assertFalse((Path(folder)/'run.json').exists())
+
     def test_native_input_probe_uses_current_control_values_without_xml_rewriting(self):
         current=engine.calculate(self.pob,bx.serialise(self.original))
         control=next(row for row in current['config_controls'].values() if row['type']=='check' and row['value'] is False and row.get('if_skill'))
@@ -3224,8 +3332,11 @@ class RealEngineTests(unittest.TestCase):
         plan = copy.deepcopy(self.refine)
         plan["operations"]["config"] = {"enemyIsBoss": "Standard Boss"}
         plan["claims"] = []
-        outcome = self.evaluate_plan(plan, "invalid-config-label")
-        self.assertTrue(any("无效配置值" in error for error in outcome["errors"]), outcome["errors"])
+        with self.assertRaises(bx.ContractError) as caught:
+            self.evaluate_plan(plan, "invalid-config-label")
+        self.assertEqual(caught.exception.diagnostic['location'],'/operations/config/enemyIsBoss')
+        self.assertIn('Boss',caught.exception.diagnostic['available_options'])
+        self.assertFalse((self.run_dir/'candidates/invalid-config-label/evaluation.json').exists())
         plan["operations"]["config"]["enemyIsBoss"] = "Boss"
         outcome = self.evaluate_plan(plan, "valid-config-value")
         self.assertEqual(outcome["status"], "draft", outcome["errors"])

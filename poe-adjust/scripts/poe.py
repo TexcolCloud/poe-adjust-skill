@@ -23,7 +23,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.12"
+VERSION = "2.8.13"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 INTENT_FIELDS={"schema_version", "confirmed", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
@@ -520,7 +520,7 @@ def validate_intent(value, original, native=None, folder=None):
         bx.require(isinstance(rule, dict) and set(rule) == {"count", "basis"} and type(rule["count"]) is int and rule["count"] >= 0 and rule["basis"] in {"replaced_items", "changed_slots"}, "max_changed_equipment 需要 count 与 basis=replaced_items/changed_slots。")
     if result.get("baseline_main_group") is not None:
         bx.index_one(bx.groups(original), result["baseline_main_group"], "原角色主技能组")
-    bx.set_config(copy.deepcopy(original), result["scenario"])
+    bx.set_config(copy.deepcopy(original), result["scenario"],native=native,location="/scenario")
     records = facts.load_evidence(result.get("evidence", []), folder or Path.cwd(), {"league": result["league"]})
     facts.objective_coverage(result.get("objectives",[]),records,[])
     sources = result.get("constraint_sources", {})
@@ -551,13 +551,13 @@ def set_intent(args):
     write_json(run / "run.json", state)
     return {"run": str(run), "phase": state["phase"], "intent": intent, "intent_hash": state["intent_hash"], "target_version_evidence": state["target_version_evidence"], "next": "用本机事实与来源设计；未知进度只影响依赖它的检查，不能当零或满进度。"}
 
-def prepared(original, intent, *, baseline=False, scenario=None):
+def prepared(original, intent, *, baseline=False, scenario=None, native=None):
     root = copy.deepcopy(original)
     common = dict(scenario or {})
     for key, value in intent.get("scenario", {}).items():
-        bx.require(key not in common or common[key] == value, "比较场景覆盖了用户限定条件：" + key)
+        bx.require(key not in common or bx.same_scalar(common[key],value), "比较场景覆盖了用户限定条件：" + key,location="/scenario/"+key)
         common[key] = value
-    bx.set_config(root, common)
+    bx.set_config(root, common,native=native,location="/scenario")
     root.find("Build").set("characterLevelAutoMode", "false")
     if baseline and intent.get("baseline_main_group") is not None:
         root.find("Build").set("mainSocketGroup", str(intent["baseline_main_group"]))
@@ -655,22 +655,13 @@ def mechanical_issues(document, result, intent):
         if name not in result["config_keys"]:
             gaps.append("config:" + name)
             warnings.append("本机接口未识别配置：" + name)
-        elif name in result["config_lists"]:
-            allowed = result["config_lists"][name]
-            if not allowed:
-                gaps.append("config:" + name)
-                continue
-            value = None
-            kinds = [key for key in ("string", "number", "boolean") if key in entry.attrib]
-            if len(kinds) == 1:
-                kind = kinds[0]
-                if kind == "string": value = entry.get(kind)
-                elif kind == "boolean" and entry.get(kind) in ("true", "false"): value = entry.get(kind) == "true"
-                elif kind == "number":
-                    try: value = float(entry.get(kind))
-                    except ValueError: pass
-            if not any((type(value) == type(option) or type(value) in (int,float) and type(option) in (int,float)) and value == option for option in allowed):
-                errors.append(f"无效配置值：{name}={value!r}；请使用 catalog config 的 val：{allowed[:12]}")
+        else:
+            location="/config/"+name.replace("~","~0").replace("/","~1")
+            try: bx.config_value_shape(name,bx.config_input_value(entry,location),result,location)
+            except bx.ContractError as exc:
+                if exc.diagnostic["action"]=="inspect_capability":
+                    gaps.append("capability:config_type:"+name);warnings.append(str(exc))
+                else: errors.append(str(exc))
     spec = bx.active_spec(document)
     for field, actual in (("classId","class_id"),("ascendClassId","ascendancy_id"),("secondaryAscendClassId","secondary_ascendancy_id")):
         raw = spec.get(field)
@@ -1376,7 +1367,7 @@ def evaluate(args):
             and bx.digest(base_path.read_text(encoding="utf-8"))==state.get("baseline_sha256")):
         baseline=cached
     else:
-        _,baseline=measured_calculation(root,prepared(original,intent,baseline=True,scenario=scenario),plan.get("measurement",{}))
+        _,baseline=measured_calculation(root,prepared(original,intent,baseline=True,scenario=scenario,native=native),plan.get("measurement",{}))
         baseline.update(context_hash=context_hash,skill_version=VERSION,intent_hash=state["intent_hash"])
         write_json(base_path,baseline)
     state["baseline_sha256"]=bx.digest(base_path.read_text(encoding="utf-8"))
@@ -1387,7 +1378,7 @@ def evaluate(args):
         input_artifacts[str(path)]=bx.digest(path.read_bytes())
         source=bx.read_document(path)
     resolved, crafted = materialize_items(plan,root)
-    document=bx.apply_plan(prepared(source,intent,scenario=scenario),resolved,native=native)
+    document=bx.apply_plan(prepared(source,intent,scenario=scenario,native=native),resolved,native=native)
     document,result=measured_calculation(root,document,plan.get("measurement",{}))
     bx.require(result["engine_fingerprint"]==baseline["engine_fingerprint"]==native["engine_fingerprint"]==info["engine_fingerprint"],"计算期间引擎内容发生变化，请更新完成后重算。")
     tree_diagnostics,tree_repairs=native_tree_diagnostics(root,document,result,tree_operations=plan.get("operations",{}).get("tree"),limits=intent,usage_plan=plan)

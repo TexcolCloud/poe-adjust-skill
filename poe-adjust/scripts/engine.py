@@ -314,7 +314,8 @@ def effect_state(result):
     """Compact current switches; never infer duration from names or visibility."""
     controls=result.get("config_controls",{})
     return {"config_controls_available":isinstance(result.get("config_controls"),dict) and result.get("capabilities",{}).get("native_config_controls",True),
-            "config_switches":{key:row.get("value") for key,row in controls.items() if row.get("type")=="check"},
+            "config_switches":{key:row.get("value") if type(row.get("value")) is bool else None for key,row in controls.items() if row.get("type")=="check"},
+            "invalid_config_switch_values":{key:row["value"] for key,row in controls.items() if row.get("type")=="check" and row.get("value") is not None and type(row["value"]) is not bool},
             "global_effects":[{**{key:effect.get(key) for key in ("id","name","global_enabled","active_skill_present")},
                                "gem_id":gem.get("id"),"group":gem.get("group"),"index":gem.get("index"),
                                **{key:gem.get(key) for key in ("enabled","group_enabled","slot_enabled")}}
@@ -332,7 +333,7 @@ def validate_contract(result, *, catalog_only=False):
         return
     required = {"stats": dict, "resource_rules": dict, "gems": list, "equipped": list,
                 "active_skills": list, "damage_sources": list, "classes": list, "excluded_guard_checks": list,
-                "nodes": list, "granted_passives": list, "config_keys": list, "config_lists": dict, "config_values": dict, "config_labels": dict,
+                "nodes": list, "granted_passives": list, "config_keys": list, "config_types":dict, "config_lists": dict, "config_values": dict, "config_labels": dict,
                 "config_defaults": dict, "config_saved_values": dict, "config_controls":dict,
                 "warnings": list, "xml": str,
                 "tree_version": str, "latest_tree_version": str, "tree_context": dict, "socket_limits": dict, "capabilities": dict,
@@ -340,6 +341,9 @@ def validate_contract(result, *, catalog_only=False):
     for key, kind in required.items():
         if not isinstance(result.get(key), kind):
             raise EngineError(f"本机接口缺少有效 {key}；当前适配不能完成此项计算，请维护者检查接口变化。")
+    for key in result["config_keys"]:
+        if not isinstance(key,str) or not isinstance(result["config_types"].get(key),str) or not result["config_types"][key]:
+            raise EngineError("本机接口缺少有效配置字段类型。",diagnostic={"code":"native_capability_unavailable","action":"inspect_capability","retryable":False,"location":"/config_types/"+str(key),"expected":"current native input type","actual":result["config_types"].get(key)})
     for key in ("points", "ascendancy_points", "secondary_ascendancy_points"):
         if type(result.get(key)) is not int or result[key] < 0:
             raise EngineError("本机接口缺少有效已分配点数：" + key)
