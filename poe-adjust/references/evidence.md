@@ -30,7 +30,9 @@ conditions 记录结论成立的前提；尚未证实满足且影响本次目标
 
 关联写在 **claim.subjects**，不是 claim_id。例如 objective_id 为 `user-X`，解释该目标的 claim 可以用 claim_id:`explain-X`、subjects:`["objective:user-X","goal"]`。一个判断可以关联多个真实适用的对象，不必为每个字段写重复文字。objective_coverage.required_subject 和 diagnostics 给出缺少的关系；claims[].diagnostics 指向失败引用和实际来源原因。先修这些协议/引用遗漏，再决定哪些确实无法核实。
 
-事实优先使用完整占位引用，例如 `text:"{{fact:native:candidate#/stats/Life}}"`，程序生成 rendered_text 并将引用纳入 evidence_refs。observations 保留 origin/status/scope，区分来源实际值、程序派生投影与模型解释；新接口展示已有数值不等于首次测得。meaning 含当次原生显示 label/format、可辨认的 unit/display_multiplier、actor 和限定归属 object_identity；context 含 XML/引擎摘要、职业、主技能和实际配置。相同名称不能替代限定对象。单位或显示比例不明/冲突时保持 unknown，不从字段名猜单位。`{{value:...}}` 保留原始标量用于已有输入，模型自行添加单位不受程序证明。完整事实可展示数组描述；value 只支持标量。缺字段保持 unresolved，不能替换为零。
+原生 observations 与 publication.measurements 的 text_templates 给出当前可用表达式。独立事实段用 fact，例如 `text:"{{fact:native:candidate#/stats/Life}}"`：它已含对象、标签、显示比例和单位，可直接作为完整短句。数值内插用 value，仅插入原始标量；单位和上下文由模型按当前 meaning 明确，附加文字不受程序证明。需要原生显示比例时使用完整 fact，或另写有依据的换算；value 不自动乘 display_multiplier。fact 可以展示数组描述，value 仅适用于数值、布尔、字符串，null/缺值/数组不提供 value 模板。已有两种模式继续可用，程序生成 rendered_text 并将引用纳入 evidence_refs。
+
+observations 保留 origin/status/scope，区分来源实际值、程序派生投影与模型解释；新接口展示已有数值不等于首次测得。meaning 含当次原生显示 label/format、可辨认的 unit/display_multiplier、actor 和限定归属 object_identity；context 含 XML/引擎摘要、职业、主技能和实际配置。相同名称不能替代限定对象。单位或显示比例不明/冲突时保持 unknown，不从字段名猜单位；缺字段保持 unresolved，不能替换为零。
 
 可比较命题用 `checks:[{"reference":"native:candidate#/stats/Life","op":"ge","value":3000}]`，阈值由本次用户目标/模型理由决定，示例不规定目标。op 为 eq/ge/le；数值按**原始值**比较，eq 也支持同类型布尔/字符串，布尔不当数字。budget 与 resources 是当前程序核验结果，可引用 `native:budget#/within_limit` 或 `native:resources#/timeline/status`。预算确认示例为 eq/true；缺值、null 或异类型为 unknown，矛盾为 refuted，带 expected/actual 的诊断不能由文字或自审 token 消除。checks 证明精确命题，不能证明任意自由文字、因果、来源可信度或整套实战可行。
 
@@ -53,6 +55,8 @@ readiness.single_payments 列出所有当前启用技能对三资源的独立单
 共同时间线为 `timeline:{duration_seconds:时长秒数,repeat:false,events:[{skill_ref:"当前引用",at:窗口内秒数}]}`。模型按目标选择：repeat=false 检查一次有限窗口；repeat=true 检查重复周期，省略时保留已有周期输入的语义。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，核对同技能动作间隔；重复周期另查循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
 
 有战前准备时，在同一 timeline 增加 `preparation:{duration_seconds:准备总时长,events:[{skill_ref,at}]}`；usage 为对应技能声明 `phase:"preparation"`，其他默认 combat。阶段由模型决定，不按技能名分类。准备从当前可用储量开始只执行一次，允许的等待也计入其时长；实际结束余额带入战斗，不自动回满。未安排的准备动作仍为输入缺口，准备未知余额向战斗传播。战斗中再次使用的技能仍在战斗 events 安排；当前带费用自动技能仍需战斗支付证据。程序检查准备到战斗的同技能间隔；skill_schedules 列出每个实际引用的事件数及首末时点。预先施放、没有再施放的事件与效果存活/持续生效分别判断，后者保留具体条件或未知。
+
+publication 的 resource_snapshot 展示原账目范围，resource statements 按 phase 分别展示 preparation/combat；window.at 是本阶段总时长，last_event_at 是末次动作时点，final 是完整窗口终点，准备 final 进入战斗 initial。event_count/repeat 描述实际记录的动作与周期，不证明覆盖全部用户操作或实际持续效果。基础施法时间仅是当前基础属性；总准备、改速后的实际施法与支付范围分别找对应依据。
 
 时间线检查范围只有离散费用和固定净回复，未计敌人伤害、额外资源损失、吸取、能盾充能、药剂补充、动作互斥或条件变化；缺项可能使实际更好或更差。自动技能可投影声明的固定原生频率支付：读取 SkillTriggerRate 与每秒费用，模型选相位并在 events 安排完整窗口，程序检查相邻间隔、首尾缺口和重复接缝，同时核对每秒费用等于单次费用×该频率。automatic_schedules 说明所验证的支付安排；实际触发、启动、目标和效果变化仍未测得。缺安排为 edit_input，缺原生触发频率/支付规则、非离散费用或回复量为 unknown；零费用自动技能无需虚构支付。手动技能频率可由当前原生速度或零速度技能的冷却倒数得到，读取 usage_rate.basis/metric/repeats，不按技能名猜。有限窗口支付通过只证明所列储量、固定回复和动作；sustained_use 仍保持 unknown。重复周期还需接缝合法且结束恢复起始储量；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
 

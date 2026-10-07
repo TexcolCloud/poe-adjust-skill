@@ -1015,8 +1015,38 @@ class EvidenceTests(unittest.TestCase):
         row=facts.assess_claims([claim],{},{"catalog":result})[0]
         self.assertEqual(row["status"],"model_assessed");self.assertIn("Other branch",row["rendered_text"])
         self.assertEqual(row["observations"][0]["meaning"]["object_identity"]["owner_class_id"],17)
+        self.assertEqual(set(row["observations"][0]["text_templates"]),{"fact"})
         claim["text"]="{{value:"+ref+"}}"
         self.assertEqual(facts.assess_claims([claim],{},{"catalog":result})[0]["status"],"unresolved")
+
+    def test_current_text_templates_distinguish_raw_values_from_complete_facts(self):
+        native={"candidate":{"stats":{"FutureRate":8,"Scaled":.125,"Zero":0,"Disabled":False,"Unknown":None},
+                "stat_metadata":{"FutureRate":[{"label":"Future per second","format":".1f","actor":"player"}],
+                                 "Scaled":[{"label":"Future fraction","format":".1f%%","display_multiplier":100}]}}}
+        def current(metric):
+            ref="native:candidate#/stats/"+metric
+            return facts.resolve_reference(ref,{},native)
+        rate=current("FutureRate")
+        claim={"claim_id":"rate","text":"费用="+rate["text_templates"]["value"]+"/s。","subjects":["goal"]}
+        checked=facts.assess_claims([claim],{},native)[0]
+        self.assertEqual(checked["rendered_text"],"费用=8/s。")
+        self.assertEqual(checked["observations"][0]["text_templates"],rate["text_templates"])
+        claim["text"]=current("Scaled")["text_templates"]["fact"]
+        self.assertTrue(facts.assess_claims([claim],{},native)[0]["rendered_text"].endswith("12.5%"))
+        claim["text"]=current("Scaled")["text_templates"]["value"]
+        self.assertEqual(facts.assess_claims([claim],{},native)[0]["rendered_text"],"0.125")
+        for key,expected in (("Zero","0"),("Disabled","false")):
+            claim["text"]=current(key)["text_templates"]["value"]
+            self.assertEqual(facts.assess_claims([claim],{},native)[0]["rendered_text"],expected)
+        self.assertNotIn("value",current("Unknown")["text_templates"])
+        native["candidate"]["stats"]["Raw{Field}"]=7
+        self.assertFalse(current("Raw{Field}")["text_templates"])
+        self.assertEqual(current("Raw{Field}")["value"],7)
+        native["candidate"]["stats"]["FutureRate"]=13
+        self.assertEqual(facts.assess_claims([{"claim_id":"rate","text":rate["text_templates"]["value"],"subjects":["goal"]}],{},native)[0]["rendered_text"],"13")
+        published=poe.publication("draft",[],[],{"status":"unknown"},native,keys=["FutureRate"])
+        measurement=published["measurements"][0]
+        self.assertEqual(measurement["text_templates"],current("FutureRate")["text_templates"])
 
     def test_missing_measurement_cannot_pass_even_with_matching_review_token(self):
         ref="native:candidate#/stats/X";claim={"claim_id":"c","text":"at least 10","subjects":["goal"],"checks":[{"reference":ref,"op":"ge","value":10}]}
@@ -2164,6 +2194,37 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(ready['timeline']['skill_schedules']['main']['event_count'],2)
         self.assertEqual(ready['timeline']['skill_schedules']['move']['event_count'],1)
 
+    def test_publication_exposes_both_actual_windows_and_preserves_unknown_balances(self):
+        result,timeline,usage=self.preparation_fixture()
+        timeline['preparation']['duration_seconds']=2
+        timeline['repeat']=False
+        def publish(stage=False):
+            audit=resources.assess(result,{}, {'timeline':timeline,'usage':usage})
+            return poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},
+                                   **({'resource_audits':{'stage:future':audit}} if stage else {'readiness':audit}),keys=[])
+        publication=publish()
+        windows={(s['phase'],s['subject']):s for s in publication['statements'] if s['kind']=='resource'}
+        setup=windows[('preparation','Mana')];combat=windows[('combat','Mana')]
+        self.assertEqual((setup['window']['at'],setup['window']['last_event_at'],setup['window']['final']),(2,.5,30))
+        self.assertEqual(combat['window']['initial'],setup['window']['final'])
+        self.assertEqual(setup['window']['event_count'],2)
+        self.assertFalse(combat['window']['repeat'])
+        self.assertIn(setup['text'],publication['facts_summary'])
+        snapshot=next(s for s in publication['statements'] if s['kind']=='resource_snapshot')
+        self.assertIn(snapshot['text'],publication['facts_summary'])
+        self.assertTrue(all(scope in snapshot['text'] for scope in snapshot['scope']))
+        self.assertEqual(next(s['status'] for s in publication['statements'] if s['kind']=='sustained_use'),'unknown')
+        staged=publish(stage=True)
+        stage_setup=next(s for s in staged['statements'] if s['kind']=='resource' and s['phase']=='preparation' and s['subject']=='Mana')
+        self.assertEqual(stage_setup['window'],setup['window'])
+        self.assertEqual(stage_setup['calculation'],'stage:future')
+        del result['stats']['ManaRegenRecovery']
+        unknown=publish()
+        row=next(s for s in unknown['statements'] if s['kind']=='resource' and s['phase']=='combat' and s['subject']=='Mana')
+        self.assertIsNone(row['window']['initial'])
+        self.assertIsNone(row['window']['final'])
+        self.assertEqual(row['status'],'unknown')
+
     def test_preparation_declaration_without_actual_events_remains_an_input_gap(self):
         result,timeline,usage=self.preparation_fixture()
         timeline['preparation']['events']=[]
@@ -3250,6 +3311,12 @@ class RealEngineTests(unittest.TestCase):
         self.assertLess(preparation['final'],preparation['capacity'])
         mana=next(row for row in audit['timeline']['resources'] if row['resource_id']=='Mana')
         self.assertEqual(mana['initial'],preparation['final'])
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':native},readiness=audit,keys=['ManaUnreserved'])
+        preparation_statement=next(row for row in published['statements'] if row['kind']=='resource' and row['phase']=='preparation' and row['subject']=='Mana')
+        combat_statement=next(row for row in published['statements'] if row['kind']=='resource' and row['phase']=='combat' and row['subject']=='Mana')
+        self.assertEqual(preparation_statement['window']['final'],combat_statement['window']['initial'])
+        self.assertIn(preparation_statement['text'],published['facts_summary'])
+        self.assertIn('value',published['measurements'][0]['text_templates'])
         self.assertEqual(mana['trace'][0]['payment'],main['costs']['ManaCost'])
         with tempfile.TemporaryDirectory() as folder:
             source=Path(folder)/'evaluation.json'
