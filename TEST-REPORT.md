@@ -16,6 +16,8 @@
 
 已冻结 ZIP 的 SHA256：`c35fe88bb63b1422e8ff58305089cb9fd422d483944ea45af1849b983ffe6518`。重新打包容器时间可能变化，实际源文件必须一致。
 
+已创建私有 [TexcolCloud/poe-adjust-skill](https://github.com/TexcolCloud/poe-adjust-skill) 仓库，提交并推送 master；[v2.8.16 实验版](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16) 标为预发布，目标提交 `e80f1b9`。GitHub 资产为 205001 字节，服务器 SHA256 与实际重新下载的包均匹配上述冻结值。仓库当前文档后续仅补充发布凭证；交付源码、安装和包保持。
+
 ## TeleAgent 自然任务首份
 
 | 模块 | 数值及原生保存回读 | 非盲人工质量 | 核心 |

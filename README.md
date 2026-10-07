@@ -6,7 +6,7 @@
 
 ## 使用
 
-从 [GitHub Releases](https://github.com/TexcolCloud/poe-adjust-skill/releases) 获取导入包；收尾发布前该入口尚无文件。本机已经验证的包为 `poe-adjust-2.8.16.zip`。在 TeleAgent 的“技能·专家·应用连接 → 我的 → 导入技能”中选择 ZIP，不需要另装 Python 或维护游戏数据表。
+从 [2.8.16 实验版发布页](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16) 下载 `poe-adjust-2.8.16.zip`。私有仓库需要有访问权限的 GitHub 账号；上传后的包已下载核对，与本机冻结包一致。在 TeleAgent 的“技能·专家·应用连接 → 我的 → 导入技能”中选择 ZIP，不需要另装 Python 或维护游戏数据表。
 
 准备能在 PoECharm 打开的 XML，作为 TeleAgent 附件，并发送：
 
