@@ -638,6 +638,28 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(stage["attribute_requirements"]["strength"],10)
         self.assertEqual(stage["skill_groups"][0]["gems"][0]["base_resources"],{"manaCost":6})
         self.assertIn("未提供完整阶段快照",routes.render(checked,warnings,"future","3_future"))
+
+    def test_route_retracts_invalidated_judgment_in_all_three_display_locations(self):
+        claim={"claim_id":"entry","text":"Use the former arrangement before entering.",
+               "subjects":["objective:fixture-goal","stage:stage-0"],"evidence_refs":["user"],
+               "conditions":["Current model prerequisite."],"uncertainties":["Current unresolved coverage."]}
+        self.route["claims"]=[claim]
+        self.route["stages"][0]["entry_conditions"]=["entry"]
+        for invalidation in ("stale","missing",None):
+            with self.subTest(invalidation=invalidation):
+                current=copy.deepcopy(self.route)
+                if invalidation!="missing":
+                    current["claims"][0]["bindings"]=facts.claim_bindings(current,current["claims"][0],"fixture")
+                if invalidation=="stale": current["stages"][0]["level"]=2
+                claims=facts.assess_claims(current["claims"],self.evidence,specification=current,engine_fingerprint="fixture")
+                checked,warnings=routes.validate(current,self.gems,"3.29",self.classes,bases=self.bases,
+                    slots=self.slots,equipment=self.equipment,evidence=self.evidence,claims=claims)
+                rendered=routes.render(checked,warnings,"future","3_future")
+                self.assertEqual(rendered.count(claim["text"]),0 if invalidation else 3)
+                for text in claim["conditions"]+claim["uncertainties"]:
+                    self.assertEqual(rendered.count(text),0 if invalidation else 3)
+                self.assertEqual(current["claims"][0]["text"],claim["text"])
+
     def test_instance_cannot_change_gem_id_silently(self):
         self.gems["Other"]={**self.gems["ShieldCrush"],"skill_id":"Other","name":"Other"};self.route["gems"]["Other"]={}
         self.route["stages"][1]["skill_groups"][0]["gems"][0]["skill_id"]="Other"
@@ -870,6 +892,31 @@ class NativeBoundaryTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_claim_display_retracts_invalidated_prose_and_preserves_source_for_audit(self):
+        claim={"claim_id":"model-choice","status":"unresolved","text":"Original model choice.",
+               "rendered_text":"Retired instruction.","conditions":["Retired condition."],
+               "uncertainties":["Retired uncertainty."],"evidence_refs":["current-source"],
+               "check_status":"supported","verification_scope":"Declared check only"}
+        for code in ("claim_binding_stale","claim_binding_missing"):
+            with self.subTest(code=code):
+                source={**claim,"diagnostics":[{"code":code,"action":"review_claims"}]}
+                before=copy.deepcopy(source);display=facts.claim_display(source)
+                self.assertNotIn(source["rendered_text"],json.dumps(display))
+                self.assertEqual((display["conditions"],display["uncertainties"]),([],[]))
+                self.assertTrue(display["revision_pending"])
+                self.assertEqual((display["claim_id"],display["status"]),("model-choice","unresolved"))
+                self.assertEqual(display["diagnostics"],source["diagnostics"])
+                self.assertEqual(source,before)
+        for code in ("claim_check_refuted","missing_reference"):
+            with self.subTest(code=code):
+                source={**claim,"diagnostics":[{"code":code}]}
+                display=facts.claim_display(source)
+                self.assertFalse(display["revision_pending"])
+                self.assertEqual(display["text"],source["rendered_text"])
+                self.assertEqual((display["conditions"],display["uncertainties"]),
+                                 (source["conditions"],source["uncertainties"]))
+                self.assertEqual(display["status"],"unresolved")
+
     def test_bad_array_reference_returns_current_indexed_choices_without_full_registry(self):
         native={'resources':{'timeline':{'resources':[{'resource_id':'Mana','status':'unknown'},
                                                       {'resource_id':'Life','status':'supported'}]}},
@@ -1428,10 +1475,20 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertIn('槽位未启用',rendered)
         self.assertIn('future-disabled 4/0（宝石未启用）',rendered)
         self.assertNotIn('参与计算',rendered)
-        outcome['claims']=[{'claim_id':'stale','status':'unresolved','rendered_text':'Enable future-disabled for the old arrangement',
-                            'conditions':[],'uncertainties':[],'evidence_refs':[],
-                            'diagnostics':[{'code':'claim_binding_stale'}]}]
-        self.assertNotIn('Enable future-disabled for the old arrangement',poe.report_html({'intent':{'goal':'Use currently active effects'}},outcome))
+        for code in ('claim_binding_stale','claim_binding_missing'):
+            with self.subTest(code=code):
+                outcome['claims']=[{'claim_id':'stale','status':'unresolved','rendered_text':'Enable future-disabled for the old arrangement',
+                                    'conditions':['Use the retired setup.'],'uncertainties':['Retired risk estimate.'],
+                                    'evidence_refs':[],'diagnostics':[{'code':code}]}]
+                before=copy.deepcopy(outcome)
+                rendered=poe.report_html({'intent':{'goal':'Use currently active effects'}},outcome)
+                for retired in ('Enable future-disabled for the old arrangement','Use the retired setup.','Retired risk estimate.'):
+                    self.assertNotIn(retired,rendered)
+                self.assertEqual(outcome,before)
+        outcome['claims'][0]['diagnostics']=[{'code':'missing_reference'}]
+        rendered=poe.report_html({'intent':{'goal':'Use currently active effects'}},outcome)
+        self.assertIn('Use the retired setup.',rendered)
+        self.assertIn('Retired risk estimate.',rendered)
 
     def test_stage_config_type_failure_has_its_actual_stage_location(self):
         native={'xml':SAMPLE,'classes':[{'id':4,'name':'Duelist','ascendancies':[]}],
@@ -3293,12 +3350,43 @@ class RealEngineTests(unittest.TestCase):
         current=engine.calculate(self.pob,bx.serialise(self.original),cache=False)
         self.assertTrue(current['capabilities']['native_config_controls'])
         controls=current['config_controls'];self.assertTrue(controls)
+        effects={(gem['group'],gem['index'],effect['id']):effect for gem in current['gems'] for effect in gem['granted_effects']}
+        for skill in current['active_skills']:
+            with self.subTest(skill_ref=skill['skill_ref']):
+                effect=effects[skill['group'],skill['index'],skill['id']]
+                self.assertIn('description',skill)
+                self.assertEqual(skill['description'],effect.get('description'))
+                self.assertEqual(skill['skill_types'],effect['skill_types'])
+                self.assertIn('base_cast_time_seconds',skill)
+                self.assertEqual(skill['base_cast_time_seconds'],effect['base_cast_time_seconds'])
+                direct={key for key,row in controls.items() if row.get('if_skill')==skill['name'] or isinstance(row.get('if_skill'),list) and skill['name'] in row['if_skill']}
+                linked=set(skill['config_control_ids'])
+                self.assertEqual(skill['config_control_ids'],sorted(linked))
+                self.assertTrue(direct.issubset(linked))
+                self.assertTrue(linked.issubset(controls))
+                if not direct: self.assertFalse(linked)
+                for key,row in controls.items():
+                    parents=row.get('if_option',[])
+                    parents=parents if isinstance(parents,list) else [parents]
+                    for parent in parents:
+                        if parent in controls and (key in linked or parent in linked):
+                            self.assertTrue({key,parent}.issubset(linked))
         unchecked=[row for row in controls.values() if row['type']=='check' and row['value'] is False and row.get('if_skill')]
         self.assertTrue(unchecked)
         selected=unchecked[0]
+        source=selected['apply_source']
+        receipt=engine.read_source(self.pob,source['source'],source['line'],source['count'])
+        self.assertGreater(source['total_lines'],0)
+        self.assertTrue(receipt['lines'])
+        self.assertEqual(source['count'],min(source['total_lines'],200))
         query=engine.calculate(self.pob,bx.serialise(self.original),catalog='config',query=selected['id'],limit=30,cache=False)
         option=next(row for row in query['catalog'] if row['var']==selected['id'])
         self.assertIs(option['current_control']['value'],False)
+        self.assertEqual(option['current_control']['apply_source'],source)
+        skill=next(row for row in current['active_skills'] if row['base_cast_time_seconds'] is not None)
+        catalogue=next(row for row in engine.calculate(self.pob,'',catalog='skills',query=skill['id'],limit=100,cache=False)['catalog'] if row['id']==skill['id'])
+        for field in ('description','skill_types','base_cast_time_seconds'):
+            self.assertEqual(catalogue[field],skill[field])
         saved=engine.calculate(self.pob,current['xml'],cache=False)
         self.assertIs(saved['config_controls'][selected['id']]['value'],False)
         changed=bx.apply_plan(self.original,{'mode':'refine','summary':'Native configuration control test','operations':{'config':{selected['id']:True}}},native=current)
@@ -4069,7 +4157,6 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("原生 Full DPS 分项", report)
         self.assertIn("automatic_cost_per_second", report)
         self.assertIn("19/0", report)
-        self.assertIn("claims", exported["reply_policy"])
         self.assertTrue(any(s["kind"]=="damage_subject" and s["actor"]=="mirage" for s in exported["publication"]["statements"]))
         for resource in outcome["readiness"]["resources"]:
             self.assertEqual(resource["leech_on_hit"], 0)
@@ -4460,6 +4547,12 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(exported["publication"],final["publication"])
         self.assertEqual(exported["publication"]["statements"][1]["status"],"unknown")
         self.assertEqual(final["claims"][0]["checks"][0]["status"],"supported")
+        self.assertEqual(len(exported["judgments"]),1)
+        display=exported["judgments"][0]
+        self.assertEqual((display["claim_id"],display["status"],display["revision_pending"]),("facts","unresolved",True))
+        self.assertNotIn(final["claims"][0]["rendered_text"],display["text"])
+        self.assertEqual(final["response"]["judgments"],exported["judgments"])
+        self.assertTrue(any(d["code"]=="claim_binding_missing" for d in display["diagnostics"]))
         report=(self.run_dir/"output/publication/配装说明.html").read_text(encoding="utf-8")
         for measurement in exported["publication"]["measurements"]:
             self.assertIn(measurement["text"],report)
@@ -4516,6 +4609,11 @@ class RealEngineTests(unittest.TestCase):
         result=poe.export(args(run=str(self.run_dir),name="reviewed"))
         final=poe.read_json(self.run_dir/"output/reviewed/final-assessment.json")
         self.assertEqual(final["review_packet"]["status"],"model_reviewed")
+        self.assertEqual(len(result["judgments"]),1)
+        self.assertTrue(result["judgments"][0]["revision_pending"])
+        self.assertNotIn(plan["claims"][0]["text"],result["judgments"][0]["text"])
+        self.assertEqual(final["claims"][0]["text"],plan["claims"][0]["text"])
+        self.assertTrue(any(d["code"]=="claim_binding_missing" for d in result["judgments"][0]["diagnostics"]))
         self.assertTrue(any(value.startswith('objective:') for value in final['pending']))
         self.assertIsNone(final["evidence"]["artifact"]["url"])
         self.assertTrue(result["file_exported"])

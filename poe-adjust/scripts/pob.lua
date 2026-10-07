@@ -260,6 +260,12 @@ for id in pairs(mainEnv.grantedPassives or {}) do
 end
 table.sort(result.granted_passives, function(a, b) return a.id < b.id end)
 local costKeys = {"ManaCost", "LifeCost", "ESCost", "ManaPerSecondCost", "LifePerSecondCost", "ESPerSecondCost", "Cooldown", "Speed", "SkillTriggerRate", "Repeats", "TotemPlacementSpeed", "TrapThrowingSpeed", "MineLayingSpeed"}
+local function skillTypes(effect)
+  local types = setmetatable({}, {__jsontype = "array"})
+  for name, id in pairs(SkillType) do if effect.skillTypes and effect.skillTypes[id] then table.insert(types, name) end end
+  table.sort(types)
+  return types
+end
 local function supportLevelLimit(effect)
   if not effect or not effect.grantedEffect then return nil end
   for index, stat in ipairs(effect.grantedEffect.stats or {}) do
@@ -299,6 +305,9 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   if type(rate) == "number" and type(repeats) == "number" and repeats > 0 then rate = rate / repeats else rate = nil end
   local requiredLevel = limit and instance and instance.gemData and assert(instance.reqLevel, "Native trigger target requirement is unavailable")
   table.insert(result.active_skills, {id = skill.activeEffect.grantedEffect.id, name = skill.activeEffect.grantedEffect.name,
+    description = skill.activeEffect.grantedEffect.description or json.null,
+    skill_types = skillTypes(skill.activeEffect.grantedEffect),
+    base_cast_time_seconds = skill.activeEffect.grantedEffect.castTime or json.null,
     group = groupIndex, index = gemIndex, slot = skill.socketGroup and skill.socketGroup.slot,
     skill_ref = tostring(groupIndex)..":"..tostring(gemIndex)..":"..skill.activeEffect.grantedEffect.id..":"..actor..":"..tostring(skill.socketGroup and skill.socketGroup.source or "gem")..":"..tostring(build.itemsTab.activeItemSet.useSecondWeaponSet and 2 or 1),
     actor = actor, cost_scope = "Native player output for this skill; actor recovery attribution must be respected",
@@ -329,6 +338,20 @@ end
 result.config_labels = {}
 local configControls, includedControls = {}, {}
 result.config_controls = setmetatable({}, {__jsontype = "object"})
+local function configApplySource(apply)
+  if type(apply) ~= "function" or type(debug) ~= "table" or type(debug.getinfo) ~= "function" then return nil end
+  local info = debug.getinfo(apply, "S")
+  local path = info and info.source and info.source:match("^@(.+)")
+  if not path then return nil end
+  path = path:gsub("\\", "/"):gsub("^%./", "")
+  local directory = path:match("^([^/]+)/")
+  if (directory ~= "Modules" and directory ~= "Classes" and directory ~= "Data") or not path:match("%.lua$")
+    or path:find(":", 1, true) or path:find("..", 1, true) then return nil end
+  local first, last = info.linedefined, info.lastlinedefined
+  if type(first) ~= "number" or type(last) ~= "number" or first < 1 or last < first then return nil end
+  local count = last - first + 1
+  return {source = "engine/"..path, line = first, count = math.min(count, 200), total_lines = count}
+end
 for _, entry in ipairs(configOptions) do
   if entry.var then
     table.insert(result.config_keys, entry.var)
@@ -346,6 +369,7 @@ for _, entry in ipairs(configOptions) do
       row.value, row.value_basis = default, "native_unchecked_default"
     end
     if type(entry.tooltip) == "string" then row.tooltip=entry.tooltip end
+    row.apply_source = configApplySource(entry.apply)
     for field, name in pairs({ifSkill="if_skill", ifOption="if_option", ifFlag="if_flag", ifCond="if_cond", ifEnemyCond="if_enemy_cond"}) do
       if type(entry[field]) == "table" then
         row[name] = setmetatable({}, {__jsontype = "array"})
@@ -369,20 +393,34 @@ for _, entry in ipairs(configOptions) do
 end
 -- Include current controls and their native ifOption dependencies in both
 -- directions, so disabling an effect does not hide its associated stack rules.
-local added = true
-while added do
-  added = false
-  for key, row in pairs(configControls) do
-    local parents = type(row.if_option)=="table" and row.if_option or {row.if_option}
-    for _, parent in ipairs(parents) do
-      if configControls[parent] and (includedControls[key] or includedControls[parent]) then
-        if not includedControls[key] or not includedControls[parent] then added = true end
-        includedControls[key], includedControls[parent] = true, true
+local function includeRelatedControls(controls, included)
+  local added = true
+  while added do
+    added = false
+    for key, row in pairs(controls) do
+      local parents = type(row.if_option)=="table" and row.if_option or {row.if_option}
+      for _, parent in ipairs(parents) do
+        if controls[parent] and (included[key] or included[parent]) then
+          if not included[key] or not included[parent] then added = true end
+          included[key], included[parent] = true, true
+        end
       end
     end
   end
 end
+includeRelatedControls(configControls, includedControls)
 for key, include in pairs(includedControls) do if include then result.config_controls[key]=configControls[key] end end
+for _, skill in ipairs(result.active_skills) do
+  local linked = {}
+  for key, row in pairs(result.config_controls) do
+    local names = type(row.if_skill)=="table" and row.if_skill or {row.if_skill}
+    for _, name in ipairs(names) do if name == skill.name then linked[key] = true end end
+  end
+  includeRelatedControls(result.config_controls, linked)
+  skill.config_control_ids = setmetatable({}, {__jsontype = "array"})
+  for key in pairs(linked) do table.insert(skill.config_control_ids, key) end
+  table.sort(skill.config_control_ids)
+end
 result.points, result.ascendancy_points, result.secondary_ascendancy_points = build.spec:CountAllocNodes()
 result.mastery_selections = setmetatable({}, {__jsontype = "object"})
 for id, effect in pairs(build.spec.masterySelections) do result.mastery_selections[tostring(id)] = effect end
@@ -394,15 +432,14 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
     local grantedEffect = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
     local grantedEffects = setmetatable({}, {__jsontype = "array"})
     for effectIndex, effect in ipairs(gem.gemData and gem.gemData.grantedEffectList or {grantedEffect}) do
-      local types, present = setmetatable({}, {__jsontype = "array"}), false
-      for name, id in pairs(SkillType) do if effect.skillTypes and effect.skillTypes[id] then table.insert(types, name) end end
-      table.sort(types)
+      local present = false
       for _, skill in ipairs(mainEnv.player.activeSkillList) do
         if skill.activeEffect.srcInstance == gem and skill.activeEffect.grantedEffect == effect then present = true; break end
       end
-      table.insert(grantedEffects, {index = effectIndex, id = effect.id, name = effect.name, description = effect.description,
+      table.insert(grantedEffects, {index = effectIndex, id = effect.id, name = effect.name, description = effect.description or json.null,
         has_global_effect = effect.hasGlobalEffect == true, global_enabled = gem["enableGlobal"..effectIndex] == true,
-        skill_types = types, support = effect.support == true, active_skill_present = present})
+        skill_types = skillTypes(effect), base_cast_time_seconds = effect.castTime or json.null,
+        support = effect.support == true, active_skill_present = present})
       -- The editable spelling is an interface field, its meaning comes from this effect's position.
       if effect.hasGlobalEffect and effectIndex <= 2 then grantedEffects[#grantedEffects].operation_field = "enable_global"..effectIndex end
     end
@@ -563,7 +600,8 @@ local function queryCatalog(kind, query, limit, offset)
   elseif kind == "skills" then
     for id, skill in pairs(data.skills) do
       if matches(id) or matches(skill.name) then
-        table.insert(entries, {id = id, name = skill.name, description = skill.description,
+        table.insert(entries, {id = id, name = skill.name, description = skill.description or json.null,
+          skill_types = skillTypes(skill), base_cast_time_seconds = skill.castTime or json.null,
           from_item = skill.fromItem or false, support = skill.support or false,
           constant_stats = skill.constantStats, stat_ids = skill.stats})
       end

@@ -323,10 +323,14 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
 def render(route,warnings,engine_version,tree_version,*,evidence_file=None):
     esc=lambda v:html.escape(str(v))
     bullets=lambda rows:"<ul>"+"".join("<li>"+esc(r)+"</li>" for r in rows)+"</ul>"
-    claims={c["claim_id"]:c for c in route["claims"]}
+    claims={c["claim_id"]:facts.claim_display(c) for c in route["claims"]}
     def judgment(key):
-        claim=claims.get(key,{})
-        return claim.get("rendered_text",claim.get("text",key))+" ["+claim.get("status","未找到判断")+"]"
+        claim=claims.get(key)
+        if claim is None: return key+" [未找到判断]"
+        parts=[claim["text"]+" ["+claim["status"]+"]"]
+        if claim["conditions"]: parts.append("条件："+"；".join(claim["conditions"]))
+        if claim["uncertainties"]: parts.append("待核实："+"；".join(claim["uncertainties"]))
+        return "；".join(parts)
     brief=route.get("delivery_brief") or facts.delivery_brief(route.get("delivery_status","draft"),route.get("errors",[]),route["pending"])
     labels={"blocked":"存在已知错误，不能按本快照执行","draft":"条件草案，依赖仍待核实","calculated":"原生计算完成，是否可执行仍看条件与评审",
             "unsupported":"当前接口不支持本次测量","failed":"本次原生计算失败","not_calculated":"未提供完整阶段快照，不报告精确效果"}
