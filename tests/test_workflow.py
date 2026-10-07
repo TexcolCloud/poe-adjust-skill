@@ -3350,12 +3350,43 @@ class RealEngineTests(unittest.TestCase):
         current=engine.calculate(self.pob,bx.serialise(self.original),cache=False)
         self.assertTrue(current['capabilities']['native_config_controls'])
         controls=current['config_controls'];self.assertTrue(controls)
+        effects={(gem['group'],gem['index'],effect['id']):effect for gem in current['gems'] for effect in gem['granted_effects']}
+        for skill in current['active_skills']:
+            with self.subTest(skill_ref=skill['skill_ref']):
+                effect=effects[skill['group'],skill['index'],skill['id']]
+                self.assertIn('description',skill)
+                self.assertEqual(skill['description'],effect.get('description'))
+                self.assertEqual(skill['skill_types'],effect['skill_types'])
+                self.assertIn('base_cast_time_seconds',skill)
+                self.assertEqual(skill['base_cast_time_seconds'],effect['base_cast_time_seconds'])
+                direct={key for key,row in controls.items() if row.get('if_skill')==skill['name'] or isinstance(row.get('if_skill'),list) and skill['name'] in row['if_skill']}
+                linked=set(skill['config_control_ids'])
+                self.assertEqual(skill['config_control_ids'],sorted(linked))
+                self.assertTrue(direct.issubset(linked))
+                self.assertTrue(linked.issubset(controls))
+                if not direct: self.assertFalse(linked)
+                for key,row in controls.items():
+                    parents=row.get('if_option',[])
+                    parents=parents if isinstance(parents,list) else [parents]
+                    for parent in parents:
+                        if parent in controls and (key in linked or parent in linked):
+                            self.assertTrue({key,parent}.issubset(linked))
         unchecked=[row for row in controls.values() if row['type']=='check' and row['value'] is False and row.get('if_skill')]
         self.assertTrue(unchecked)
         selected=unchecked[0]
+        source=selected['apply_source']
+        receipt=engine.read_source(self.pob,source['source'],source['line'],source['count'])
+        self.assertGreater(source['total_lines'],0)
+        self.assertTrue(receipt['lines'])
+        self.assertEqual(source['count'],min(source['total_lines'],200))
         query=engine.calculate(self.pob,bx.serialise(self.original),catalog='config',query=selected['id'],limit=30,cache=False)
         option=next(row for row in query['catalog'] if row['var']==selected['id'])
         self.assertIs(option['current_control']['value'],False)
+        self.assertEqual(option['current_control']['apply_source'],source)
+        skill=next(row for row in current['active_skills'] if row['base_cast_time_seconds'] is not None)
+        catalogue=next(row for row in engine.calculate(self.pob,'',catalog='skills',query=skill['id'],limit=100,cache=False)['catalog'] if row['id']==skill['id'])
+        for field in ('description','skill_types','base_cast_time_seconds'):
+            self.assertEqual(catalogue[field],skill[field])
         saved=engine.calculate(self.pob,current['xml'],cache=False)
         self.assertIs(saved['config_controls'][selected['id']]['value'],False)
         changed=bx.apply_plan(self.original,{'mode':'refine','summary':'Native configuration control test','operations':{'config':{selected['id']:True}}},native=current)

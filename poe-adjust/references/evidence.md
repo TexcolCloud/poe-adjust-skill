@@ -14,6 +14,8 @@
 
 claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks`，可声明 `claim_type`。字符串数组与 checks 格式见下文。可比较命题使用 `claim_type:"comparison"`，checks 必须非空；门槛、指标和取舍由模型选择。默认 judgment 只表示模型解释，不证明数值达标。程序不从自由文字猜测阈值。
 
+conditions 记录结论成立的前提；尚未证实满足且影响本次目标的前提写 uncertainties。假设某固定状态时的条件结果，与该状态实际覆盖用户要求的时段分开判断。收益、费用或动作频率会随状态变化时，模型按当前原文选择需要的状态对照，判断能否覆盖目标；缺少演变依据时保留未知或改选能满足目标的方案。固定状态的重复账目不能代替这种覆盖证明，伤害快照也不能反推未测得的敌人死亡时间。
+
 通过 edit 新增或修改判断时，程序生成 bindings，绑定所声明对象、来源和当次引擎；保留原判断时，其摘要也保留。对象/来源变化会报告 invalidated_claims，计算时旧判断保持 unresolved。阅读当前事实并重新核对后，用 edit 的 review_claims 提交选定 claim_id，程序刷新摘要。bindings、observations 和状态均由程序生成；直接写入的旧 JSON 可作为草案读取，缺绑定时仍须经 edit 重新评审。摘要绑定不能证明模型解释正确，也不自动解析自由条件的全部语义依赖。
 
 缺引用、来源未解决、过期绑定、uncertainties 非空或 checks 未通过，保持 unresolved。model_assessed 表示模型作了有引用的判断；check_status/verification_scope 才说明所列可比较命题的测量范围。objective_coverage.declared_checks_status 与 publication.declared_checks 展示实际比较，不能把 judgment 当作数值证明。
@@ -22,7 +24,7 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项明确达到/未达到并解释当前对象、依据、条件、代价与未解决项。用户要求的技能、天赋、装备和操作必须在最终方案落实；旧计划文字或关联一个数值不能证明已实现。objective_coverage 只核对来源与关联，不证明目标完整或已经达到。整体 goal 判断说明总体取舍；修复改了组成后重新判断，不继承旧结论。
 
-计算场景也关联当前事实：配装判断使用 subjects:`["configuration:candidate"]`，阶段使用 `["configuration:stage:<stage_id>"]`，引用对应 `native:<计算名>#/config_values`、`config_controls` 或具体字段。config_controls 的 value、default 与 value_basis 分开；false 是关闭，null 是未知。核对当前本机配置原文、进度与实际解析值，决定显式覆盖或明示假设。涉及某效果开关的结论同时声明该实际值的 eq/true 或 eq/false 检查；计数、主体和持续覆盖另找依据，不能由装备存在推定。effect_state 给出护卫、药剂、各实际宝石效果及布尔配置快照，原生观察的 context 同时携带它。缺少当前场景评审会保留 config:scenario；存在引用不自动证明场景选择正确。
+计算场景也关联当前事实：配装判断使用 subjects:`["configuration:candidate"]`，阶段使用 `["configuration:stage:<stage_id>"]`，引用对应 `native:<计算名>#/config_values`、`config_controls` 或具体字段。config_controls 的 value、default 与 value_basis 分开；false 是关闭，null 是未知。核对当前本机配置原文、进度与实际解析值，决定显式覆盖或明示假设。模型把所述操作需要的状态写为 checks，引用当前控件 value 并比较所需值；例如自行选择 eq/true 或 eq/false。程序沿用通用比较器报告实际值与矛盾，不从自由文字猜应启用哪个技能。计数、主体和持续覆盖另找依据，不能由装备存在推定。effect_state 给出护卫、药剂、各实际宝石效果及布尔配置快照，原生观察的 context 同时携带它。缺少当前场景评审会保留 config:scenario；存在引用不自动证明场景选择正确。
 
 决定性排除理由区分使用门槛、属性不足、取得渠道与效果适配；优先用当前原文或最小变体对照核验。局部限制能否通过装备、等级或条件解决，由模型结合实际数据判断，程序不添加职业/宝石专用禁令。
 
