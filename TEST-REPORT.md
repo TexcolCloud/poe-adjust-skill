@@ -8,6 +8,10 @@
 
 18:01[文档核验](.work/2815-start-doc-verification.json)407本地链接通过；[保护核验](.work/2815-preservation-verification.json)2561冻结文件、15份历史模块评分、旧包和原XML保持，自动化ACTIVE。[本轮调用链自审](.work/2815-start-self-audit.json)与[接续路径清理](.work/2815-continuation-state-cleanup.json)仅核对影响范围和维护记录，不增加实机分或改写历史。18:13:57两个新任务仍运行中，无目录授权待处理，尚未观察首份交付。
 
+18:22[旧收尾入口复现](.work/2815-legacy-closeout-reproduction.json)确认硬性PAUSED与当前ACTIVE不兼容；该临时CLI已无当前调用，本轮两实机任务没有使用它。[清理核验](.work/2815-test-workflow-cleanup-verification.json)确认原源码已存Git后删除，现有保护工具未改，源16/安装15与15份原分保持；[ACTIVE保护核验](.work/2815-final-preservation-verification.json)通过。有效的源/回归、包/安装、历史/原件和diff检查沿用已有入口，无新模型任务或质量分，不把清理当作配装收益。
+
+18:25:47观察两原任务暂停（上次同时运行18:17:10），新窗口重新绑定后各发送一次“继续”；18:29:34、18:31:26分别确认物化/续航运行。窗口变化原因及精确退出时间未知，未读取活跃产物；恢复动作与时间边界单列于实测清单，不扣skill分。当前仍同一2.8.15，首份交付及目标复核待完成。
+
 ## 最近完成的2.8.14首份评审
 
 用户取消截止时间，原要求保持；2.8.14三个首次任务均已完成并冻结。人工分数为配装物化65、场景与续航79、目标复核78，核心均未放行。这是非盲的实际交付评审，不是总体配装准确率，也不能由与旧轮分数的差值断言改进因果。[本轮收尾保护核验](.work/2814-closeout-preservation-verification.json)确认2561冻结文件、12份历史模块分、本轮3份原分、旧包、安装及原始XML保持，自动化ACTIVE。
