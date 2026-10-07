@@ -24,6 +24,7 @@ assert version!=prior['version']
 target=root/f'.work/live-{version.replace(".","")}-manifest.json'
 assert not target.exists()
 protected=list(prior['protected_grades'])
+protected_addenda=list(prior['protected_review_addenda'])
 for case in ('materialization','scenario','review'):
     record=prior[case]
     path=root/record['quality_review']
@@ -33,6 +34,16 @@ for case in ('materialization','scenario','review'):
     assert grade['version']==prior['version'] and grade['case']==case and grade['quality_score']==record['quality_score']
     protected.append({'case':case,'path':record['quality_review'],'sha256':sha(path),
                       'score':record['quality_score'],'version':prior['version']})
+    for reference in record.get('review_addenda',[]):
+        addendum=(root/reference).resolve()
+        assert addendum.is_relative_to((root/'.work').resolve())
+        expected=record['review_addenda_sha256'][reference]
+        assert sha(addendum)==expected
+        existing=next((row for row in protected_addenda if row['path']==reference),None)
+        if existing:
+            assert existing['sha256']==expected
+        else:
+            protected_addenda.append({'case':case,'path':reference,'sha256':expected})
 value={'version':version,'iteration_started_at_utc':started.isoformat(),
        'recorded_at_utc':datetime.now(timezone.utc).isoformat(),
        'phase':'release_verification','base_commit':prior['source_commit'],
@@ -41,7 +52,7 @@ value={'version':version,'iteration_started_at_utc':started.isoformat(),
        'deadline':None,'authorization':'User explicitly revoked the cutoff and authorized continuous iteration with unchanged requirements.',
        'automation_status':prior['automation_status'],'prior_round':prior_path.relative_to(root).as_posix(),
        'original_path':prior['original_path'],'original_sha256':prior['original_sha256'],
-       'protected_grades':protected,'protected_review_addenda':prior['protected_review_addenda'],
+       'protected_grades':protected,'protected_review_addenda':protected_addenda,
        'methodology':prior['methodology'],'monitoring_policy':prior['monitoring_policy'],
        'automation_interval_minutes':prior.get('automation_interval_minutes'),
        'current_fix_basis':[prior[case]['quality_review'] for case in ('materialization','scenario','review')],
