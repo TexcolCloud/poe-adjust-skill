@@ -40,7 +40,7 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 简单频率/同一窗口用 usage，每行 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。skill_ref 来自本次 active_skills，对应 claim.subjects:`skill:<引用>`。频率为次/秒，窗口为秒，有限非负；未知省略。程序核对原生动作频率、单次支付和满速费用，只有费用符合单次支付乘频率时才线性投影。同一窗口可合并，不同窗口不会借用主技能窗口放行；混合动作使用下文 timeline。降频不沿用满速吸取，未重算的 DPS 仍为原生快照。资源缺口和启动前不足不能被 prose 消除。
 
-readiness.single_payments 列出所有当前启用技能对三资源的独立单次支付、可用储量、原生定位和三值状态，包括尚未声明 usage 的副技能。每项从满可用储量独立检查，不证明连续动作或任意时点都可支付；生命支付后须存活，EB 与能盾恢复上限从当前原生规则读取，缺字段保持 unknown。resources.snapshot_balance_nonnegative 只比较当前账目中的声明频率与假设回复。sustained_use 区分共同时间线测量与未测得；无共同时间线时，即使面板吸取大于消耗也不能写成已证实持续恢复。
+readiness.single_payments 列出所有当前启用技能对三资源的独立单次支付、可用储量、原生定位和三值状态，包括尚未声明 usage 的副技能。每项从满可用储量独立检查，不证明连续动作或任意时点都可支付；生命支付后须存活，EB 与能盾恢复上限从当前原生规则读取，缺字段保持 unknown。resources.snapshot_balance_nonnegative 只比较当前账目中的声明频率与假设回复。timeline.resources[].initial_pool_restored 仅表示窗口支付成功且终点恢复起始储量；readiness.resources 中对应事实为 timeline_initial_pool_restored。旧 repeatable/ repeatable_at_native_regen_only 字段已删除，重复支付统一看 sustained_use 的当前状态及范围；finite_window_only 为 unknown。execution_coverage 另列整套动作实际执行、触发与效果覆盖的未测量部分。无共同时间线时，即使面板吸取大于消耗也不能写成已证实持续恢复。
 
 每行 mean_use 给出当前技能原生满速 cost_per_second、fixed_net_regeneration_per_second 及相减后的 net_drain_per_second。固定净回复优先用当前 Net<Resource>Regen，否则要求同时读到回复和持续伤害；缺值不填零。mean_pool_depletion_seconds 仅在正净消耗下给平均储量耗尽估算，生命保留正储量；非正净消耗或缺值为 null，不宣称无限续航。它是独立平均投影，不模拟离散扣费、其他动作、命中吸取、充能、药剂或效果变化；准确动作支付与混合节奏用 timeline。
 

@@ -203,7 +203,7 @@ def timeline_assessment(result, timeline):
                 diagnostics.append({"code":"timeline_skill_unscheduled","location":"/timeline/events","skill_ref":ref,"resource_id":resource,"payment":single,"action":"edit_input","message":"当前启用的有费用技能未安排到共同时间线；由模型补实际动作或调整源方案并重算。这是输入缺口，不是冷却技能一律无法测量。"})
         known=pool is not None and pool>=0 and regen is not None and not gaps
         record={"resource_id":resource,"duration_seconds":duration,"initial":pool,"net_regeneration_per_second":regen,
-                "included_recovery":"native_net_regen_only","excluded_recovery":capabilities()["timeline"]["excluded_recovery"],"status":"unknown","trace":[],"repeatable":None,"gaps":gaps}
+                "included_recovery":"native_net_regen_only","excluded_recovery":capabilities()["timeline"]["excluded_recovery"],"status":"unknown","trace":[],"initial_pool_restored":None,"gaps":gaps}
         if known:
             balance=pool;last=0;failed=False
             for event in rows:
@@ -214,9 +214,9 @@ def timeline_assessment(result, timeline):
                 record["trace"].append({"at":last,"skill_ref":event["skill_ref"],"before":before,"payment":cost,"after":balance,"affordable":affordable})
             balance=min(pool,balance+regen*(duration-last))
             if (resource=="Life" and balance<=0) or (resource!="Life" and balance<0): failed=True
-            record.update(final=balance,status="refuted" if failed else "supported",repeatable=not failed and balance>=pool-1e-8)
+            record.update(final=balance,status="refuted" if failed else "supported",initial_pool_restored=not failed and balance>=pool-1e-8)
             if failed: errors.append("共同时间线中存在无法支付或耗尽的资源："+resource)
-            elif repeating and not record["repeatable"]: pending.append("resource:"+resource+":timeline_repeat")
+            elif repeating and not record["initial_pool_restored"]: pending.append("resource:"+resource+":timeline_repeat")
         elif pool is None or pool<0 or regen is None or any(not gap.startswith("unscheduled:") for gap in gaps): pending.append("capability:timeline:"+resource)
         records.append(record)
     return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"automatic_schedules":automatic_schedules,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
@@ -393,7 +393,7 @@ def assess(result, intent, plan, claims=None):
         for row in timeline["resources"]:
             if row["status"]!="unknown":
                 target=next(r for r in resources if r["resource_id"]==row["resource_id"])
-                target["timeline_status"]=row["status"];target["repeatable_at_native_regen_only"]=row["repeatable"]
+                target["timeline_status"]=row["status"];target["timeline_initial_pool_restored"]=row["initial_pool_restored"]
     payments=single_payments(result)
     for row in payments:
         if row["status"]=="refuted":

@@ -2004,6 +2004,24 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(len(scopes),1)
         self.assertIn(audit['timeline']['scope'],packet['facts_summary'])
 
+    def test_restored_finite_window_does_not_certify_an_invalid_repeat_seam(self):
+        result,timeline=self.fixture();result['stats']['ManaRegenRecovery']=200
+        timeline.update(repeat=False,events=[{'skill_ref':'main','at':0},{'skill_ref':'move','at':1},{'skill_ref':'main','at':2.9}])
+        audit=resources.assess(result,{}, {'timeline':timeline})
+        self.assertEqual(audit['timeline']['status'],'supported')
+        self.assertTrue(audit['timeline']['resources'][0]['initial_pool_restored'])
+        self.assertNotIn('repeatable',audit['timeline']['resources'][0])
+        self.assertNotIn('repeatable_at_native_regen_only',audit['resources'][0])
+        self.assertEqual(audit['sustained_use']['status'],'unknown')
+        packet=poe.publication('draft',[],audit['pending'],{'status':'unknown'},{},readiness=audit)
+        for statement in (row for row in packet['statements'] if row['kind']=='resource'):
+            self.assertEqual(statement['status'],'supported')
+            self.assertNotIn('可在当前固定净回复下重复',statement['text'])
+        timeline['repeat']=True
+        cycle=resources.assess(result,{}, {'timeline':timeline})
+        self.assertEqual(cycle['sustained_use']['status'],'refuted')
+        self.assertTrue(any(row['code']=='timeline_repeat_interval' for row in cycle['timeline']['diagnostics']))
+
     def fixture(self):
         result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":False}
         for index,cost in enumerate((20,10)):
@@ -2018,7 +2036,7 @@ class TimelineTests(unittest.TestCase):
 
     def test_shared_events_are_paid_on_one_clock_and_order_invariant(self):
         result,timeline=self.fixture();audit=resources.timeline_assessment(result,timeline)
-        self.assertEqual(audit["status"],"supported");self.assertTrue(audit["resources"][0]["repeatable"])
+        self.assertEqual(audit["status"],"supported");self.assertTrue(audit["resources"][0]["initial_pool_restored"])
         self.assertEqual([r["after"] for r in audit["resources"][0]["trace"]],[30,30,20])
         timeline["events"].reverse()
         reordered=resources.timeline_assessment(result,timeline)
@@ -2035,7 +2053,7 @@ class TimelineTests(unittest.TestCase):
     def test_fractional_positive_life_is_not_dead_and_negative_fees_are_unknown(self):
         result,timeline=self.fixture();result["stats"].update(Life=1,LifeDegen=.1)
         row=resources.timeline_assessment(result,timeline)["resources"][1]
-        self.assertEqual(row["status"],"supported");self.assertFalse(row["repeatable"])
+        self.assertEqual(row["status"],"supported");self.assertFalse(row["initial_pool_restored"])
         result,timeline=self.fixture();result["active_skills"][0]["costs"].update(ManaCost=-1,ManaPerSecondCost=-2)
         self.assertEqual(resources.timeline_assessment(result,timeline)["resources"][0]["status"],"unknown")
 
@@ -2051,17 +2069,18 @@ class TimelineTests(unittest.TestCase):
         result,timeline=self.fixture();result["stats"]["ManaRegenRecovery"]=1
         audit=resources.timeline_assessment(result,timeline)
         self.assertEqual(audit["resources"][0]["status"],"supported")
-        self.assertFalse(audit["resources"][0]["repeatable"]);self.assertEqual(audit["status"],"unknown")
+        self.assertFalse(audit["resources"][0]["initial_pool_restored"]);self.assertEqual(audit["status"],"unknown")
         packet=poe.publication("draft",[],audit["pending"],{"status":"unknown"},{},readiness={"timeline":audit})
         mana=next(row for row in packet['statements'] if row['kind']=='resource' and row['subject']=='Mana')
-        self.assertEqual(mana['status'],'unknown')
+        self.assertEqual(mana['status'],'supported')
+        self.assertIn('此项仅覆盖窗口内支付',mana['text'])
 
     def test_finite_window_does_not_require_pool_restoration_or_loop_seam(self):
         result,timeline=self.fixture();result["stats"]["ManaRegenRecovery"]=1
         timeline.update(repeat=False,events=[{"skill_ref":"main","at":0},{"skill_ref":"move","at":1},{"skill_ref":"main","at":2.9}])
         audit=resources.assess(result,{}, {"timeline":timeline})
         self.assertEqual(audit["timeline"]["status"],"supported")
-        self.assertFalse(audit["timeline"]["resources"][0]["repeatable"])
+        self.assertFalse(audit["timeline"]["resources"][0]["initial_pool_restored"])
         self.assertNotIn("resource:Mana:timeline_repeat",audit["pending"])
         self.assertEqual(audit["sustained_use"]["status"],"unknown")
         packet=poe.publication("draft",[],audit["pending"],{"status":"unknown"},{},readiness=audit)
@@ -2107,7 +2126,7 @@ class TimelineTests(unittest.TestCase):
                         audit=resources.timeline_assessment(result,timeline);row=next(r for r in audit["resources"] if r["resource_id"]==resource)
                         self.assertEqual(row["trace"][0]["payment"],20)
                         self.assertEqual(row["status"],"refuted" if pool<20 else "supported")
-                        self.assertEqual(row["repeatable"],pool>=20 and regen==20)
+                        self.assertEqual(row["initial_pool_restored"],pool>=20 and regen==20)
 
     def test_frequency_checks_wraparound_and_does_not_change_damage(self):
         result,timeline=self.fixture();result["stats"]["CombinedDPS"]=1234
