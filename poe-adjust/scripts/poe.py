@@ -1429,7 +1429,7 @@ def actual_changes(before, after, equipment=None):
     for label, difference in (("新增或调整后启用", new_gems - old_gems), ("移出原位置或停用", old_gems - new_gems)):
         for (name, slot, level, quality), count in difference.items():
             rows.append(f"{label}：{name} · {slot} · {level} 级/{quality} 品质 ×{count}。")
-    added, removed = set(after["nodes"]) - set(before["nodes"]), set(before["nodes"]) - set(after["nodes"])
+    added, removed = set(after.get("nodes",[])) - set(before.get("nodes",[])), set(before.get("nodes",[])) - set(after.get("nodes",[]))
     if added or removed:
         rows.append(f"天赋实际增加 {len(added)} 个节点、移除 {len(removed)} 个节点；含升华，具体分配见 XML。")
     for key,label in (("points","普通天赋"),("ascendancy_points","升华"),("secondary_ascendancy_points","次级升华")):
@@ -1604,6 +1604,8 @@ def probe(args):
             rows.append({"id":variant["id"],**({"skill_id":variant["id"]} if not getattr(args,"variants",None) else {}),"status":"blocked" if errors+ce+audit["errors"] else "screened",
                          "engine_fingerprint":result["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"operations":variant["operations"],"crafted_items":crafts,
                          "stats":{k:result["stats"].get(k) for k in metrics},"comparison":{k:v for k,v in comparison.items() if k in metrics},"context_changes":context_changes,
+                         "actual_changes":actual_changes(baseline,result),
+                         "configuration_changes":{key:{"before":baseline.get("config_values",{}).get(key),"after":result.get("config_values",{}).get(key)} for key in sorted(baseline.get("config_values",{}).keys()|result.get("config_values",{}).keys()) if not bx.same_scalar(baseline.get("config_values",{}).get(key),result.get("config_values",{}).get(key))},
                          "effect_state":engine.effect_state(result),
                          "dps_metric":dps_metric,"dps_delta":comparison.get(dps_metric,{}).get("delta"),"damage_observation":damage,"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
                          "errors":errors+ce+audit["errors"],"pending":pending+cp+audit["pending"],"warnings":warnings+audit["warnings"],"readiness":audit})

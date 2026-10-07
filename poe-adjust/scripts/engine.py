@@ -316,7 +316,7 @@ def effect_state(result):
     return {"config_controls_available":isinstance(result.get("config_controls"),dict) and result.get("capabilities",{}).get("native_config_controls",True),
             "config_switches":{key:row.get("value") if type(row.get("value")) is bool else None for key,row in controls.items() if row.get("type")=="check"},
             "invalid_config_switch_values":{key:row["value"] for key,row in controls.items() if row.get("type")=="check" and row.get("value") is not None and type(row["value"]) is not bool},
-            "global_effects":[{**{key:effect.get(key) for key in ("id","name","global_enabled","active_skill_present")},
+            "global_effects":[{**{key:effect.get(key) for key in ("id","name","description","global_enabled","active_skill_present")},
                                "gem_id":gem.get("id"),"group":gem.get("group"),"index":gem.get("index"),
                                **{key:gem.get(key) for key in ("enabled","group_enabled","slot_enabled")}}
                               for gem in result.get("gems",[]) for effect in gem.get("granted_effects",[]) if effect.get("has_global_effect") is True],

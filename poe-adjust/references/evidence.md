@@ -32,7 +32,7 @@ claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,chec
 
 条件依据与最终验收分别记录：报价、库存、充能启动等前提引用实际来源/原生值；最终判断可引用 budget/resources。核验报告不能反过来充当生成它自己的前提，循环引用不会补齐该项依据。引用绑定规范化后的当前 XML，原生调用的运输格式差异不作为新方案身份。
 
-“测得某值”“机制导致某值”“实际覆盖该条件”“满足用户目标”分别需要对应依据。引用一个面板数值不证明自己的因果解释。探测先核对 damage_observation 的技能、主体、XML 与场景；另一技能的指标不变，不能排除被改组件的作用。与解释冲突时，先检查当前支付资源、主体、实际装备、配置和明细；必要时只改一个输入探测，再说明其影响范围。模型可以选择不同使用条件或接受代价，但须把条件落进对应候选/阶段，不用假想实战效果覆盖当前值，也不以无依据的“引擎问题”解释异常。已有数值而缺少启动/持续覆盖，与根本未读到数值分别表述。
+“测得某值”“机制导致某值”“实际覆盖该条件”“满足用户目标”分别需要对应依据。因果判断先定位具体变体和主体的当前描述/分解，再核对 probe 的 damage_observation、actual_changes、configuration_changes 与 context_changes。所解释的指标须实际出现在观察中；组合变化的总差分按组合表述，归因某个组件则在其余输入一致时观测该组件。零差分只说明此对象在该场景、开关和指标下的观察结果；原文说明没有该增益、对象未生效或不同主体均应先核对。原生未保留请求的状态时先处理具体诊断，不能将未发生的实验作为机制证据。模型可以选择不同条件或接受代价，把它们落进实际候选/阶段；缺少启动或持续覆盖与根本未读到数值分别记录。游戏中额外收益仅在对应条件已有依据时解释，有限投影的保守项不认证整套实战只会更好。
 
 常用 subject：`goal`、`progress:normal`、`progress:ascendancy`、`progress:secondary_ascendancy`、`condition:guard`、`condition:Flask 1`、`config:<字段>`、`skill:<skill_ref>`、`dependency:<skill_ref>`、`count:<组>:<宝石位置>`、`resource:Mana:leech`、`resource:EnergyShield:recharge`、`transformation:<槽位>`、`legality:item:<物品ID>`、`migration`、`template_source`。以实际 pending 为索引说明问题；permission、缺失原生量和 capability 缺口不能靠填理由转成程序通过。
 

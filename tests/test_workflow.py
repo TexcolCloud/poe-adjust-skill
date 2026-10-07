@@ -56,6 +56,51 @@ def resource_fixture():
 
 
 class DocumentTests(unittest.TestCase):
+    def test_native_explicit_gem_state_rejects_ignored_or_changed_requests(self):
+        current={'group':1,'index':1,'id':'ShieldCrush','source':'Item:fixture','level':20,'quality':0,
+                 'enabled':True,'count':1,'enable_global1':True,'enable_global2':False}
+        cases={'skill_id':'NativeOtherVariant','level':19,'quality':1,'enabled':False,
+               'count':2,'enable_global1':False,'enable_global2':True}
+        for field,expected in cases.items():
+            with self.subTest(field=field):
+                document=bx.parse(SAMPLE);bx.groups(document)[0].find('Gem').set(bx.GEM_FIELDS[field],bx.attr(expected))
+                result={'xml':SAMPLE,'gems':[current]}
+                with self.assertRaises(bx.ContractError) as caught:
+                    bx.verify_selections(document,result,{'gems':[{'group':1,'index':1,field:expected}]})
+                diagnostic=caught.exception.diagnostic
+                self.assertEqual(diagnostic['code'],'native_selection_changed')
+                self.assertEqual(diagnostic['location'],'/operations/gems/0/'+field)
+                self.assertEqual(diagnostic['expected'],expected)
+                self.assertEqual(diagnostic['actual'],current['id' if field=='skill_id' else field])
+
+    def test_native_explicit_group_state_uses_actual_group_not_requested_xml(self):
+        native={'group':1,'index':1,'id':'ShieldCrush','group_enabled':True,'slot':'Boots',
+                'group_count':1,'include_in_full_dps':False}
+        for field,expected in {'enabled':False,'slot':'Helmet','group_count':2,'include_in_full_dps':True}.items():
+            with self.subTest(field=field):
+                document=bx.parse(SAMPLE);bx.groups(document)[0].set(bx.GROUP_FIELDS[field],bx.attr(expected))
+                group={'group':1,'enabled':True,'slot':'Boots','group_count':1,'include_in_full_dps':False}
+                with self.assertRaises(bx.ContractError) as caught:
+                    bx.verify_selections(document,{'xml':SAMPLE,'gems':[native],'skill_selections':[group]}, {'groups':[{'index':1,field:expected}]})
+                self.assertEqual(caught.exception.diagnostic['location'],'/operations/groups/0/'+field)
+
+    def test_native_explicit_gem_distinguishes_missing_object_from_missing_field(self):
+        document=bx.parse(SAMPLE);bx.groups(document)[0].find('Gem').set('enabled','false')
+        for gems,action in (([],'edit_input'),([{'group':1,'index':1,'recognised':False}],'edit_input'),
+                            ([{'group':1,'index':1,'id':'ShieldCrush'}],'inspect_capability')):
+            with self.subTest(action=action),self.assertRaises(bx.ContractError) as caught:
+                bx.verify_selections(document,{'xml':SAMPLE,'gems':gems},{'gems':[{'group':1,'index':1,'enabled':False}]})
+            self.assertEqual(caught.exception.diagnostic['action'],action)
+            self.assertEqual(caught.exception.diagnostic['location'],'/operations/gems/0/enabled')
+            self.assertEqual(caught.exception.diagnostic['actual'],None)
+
+    def test_native_explicit_matching_state_and_replacement_accept_normalization(self):
+        document=bx.parse(SAMPLE)
+        native={'group':1,'index':1,'id':'ShieldCrush','level':20,'quality':0,'enabled':True,
+                'count':1,'enable_global1':True,'group_enabled':True,'slot':'Boots','group_count':1}
+        declared={'slot':'Boots','enabled':True,'gems':[{'skill_id':'ShieldCrush','level':20,'quality':0,'enabled':True,'count':1,'enable_global1':True}]}
+        bx.verify_selections(document,{'xml':SAMPLE,'gems':[native],'skill_selections':[{'group':1,'enabled':True,'slot':'Boots'}]},{'replace_skills':[declared]})
+
     def setUp(self):
         self.root = bx.parse(SAMPLE)
 
@@ -1455,6 +1500,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
             variant_file=run/'variants.json';poe.write_json(variant_file,{'variants':[{'id':'secondary-change','operations':{}}]})
             baseline={'stats':{'CombinedDPS':100},'main_skill':'fixture-main','main_skill_name':'Fixture main','main_group':1,'config_values':{'native-scene':True},'engine_fingerprint':'fixture','input_xml_sha256':'before',
                       'active_skills':[{'id':'fixture-main','name':'Fixture main','skill_ref':'qualified-main','is_main':True,'actor':'player'}],
+                      'nodes':[1,2],
                       'stat_metadata':{'CombinedDPS':[{'label':'Combined DPS','format':'.1f','actor':'player'}]}}
             candidate=copy.deepcopy(baseline);candidate.update(input_xml_sha256='after',points=1,ascendancy_points=0,secondary_ascendancy_points=0)
             record=(run,{'intent':{}},{'plan':{'mode':'refine'},'engine_fingerprint':'fixture','baseline':baseline},SAMPLE,run)
@@ -1471,6 +1517,8 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(observation['meaning']['actor'],'player')
             self.assertEqual(observation['context']['config_values'],{'native-scene':True})
             self.assertEqual(response['baseline_damage_observation']['context']['xml_sha256'],'before')
+            self.assertIn('actual_changes',response['alternatives'][0])
+            self.assertEqual(response['alternatives'][0]['configuration_changes'],{})
 
     def test_damage_observation_selects_current_minion_metric_and_keeps_missing_unknown(self):
         calculation={'stats':{'CombinedDPS':0,'MinionCombinedDPS':230},'main_skill':'native-minion','active_skills':[{'skill_ref':'current-minion','is_main':True,'minion':True,'actor':'minion'}]}
@@ -2986,6 +3034,33 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
 
 
 class RealEngineTests(unittest.TestCase):
+    def test_native_explicit_skill_requests_compare_observed_source_state(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        selected=next(gem for gem in current['gems'] if gem.get('source') and gem.get('enabled') is True)
+        operation={'group':selected['group'],'index':selected['index'],'skill_id':selected['id'],'enabled':False}
+        plan={'mode':'refine','summary':'Native requested state validation','operations':{'gems':[operation]}}
+        document=bx.apply_plan(self.original,plan,native=current)
+        observed=engine.calculate(self.pob,bx.serialise(document),cache=False)
+        actual=next(gem for gem in observed['gems'] if gem['group']==selected['group'] and gem['index']==selected['index'])
+        if actual['enabled'] is False:
+            bx.verify_selections(document,observed,plan['operations'])
+        else:
+            with self.assertRaises(bx.ContractError) as caught:
+                bx.verify_selections(document,observed,plan['operations'])
+            self.assertEqual(caught.exception.diagnostic['location'],'/operations/gems/0/enabled')
+            self.assertIs(caught.exception.diagnostic['expected'],False)
+            self.assertIs(caught.exception.diagnostic['actual'],True)
+        with tempfile.TemporaryDirectory() as folder:
+            variants=Path(folder)/'variants.json';poe.write_json(variants,{'variants':[{'id':'source-state','operations':plan['operations']}]})
+            request=args(input=str(self.sample),variants=str(variants));request.pob=str(self.pob)
+            result=poe.probe(request)['alternatives'][0]
+        if actual['enabled'] is False:
+            self.assertIn('stats',result)
+        else:
+            self.assertEqual(result['status'],'blocked');self.assertNotIn('stats',result)
+            self.assertEqual(result['diagnostic']['location'],'/variants/0/operations/gems/0/enabled')
+        self.assertEqual(bx.digest(self.sample.read_bytes()),self.original_hash)
+
     def test_native_config_types_reject_truthy_checkbox_variants_without_changing_input(self):
         current=engine.calculate(self.pob,bx.serialise(self.original),cache=False)
         self.assertTrue(current['capabilities']['native_config_types'])
@@ -3263,9 +3338,12 @@ class RealEngineTests(unittest.TestCase):
     def test_03_invalid_gem_is_not_silently_accepted(self):
         plan = copy.deepcopy(self.refine)
         plan["operations"]["gems"][0]["skill_id"] = "InventedPowerGem"
-        result = self.evaluate_plan(plan, "bad-gem")
-        self.assertEqual(result["status"], "blocked")
-        self.assertFalse(poe.export(args(run=str(self.run_dir), name="bad-gem"))["file_exported"])
+        with self.assertRaises(bx.ContractError) as caught:
+            self.evaluate_plan(plan, "bad-gem")
+        self.assertEqual(caught.exception.diagnostic['action'],'edit_input')
+        self.assertEqual(caught.exception.diagnostic['location'],'/operations/gems/0/skill_id')
+        self.assertFalse((self.run_dir/'candidates/bad-gem').exists())
+        self.assertFalse((self.run_dir/'output/bad-gem').exists())
 
     def test_04_dropped_tree_node_and_locked_item_are_rejected(self):
         plan = copy.deepcopy(self.refine)
@@ -3660,6 +3738,9 @@ class RealEngineTests(unittest.TestCase):
         item_id = int(next(slot for slot in item_set.findall("Slot") if slot.get("name") == "Boots").get("itemId"))
         plan = copy.deepcopy(self.refine)
         plan["operations"]["items"] = [{"id": item_id, "craft": recipe}]
+        # Replacing the granting equipment removes its old source-skill object.
+        plan['operations']['groups']=[change for change in plan['operations']['groups']
+                                      if not bx.groups(self.original)[change['index']-1].get('source')]
         outcome = self.evaluate_plan(plan, "crafted-boots")
         self.assertEqual(outcome["status"], "draft", outcome["errors"])
         recorded = poe.read_json(self.run_dir / "candidates/crafted-boots/evaluation.json")

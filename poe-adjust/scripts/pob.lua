@@ -242,6 +242,8 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
     table.insert(choices, {index = index, id = effect.grantedEffect.id, name = effect.grantedEffect.name, gem_index = gemIndex})
   end
   table.insert(result.skill_selections, {group = groupIndex, source = group.source,
+    enabled = group.enabled, slot = group.slot or "", label = group.label or "",
+    group_count = group.groupCount or 1, include_in_full_dps = group.includeInFullDPS == true,
     main_active_skill = group.mainActiveSkill or 1, choices = choices})
 end
 -- Keep the native Full DPS contributors and each active skill's operating context.
@@ -398,7 +400,7 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
       for _, skill in ipairs(mainEnv.player.activeSkillList) do
         if skill.activeEffect.srcInstance == gem and skill.activeEffect.grantedEffect == effect then present = true; break end
       end
-      table.insert(grantedEffects, {index = effectIndex, id = effect.id, name = effect.name,
+      table.insert(grantedEffects, {index = effectIndex, id = effect.id, name = effect.name, description = effect.description,
         has_global_effect = effect.hasGlobalEffect == true, global_enabled = gem["enableGlobal"..effectIndex] == true,
         skill_types = types, support = effect.support == true, active_skill_present = present})
       -- The editable spelling is an interface field, its meaning comes from this effect's position.

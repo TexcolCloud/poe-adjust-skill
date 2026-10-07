@@ -368,15 +368,32 @@ def verify_selections(document, result, operations=None):
     observed={row['group']:row for row in result.get('skill_selections',[])}
     saved=parse(result['xml'])
     saved_groups=groups(saved)
+    native_gems={(row['group'],row['index']):row for row in result.get('gems',[])}
+    def check_requested(requests, actual, aliases=None):
+        for field,(expected,location) in requests.items():
+            native_field=(aliases or {}).get(field,field)
+            require(actual is not None,"请求对象未在原生结果中物化；核对当前对象及其他修改是否使它消失。",
+                    code="native_selection_changed",location=location,expected="materialized native object",actual=None)
+            require(not isinstance(actual,dict) or actual.get('recognised') is not False,"当前原生未识别请求的技能；按本机目录重新选择。",
+                    code="native_selection_changed",location=location,expected=expected,actual=None)
+            require(isinstance(actual,dict) and native_field in actual,
+                    "当前原生接口未返回请求对象的实际状态。",code="native_selection_unavailable",action="inspect_capability",
+                    location=location,expected="current native "+native_field,actual=None)
+            require(same_scalar(expected,actual[native_field]),"原生未保留请求的对象状态。",
+                    code="native_selection_changed",location=location,expected=expected,actual=actual[native_field])
     for index,group in enumerate(groups(document),1):
         path=f"/skill_groups/{index-1}"
         replacement=operations.get('replace_skills',[])
         declared=replacement[index-1] if index<=len(replacement) else {}
         if replacement: path=f"/operations/replace_skills/{index-1}"
+        group_requests={field:(declared[field],path+'/'+field) for field in GROUP_FIELDS if field in declared and field!='main_active_skill'}
         for change_index,change in enumerate(operations.get('groups',[])):
+            if change['index']==index:
+                group_requests.update({field:(change[field],f"/operations/groups/{change_index}/{field}") for field in GROUP_FIELDS if field in change and field!='main_active_skill'})
             if change['index']==index and 'main_active_skill' in change:
                 path=f"/operations/groups/{change_index}"
                 declared={**declared,**change}
+        check_requested(group_requests,observed.get(index))
         raw=group.get('mainActiveSkill')
         if raw not in (None,'nil') and (not explicit_only or 'main_active_skill' in declared):
             requested=int(raw)
@@ -389,9 +406,16 @@ def verify_selections(document, result, operations=None):
             valid=requested in choices or requested==1 and not choices
             require(valid and requested==actual,"请求的主主动技能不可用或被原生改写。",code="native_selection_changed",location=path+'/main_active_skill',expected=requested,actual=actual,available_options=row['choices'])
         for gem_index,gem in enumerate(group.findall('Gem'),1):
+            entries=declared.get('gems',[])
+            entry=entries[gem_index-1] if gem_index<=len(entries) else {}
+            fields=[field for field in GEM_FIELDS if field not in {'skill_part','skill_stage_count','skill_minion'}]
+            gem_requests={field:(entry[field],f"/operations/replace_skills/{index-1}/gems/{gem_index-1}/{field}") for field in fields if field in entry}
+            for change_index,change in enumerate(operations.get('gems',[])):
+                if change['group']==index and change['index']==gem_index:
+                    gem_requests.update({field:(change[field],f"/operations/gems/{change_index}/{field}") for field in fields if field in change})
+            check_requested(gem_requests,native_gems.get((index,gem_index)),{'skill_id':'id'})
             for field in ('skill_part','skill_stage_count','skill_minion'):
                 attr_name=GEM_FIELDS[field];expected=gem.get(attr_name)
-                entries=declared.get('gems',[])
                 explicit=gem_index<=len(entries) and field in entries[gem_index-1]
                 explicit=explicit or any(change['group']==index and change['index']==gem_index and field in change for change in operations.get('gems',[]))
                 if expected is None or expected=='nil' and not explicit or explicit_only and not explicit: continue
