@@ -1828,7 +1828,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
                  'publication':poe.publication('blocked',['Known contradiction'],[],budget,{}),'validation':{'scope':'Structural checks only'},
                  'name':'candidate','engine_version':'fixture','xml_sha256':'fixture','engine_fingerprint':'fixture'}
         page=poe.report_html({'intent':{'goal':'Actual player goal'}},outcome)
-        self.assertNotIn('在 PoECharm 中打开同目录 XML',page);self.assertIn('未导出交付 XML',page)
+        self.assertNotIn('在 PoECharm 中打开同目录 XML',page);self.assertIn('未导出交付文件',page)
         actions=poe.delivery_actions(outcome,'plan.json','evaluation.json','review.json')
         report=next(row for row in actions if row['action']=='export')
         self.assertEqual(report['purpose'],'diagnostic_report');self.assertFalse(report['file_exported'])
@@ -3335,7 +3335,7 @@ class EditAndRecoveryTests(unittest.TestCase):
         if kind=='route':
             saved={'skill_version':poe.VERSION,'engine_fingerprint':'fixture','checked_route':outcome,'next_actions':actions}
             state_path=self.folder/'result.state.json'
-            state={'engine_fingerprint':'fixture','input':str(self.source),'input_sha256':first['revision'],'file_exported':True}
+            state={'engine_fingerprint':'fixture','input':str(self.source),'input_sha256':first['revision'],'phase':'evaluated','file_exported':False}
         else:
             original=self.folder/'run/original.xml';poe.write_text(original,SAMPLE)
             saved={**outcome,'skill_version':poe.VERSION,'engine_fingerprint':'fixture','source_plan':str(self.source),'source_plan_sha256':first['revision'],'next_actions':actions,'intent_hash':None,'original_sha256':bx.digest(original.read_bytes())}
@@ -4146,6 +4146,80 @@ class DeliveryIntegrityTests(unittest.TestCase):
 
 
 class TaskCompletionTests(unittest.TestCase):
+    def test_reviewed_configuration_and_goal_have_consistent_pending_and_diagnostics(self):
+        claim={'claim_id':'current','subjects':['configuration:candidate','goal','objective:requested'],
+               'evidence_refs':['native:candidate#/config_values'],'missing_evidence':[],
+               'check_status':'not_requested','status':'unresolved','diagnostics':[]}
+        reviewed={'reference_status':'resolved','verdict':'partial','conditions':['Verify coverage before using this scene.'],'unimplemented':[]}
+        review={'completion_pending':[],'conclusions':[{'claim_id':'current',**reviewed}],
+                'objectives':[{'objective_id':'requested',**reviewed}],'condition_reviews':[],'facts':{},'diagnostics':[]}
+        coverage=[{'objective_id':'requested','basis_status':'user_declared','claim_ids':['current']}]
+        diagnostics=[{'code':'configuration_review_missing','action':'review_configuration','required_subject':'configuration:candidate','location':'/claims'},
+                     {'code':'goal_claim_unresolved','action':'edit_input','subject':'goal_assessment','location':'/assessment/goal_claim_ids/0','actual':{'claim_id':'current'}}]
+        pending=['config:scenario','goal_assessment']
+        result=poe.plan_completion('build_plan',[],pending,diagnostics,coverage,[claim],review)
+        self.assertEqual(result['status'],'scoped_result',result)
+        self.assertEqual(result['pending'],[]);self.assertEqual(result['diagnostics'],[])
+        self.assertEqual(pending,['config:scenario','goal_assessment'])
+        for failure in ('user_only','missing_reference','refuted_check','missing_binding'):
+            altered=copy.deepcopy(claim)
+            if failure=='user_only': altered['evidence_refs']=['user']
+            elif failure=='missing_reference': altered['missing_evidence']=['missing actual source']
+            elif failure=='refuted_check': altered['check_status']='refuted'
+            else: altered['missing_evidence']=['claim_revision:current']
+            with self.subTest(failure=failure):
+                result=poe.plan_completion('build_plan',[],pending,diagnostics,coverage,[altered],review)
+                self.assertEqual(result['status'],'draft');self.assertIn('config:scenario',result['pending'])
+                self.assertTrue(any(row['code']=='configuration_review_missing' for row in result['diagnostics']))
+
+    def test_single_configuration_claim_covers_scenario_and_operation_controls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);document,intent,native,plan=self.fixture(folder,task_kind='build_plan')
+            plan['scenario']={'enemyLevel':82,'enemyIsBoss':'fixture'}
+            plan['operations']={'config':{'buffFortification':False}}
+            native['config_values']={**plan['scenario'],**plan['operations']['config']}
+            plan['claims'][0].update(subjects=['configuration:candidate','goal','objective:requested'],
+                                    evidence_refs=['native:candidate#/config_values'],uncertainties=[])
+            plan['assessment']={'goal_claim_ids':['current'],'scope':'Current selected scene and controls'}
+            plan['claims'][0]['bindings']=facts.claim_bindings(plan,plan['claims'][0],'fixture')
+            with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=([],[],[])):
+                checked=poe.assess_candidate(document,document,native,native,intent,plan,folder,root=folder)
+            self.assertFalse(any(subject.startswith('config:') for subject in checked['pending']),checked['pending'])
+            self.assertEqual(checked['review_packet']['facts']['candidate']['config_values'],native['config_values'])
+
+    def test_unfinished_export_retains_repair_files_and_never_delivers_xml_or_attachments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run=Path(temp)
+            for kind in ('read_only_review','build_plan'):
+                document,intent,native,plan=self.fixture(run,task_kind=kind)
+                assessed=self.assess(run,document,intent,native,plan)
+                source=run/'plan.json';poe.write_json(source,plan)
+                xml=bx.serialise(document);poe.write_text(run/'original.xml',xml);poe.write_text(run/'candidates/draft/requested.xml',xml)
+                outcome={**assessed,'plan':plan,'source_plan':str(source),'evidence_folder':str(run),'baseline':native,'result':native,
+                         'engine_fingerprint':'fixture','engine_version':'fixture','xml_sha256':native['xml_sha256'],'name':'draft'}
+                state={'intent':intent,'pob_path':str(run),'intent_evidence_folder':str(run)}
+                output=run/'output/draft';poe.write_text(output/'改进配装.xml',xml)
+                with self.subTest(kind=kind),patch.object(poe,'read_candidate',return_value=(run,state,outcome,xml,run)),patch.object(poe,'assess_candidate',return_value=assessed),patch.object(engine,'calculate',return_value=copy.deepcopy(native)):
+                    exported=poe.export(args(run=str(run),name='draft'))
+                    self.assertFalse(exported['file_exported']);self.assertFalse(exported['xml_exported'])
+                    self.assertEqual(exported['files'],[]);self.assertEqual(list(output.glob('*.xml')),[])
+                    self.assertTrue((output/'final-assessment.json').is_file());self.assertTrue((output/'review.json').is_file())
+                    self.assertFalse(poe.read_json(output/'delivery.json')['file_exported'])
+                    self.assertEqual(poe.read_json(run/'run.json')['phase'],'evaluated')
+                    page=(output/'配装说明.html').read_text(encoding='utf-8')
+                    self.assertIn('未导出交付',page);self.assertNotIn('同目录 XML 是',page)
+
+    def test_export_cli_reports_failed_delivery_without_losing_repair_response(self):
+        for complete in (False,True):
+            response={'status':'scoped_result' if complete else 'draft','file_exported':complete,
+                      'files':['current.html'] if complete else [],'details_file':'current-assessment.json'}
+            output=io.StringIO()
+            with self.subTest(complete=complete),patch.object(poe,'export',return_value=response),redirect_stdout(output):
+                code=poe.main(['export','--run','fixture','--name','current'])
+                saved=json.loads(output.getvalue())
+                self.assertEqual(code,0 if complete else 2);self.assertIs(saved['ok'],complete)
+                self.assertEqual(saved['details_file'],'current-assessment.json');self.assertEqual(saved['files'],response['files'])
+
     def test_formal_assessment_keeps_uncertified_ordinary_text_as_projection(self):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp);original,intent,baseline,plan=self.fixture(folder,task_kind='build_plan')
@@ -5040,8 +5114,8 @@ class RealEngineTests(unittest.TestCase):
         output = poe.export(args(run=str(self.run_dir), name="refine"))
         operation=poe.read_json(self.run_dir/"run.json")["last_operation"]
         self.assertEqual(operation["command"],"export");self.assertEqual(operation["status"],output["status"])
-        self.assertTrue(operation["file_exported"]);self.assertNotIn("reason",operation)
-        for path in output["files"]: self.assertTrue(Path(path).is_file())
+        self.assertFalse(operation["file_exported"]);self.assertNotIn("reason",operation)
+        self.assertEqual(output["files"],[])
         final=poe.read_json(self.run_dir/"output/refine/final-assessment.json")
         self.assertTrue(final["comparison_notes"])
         self.assertIsNone(final["comparison"]["CombinedDPS"]["percent"])
@@ -5064,14 +5138,14 @@ class RealEngineTests(unittest.TestCase):
         granted = [gem for gem in evidence["result"]["gems"] if gem.get("source")]
         self.assertTrue(granted)
         self.assertTrue(all(not gem["group_enabled"] for gem in granted), granted)
-        saved = bx.read_document(Path(output["files"][0]))
+        saved = bx.read_document(self.run_dir/"candidates/refine/candidate.xml")
         self.assertTrue(all(group.get("enabled") == "false" and group.get("slot")
                             for group in bx.groups(saved) if group.get("source")))
         drifted = copy.deepcopy(evidence["result"])
         next(gem for gem in drifted["gems"] if gem.get("source"))["group_enabled"] = True
         errors, _, _ = poe.mechanical_issues(saved, drifted, poe.read_json(self.run_dir / "run.json")["intent"])
         self.assertTrue(any("授予技能状态" in error for error in errors), errors)
-        report = Path(output["files"][1]).read_text(encoding="utf-8")
+        report = (self.run_dir/"output/refine/配装说明.html").read_text(encoding="utf-8")
         self.assertTrue(evidence["actual_changes"])
         self.assertIn("实际改动", report)
         self.assertEqual(evidence["validation"]["user_constraints"], "passed")
@@ -5203,7 +5277,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(recorded["result"]["config_labels"]["enemyIsBoss"], "Standard Boss")
         output = poe.export(args(run=str(self.run_dir), name="valid-config-value"))
         self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", output["facts_summary"])
-        report = Path(output["files"][1]).read_text(encoding="utf-8")
+        self.assertEqual(output['files'],[])
+        report = (self.run_dir/"output/valid-config-value/配装说明.html").read_text(encoding="utf-8")
         self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", report)
         self.assertIn(recorded["xml_sha256"], report)
         self.assertIn(recorded["engine_fingerprint"], report)
@@ -5517,7 +5592,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(base['implicit'])
         self.assertIn("ArmourBasePercentile: 0.5", raw)
         output = poe.export(args(run=str(self.run_dir), name="crafted-boots"))
-        self.assertIn("crafted_items", Path(output["files"][1]).read_text(encoding="utf-8"))
+        self.assertEqual(output['files'],[])
+        self.assertIn("crafted_items", (self.run_dir/"output/crafted-boots/配装说明.html").read_text(encoding="utf-8"))
         final=poe.read_json(self.run_dir/'output/crafted-boots/final-assessment.json')
         self.assertFalse(any(gap.startswith('native:item_generation:') for gap in final['pending']))
         bad = copy.deepcopy(recipe)
@@ -5574,9 +5650,9 @@ class RealEngineTests(unittest.TestCase):
         final=poe.read_json(self.run_dir/'output/missing-belt/final-assessment.json')
         self.assertEqual(response['status'],'blocked');self.assertFalse(response['file_exported'])
         self.assertIn(final['publication']['facts_summary'],response['facts_summary'])
-        self.assertIn('未导出交付 XML',response['facts_summary'])
-        self.assertIn('blocked',response['reply_policy'])
-        self.assertTrue(all(Path(name).suffix=='.html' for name in response['files']))
+        self.assertIn('未导出交付文件',response['facts_summary'])
+        self.assertIn('自检未通过',response['reply_policy'])
+        self.assertEqual(response['files'],[])
 
     def test_17_gem_probe_matches_individual_engine_and_does_not_write_candidate(self):
         self.evaluate_plan(self.refine, "gem-probe")
@@ -5669,7 +5745,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(result["damage_sources"])
         self.assertEqual(outcome["status"], "draft", outcome["errors"])
         exported = poe.export(args(run=str(self.run_dir), name="gc-costs"))
-        report = Path(exported["files"][1]).read_text(encoding="utf-8")
+        self.assertEqual(exported['files'],[])
+        report = (self.run_dir/"output/gc-costs/配装说明.html").read_text(encoding="utf-8")
         self.assertIn("原生 Full DPS 分项", report)
         self.assertIn("automatic_cost_per_second", report)
         self.assertIn("19/0", report)
@@ -5909,7 +5986,8 @@ class RealEngineTests(unittest.TestCase):
         state=output.with_suffix('.state.json');value=poe.read_json(state)
         xmls=[Path(row['calculation']['xml_path']) for row in checked['stages']]
         self.assertTrue(all(str(path) in value['files'] for path in xmls))
-        self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+        current=poe.workflow_status(args(route_state=str(state)))
+        self.assertFalse(current['file_exported']);self.assertTrue(current['files_intact'])
         unchanged=xmls[1].read_bytes();stamp=xmls[1].stat().st_mtime_ns
         xmls[0].unlink()
         missing=poe.workflow_status(args(route_state=str(state)))
@@ -5919,7 +5997,8 @@ class RealEngineTests(unittest.TestCase):
             poe.route_command(args(invoked=True,file=str(source),out=str(output)))
         self.assertEqual(replay.call_count,1)
         self.assertEqual(xmls[1].read_bytes(),unchanged);self.assertEqual(xmls[1].stat().st_mtime_ns,stamp)
-        self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+        current=poe.workflow_status(args(route_state=str(state)))
+        self.assertFalse(current['file_exported']);self.assertTrue(current['files_intact'])
 
     def test_36_route_snapshots_bind_native_claims_and_leave_missing_stage_unknown(self):
         route=route_fixture(self.native['data_version']);route.update(class_id=3,ascendancy=None,gems={"Fireball":{}},stages=[])
@@ -6007,7 +6086,8 @@ class RealEngineTests(unittest.TestCase):
         reviewed=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         self.assertEqual(reviewed["final_review"]["status"],"model_reviewed")
         self.assertTrue(any("entry_check:" in p for p in response["pending"]))
-        self.assertTrue(poe.read_json(output.with_suffix(".state.json"))["file_exported"])
+        self.assertFalse(poe.read_json(output.with_suffix(".state.json"))["file_exported"])
+        self.assertEqual(response['files'],[])
         self.assertEqual(poe.workflow_status(args(route_state=str(output.with_suffix('.state.json'))))['completed_stages'],['a'])
         snapshot=Path(first["calculation"]["xml_path"]);snapshot.write_text(snapshot.read_text(encoding="utf-8")+"\n",encoding="utf-8")
         with patch.object(facts,"gem_facts",return_value={}),patch.object(poe,"roundtrip",wraps=poe.roundtrip) as replay:
@@ -6168,7 +6248,8 @@ class RealEngineTests(unittest.TestCase):
         plan=copy.deepcopy(self.refine)
         self.evaluate_plan(plan,"delivery-context")
         exported=poe.export(args(run=str(self.run_dir),name="delivery-context"))
-        artifacts={path:Path(path).read_bytes() for path in exported["files"]}
+        artifacts={str(path):path.read_bytes() for path in (self.run_dir/'output/delivery-context').iterdir() if path.name!='delivery.json'}
+        self.assertTrue(artifacts);self.assertEqual(exported['files'],[])
         plan["summary"]="A revised interpretation of the same build inputs."
         self.evaluate_plan(plan,"delivery-context")
         status=poe.workflow_status(args(run=str(self.run_dir)))
@@ -6202,14 +6283,14 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(any(d["code"]=="claim_binding_missing" for d in result["judgments"][0]["diagnostics"]))
         self.assertTrue(any(value.startswith('objective:') for value in final['pending']))
         self.assertIsNone(final["evidence"]["artifact"]["url"])
-        self.assertTrue(result["file_exported"])
+        self.assertFalse(result["file_exported"]);self.assertEqual(result['files'],[])
         manifest=poe.read_json(self.run_dir/"output/reviewed/delivery.json")
         for name,digest in manifest["files"].items(): self.assertEqual(bx.digest((self.run_dir/"output/reviewed"/name).read_bytes()),digest)
         with patch.object(poe,"report_html",side_effect=OSError("fixture render failure")),self.assertRaises(OSError):
             poe.export(args(run=str(self.run_dir),name="reviewed"))
         self.assertEqual(poe.read_json(self.run_dir/"run.json")["phase"],"exporting")
         self.assertFalse(poe.read_json(self.run_dir/"output/reviewed/delivery.json")["file_exported"])
-        self.assertTrue(poe.export(args(run=str(self.run_dir),name="reviewed"))["file_exported"])
+        self.assertFalse(poe.export(args(run=str(self.run_dir),name="reviewed"))["file_exported"])
         plan["summary"]="Unreviewed changed explanation"
         self.assertIn("final_review:stale",self.evaluate_plan(plan,"reviewed")["pending"])
 
@@ -6253,7 +6334,7 @@ class RealEngineTests(unittest.TestCase):
         stage=route["stages"][0];stage["bases"].update({"Weapon 1":"Crude Bow","Weapon 2":"Spike-Point Arrow Quiver"})
         path=Path(self.temp.name)/"equipment-route.json";output=path.with_suffix(".html");poe.write_json(path,route)
         with patch.object(facts,"gem_facts",return_value={}):result=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
-        self.assertTrue(result["file_exported"]);self.assertEqual(result["errors"],[])
+        self.assertFalse(result["file_exported"]);self.assertEqual(result['files'],[]);self.assertEqual(result["errors"],[])
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]["stages"][0]
         self.assertTrue(checked["equipment_validation"]["checks"]["Weapon 2"]["valid_for_slot"])
         self.assertNotIn("native:equipment:"+stage["stage_id"]+":Weapon 2",result["pending"])

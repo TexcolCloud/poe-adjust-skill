@@ -19,7 +19,7 @@ start 的新 run 须为空，保留原件。只读查询直接 inspect/probe，�
 
 ## 增量保存方案
 
-可以直接保存完整源 JSON 后 evaluate/route，也可以用 edit 逐步维护长方案及判断绑定；不强制先建小头部或分几次补字段。plan/route 当前顶层、嵌套字段和 owner 在 `input_contract`，intent 字段不能搬进 plan。
+完整源 JSON 可一次保存；含 claims 时，核对正文与当前证据后用 edit 的 review_claims 登记，再 evaluate/route。直接计算未登记的 JSON 只得到缺绑定的草案。edit 的 set 可一次提交完整方案并同时 review_claims，不必拆成小事务。字段归属见 input_contract，intent 不能搬进 plan。
 
 ```powershell
 python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/changes.json'
@@ -57,4 +57,4 @@ python '<entry>' view --file '<工作区>/review.json' --pointer '/facts/pending
 
 `status --run '<run>'` 或 `status --route-state '<路线.state.json>'` 查看当前源、候选和 last_operation，沿返回动作恢复。路线仅复用身份/文件一致的已完成阶段；失败后重跑原 route 命令。重算会取消旧导出身份，不能拿旧成功状态覆盖新失败。
 
-`file_exported` 结合当次任务状态、实际文件及摘要核对。原件、输入、候选、来源与引擎均受完整性检查；被改输出应修源再生成。XML、HTML 和核验文件直接交返回路径，避免手改生成页使其脱离当前证据。
+只有 task_completion 为 scoped_result 且 errors/pending 均空，file_exported 才为 true 并列出最终 files。未通过时 files 为空；内部诊断与阶段快照仍保存以便返修。export 未通过返回 ok:false、退出码2；route 的 ok 只表示计算命令完成，交付另看 file_exported。原件、输入、候选、来源与引擎受完整性检查；被改输出应修源再生成，不手改生成页。

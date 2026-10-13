@@ -1,10 +1,10 @@
 # 当前设计：POE 配装助手
 
-2.8.17精简版已完成当前Windows/Python/PoECharm环境的单agent交付样本验收。入口分流，五份协议按任务读取；现有input_contract、CLI诊断与恢复凭证提供字段和路径。完整JSON可直接计算，edit用于增量保存/绑定，不强制固定补字段顺序。一个agent完成研究、取舍、计算、自审和交付，冻结后的独立审核不属于运行依赖。
+唯一交付目标为 Windows TeleAgent 极速、单agent。2.8.17普通单agent样本验收保留为历史参考。入口分流，五份协议按需读取；input_contract、诊断与恢复凭证提供字段和路径。完整JSON可一次保存，claims由edit登记当前绑定，稳定后单独提交最终复核。一个agent完成研究、取舍、计算、自审和交付，冻结后的独立审核不属于运行依赖。
 
 已发布2.8.17相对精简前基线，六指令减少68.94%，程序、测试和打包未改。相对仓库2.8.16，程序保留已验证的当前事实/引用、只读任务范围、普通目标生成依据等改进。task_completion按请求范围评价，character_readiness和角色错误/待办继续保留；合法值、引用、自审或文件存在不认证自由文字因果、实际取得或动态覆盖。
 
-单入口poe.py，六Python/两Lua、标准库、schema2、15产品文件。原始文本、有效持有、特殊来源、probe投影和legality仍有实际职责；没有第二生成器、游戏答案分支或统一配装门槛。精简替换重复指令和固定流程，没有失效程序分支需要另删。质量范围见[验证报告](TEST-REPORT.md)，使用步骤见[使用说明](使用说明.md)。TeleAgent极速ta001未通过；2.8.18/ta002在现役协议中修订共享执行流程，程序仅更新版本元数据，源/ZIP/活动安装一致、独立doctor与361项回归通过，但十项实际任务独立审查仅Q1达标，整体未放行。当前轮结束，下一版本和实机任务需新指令。
+单入口poe.py，六Python/两Lua、标准库、schema2、15产品文件。原始文本、有效持有、特殊来源、probe投影和legality仍有实际职责，没有第二生成器或游戏答案分支。TeleAgent ta001/ta002未通过，当前2.8.19正在验证。当前配置统一用configuration判断及实际原生引用，删除逐scenario/operations控件重复声明；已完成判断同步处理诊断与任务待办，真实角色缺口保留。export和route只有任务scoped_result且errors/pending为空才列最终文件；失败保留内部诊断、阶段恢复和修改提案。质量范围见[验证报告](TEST-REPORT.md)，使用步骤见[使用说明](使用说明.md)。
 
 ## 职责
 
@@ -54,7 +54,7 @@
 
 现有复核包的 user_goal_sources 去重展示目标所引用户声明的原文、来源及状态，与 objective_coverage 的模型拆分并列；原话改变使绑定失效。它仍是模型记录的声明，程序不认证记录忠实度、不解析玩家语言或自动裁定目标一致性。只读报告的标签、状态说明与 scope 在同一 publication 生成摘要前确定，inspect/probe 不再事后分别修改展示副本。
 
-逐项复核的reference_status核引用及内插；当次有效绑定下，publication保留各项模型verdict、scope/findings、条件、未实现及来源类型。引用错误只将该项显示为unknown，全局未解决继续保持draft，旧token不投影旧目标。blocked原对象仍可沿现有export生成含当次claims/review的正式诊断HTML，保持错误和不导出交付XML；诊断不要求先修改用户要求保留的角色。
+逐项复核的reference_status核引用及内插；当次有效绑定下，publication保留各项模型verdict、scope/findings、条件、未实现及来源类型。引用错误只将该项显示为unknown，全局未解决继续保持draft，旧token不投影旧目标。任务draft/blocked可沿export保存含当前claims/review的内部诊断，不列最终附件；只读评审完成可保留原角色blocked状态而交正式报告，不要求修改用户要求保留的角色。
 
 首次 inspect 诊断和 publication 复用同一原生名称呈现，缺译名保留当前标识。effect_state 的控件集合与未在集合中表示的原生输入分开，不从省略推断关闭或效果适用；view 从当前控件元数据返回原生应用函数的 data 操作位置，模型核对用途并选择实验。程序不把字段名、来源存在或零差分转换成因果结论。
 

@@ -727,9 +727,9 @@ def claim_diagnostics(claims):
             for claim in claims for row in claim.get("diagnostics",[])]
 
 
-def configuration_reviewed(claims, calculation_name):
+def configuration_reviewed(claims, calculation_name, *, reviewed_ids=()):
     references=["native:"+calculation_name+"#/"+field for field in ("config_values","config_controls")]
-    return any(c["status"]=="model_assessed" and "configuration:"+calculation_name in c["subjects"] and
+    return any((c["status"]=="model_assessed" or c["claim_id"] in reviewed_ids) and "configuration:"+calculation_name in c["subjects"] and
                any(ref==prefix or ref.startswith(prefix+"/") for ref in c["evidence_refs"] for prefix in references) for c in claims)
 
 

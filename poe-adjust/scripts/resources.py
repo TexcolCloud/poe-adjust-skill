@@ -309,7 +309,6 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
     flasks = [item["slot"] for item in result.get("equipped",[]) if item["slot"].startswith("Flask ") and item.get("active")]
     if guard: needs("condition:guard")
     for slot in flasks: needs("condition:" + slot)
-    for key in plan.get("operations",{}).get("config",{}): needs("config:" + key)
     active = [skill for skill in result.get("active_skills",[]) if not skill.get("disabled")]
     main = next((skill for skill in active if skill.get("is_main")),None)
     known_cost_keys={prefix+suffix for prefix in ("Mana","Life","ES") for suffix in ("Cost","PerSecondCost")}

@@ -29,7 +29,7 @@ subjects 关联对象，claim_id 是记录身份。每项目标用 `objective:<o
 
 edit 生成 bindings；对象/来源改变出现 invalidated_claims。读新事实，改源正文、条件、操作与关联，再 review_claims 刷新所选绑定。最终复核写对新数字不能修正仍错误的源 claim。程序投影的 judgments 与 HTML 同源，revision_pending 的旧文不作操作建议；有效绑定仍不认证语义。
 
-配置判断引用当前 config_values/controls、原文与实际进度；需要某控制时写 checks 比较实际 value。装备存在不证明配置开启或效果覆盖，false/默认/null 语义见[资料](data.md)。不能借用户声明认证计算或因果。
+配置用一份 configuration:candidate（路线为 configuration:stage:<id>）判断覆盖当前全部场景和控件，引用实际 config_values/controls、原文与进度；无需为每个控件重复声明 config:<key>。需要某控制时写 checks 比较实际 value。装备存在不证明效果覆盖，false/默认/null 见[资料](data.md)。用户声明只说明要求。
 
 ## 动作与资源
 
@@ -61,6 +61,6 @@ requirements/material_specs 来自实际差异，包括仍插着的禁用/备用
 
 规划的真实未来依赖可用 condition_reviews：`{subjects,claim_ids,conditions,fallback,evidence_refs}`。subjects 原样取当前 facts.pending，关联本次 supported/partial conclusions，写具体进入条件与在条件失败时能执行的退路（或明确等待再开始）。把能力/未来条件写在适用结论和 condition_reviews；review.unresolved 只记录当前尚未完成的复核工作，不重复列已审查的未测范围。必要设计/来源/计算仍缺、已知非法、矛盾、许可违反、过期复核不能包装成未来条件；普通生成缺口见[配装](build.md#普通目标生成)。
 
-完整 readonly 评审可否定/未知；规划的 unknown/refuted 目标不能说已完成。task_completion 与 character_readiness 各自说明交付和角色条件。export 冷算/保存回读并核当前来源：blocked 诊断 HTML；draft 草案及缺口；scoped_result 本次已评审范围。build/build_plan 落实际 XML 与 HTML；readonly 仅报告。route 的阶段 XML 以实际有效计算与文件为准。
+完整 readonly 评审可否定/未知；规划的 unknown/refuted 目标不能说已完成。task_completion 与 character_readiness 分别说明交付和角色条件。export 冷算/回读并核当前来源；仅 scoped_result、errors/pending 均空时提供最终 files。draft/blocked 保存内部诊断与恢复快照，不能当最终附件。build/build_plan 交 XML 与 HTML；readonly 仅报告；route 核本次 file_exported/files。
 
 publication、facts_summary、HTML 与核验共享事实，最终短答用真实状态、已核结果、代价、限制与下一步。源/输出完整性和恢复见[命令](commands.md#恢复与交付完整性)。已有有限支付、未知预算/覆盖、进入条件各保留；导出文件、自审和链接都不能替代目标依据。

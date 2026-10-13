@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.18"
+VERSION = "2.8.19"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="直接事实展示交付 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary。若加入机制、条件、归因或取舍解释，按 references/build.md#只读解释选择 intent.task_kind=read_only_review，使用 refine 空操作计划的 claims 与当次 review.check 评审，再由同一 publication 生成说明；聊天沿 task_completion 的完成状态，character_readiness 保留完整原对象问题。数字用事实内插，名称沿本机对象。快照只证明所显示的观察；来源列表或局部数值尚未证明的范围继续列为缺口。"
@@ -244,7 +244,7 @@ def proposal_request(args, root, source):
     else:
         bx.require(path.name.endswith(".evidence.json"),"使用 route 返回的 .evidence.json。",location="/proposal_file")
         state=read_json(path.with_name(path.name.removesuffix(".evidence.json")+".state.json"))
-        bx.require(state.get("file_exported") is True and state.get("files",{}).get(str(path))==raw_hash,"路线计算凭证已变化或不完整，请重新 route。",code="proposal_receipt_stale",location="/proposal_file")
+        bx.require(state.get("phase") in {"evaluated","exported"} and state.get("files",{}).get(str(path))==raw_hash,"路线计算凭证已变化或不完整，请重新 route。",code="proposal_receipt_stale",location="/proposal_file")
         outcome=saved.get("checked_route",{});input_file=state.get("input");revision=state.get("input_sha256")
     bx.require(saved.get("skill_version")==VERSION and saved.get("engine_fingerprint")==state.get("engine_fingerprint")==engine.fingerprint(root),"技能或引擎变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
     bx.require(input_artifacts_current(outcome),"外部角色模板变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
@@ -1351,6 +1351,10 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
             "scope":scope if scope is not None else "仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
 
 
+def task_deliverable(completion):
+    return completion.get("status")=="scoped_result" and completion.get("errors")==[] and completion.get("pending")==[]
+
+
 def delivery_actions(outcome,input_file,details_file,review_file,details_pointer="",*,report_exported=False,calculation=None):
     """Expose work from observed errors and dependencies, without choosing game policy."""
     shared={"input_file":str(input_file),"details_file":str(details_file)}
@@ -1420,10 +1424,10 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     if outcome.get('status')=='blocked' and isinstance(outcome.get('publication'),dict) and not details_pointer and not report_exported:
         actions.append({**shared,'action':'export','purpose':'diagnostic_report','delivery_status':'blocked','file_exported':False,
                         'instruction':'保留当前错误和未测状态，先沿当次 claims/review 核对解释，再用现有 export 生成正式诊断 HTML。无需为了诊断修改用户要求保留的角色；blocked 不导出交付 XML，因果及目标结论仍按当前证据审查。'})
-    if read_only and not report_exported and outcome["status"]!="blocked":
+    if read_only and not report_exported and task_deliverable(outcome.get("task_completion",{})):
         actions.append({**shared,"action":"export","purpose":"read_only_report","delivery_status":outcome["status"],"xml_exported":False,
-                        "instruction":"沿当前 export 最终复算，交付只读 HTML 和证据；draft 明确评审尚未闭合，scoped_result 仅表示所列评审完成，原角色状态继续保留。"})
-    if outcome.get("task_completion",{}).get("kind")=="build_plan" and not report_exported and outcome["status"]!="blocked":
+                        "instruction":"沿当前 export 最终复算，交付只读 HTML 和证据；scoped_result 仅表示所列评审完成，原角色状态继续保留。"})
+    if outcome.get("task_completion",{}).get("kind")=="build_plan" and not report_exported and task_deliverable(outcome["task_completion"]):
         actions.append({**shared,"action":"export","purpose":"conditional_plan","delivery_status":outcome["status"],
                         "instruction":"沿当前 export 最终复算并交付 XML、HTML 与核验文件。task_completion 表示具体方案交付范围；character_readiness 的条件和未知状态仍保留，不能承诺已经取得或实战达标。"})
     return actions
@@ -1647,7 +1651,7 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
     # These describe missing current work, rather than future execution facts.
     hard=("permission:","metric:","claim_check:","claim_revision:","final_review:","entry_check:",
           "snapshot:","snapshot_assumptions:","native:snapshot:","native:equipment:","native:socket_capacity:",
-          "native:gem_level:","native:links:","native:item_generation:","level_requirement:","level:","usage:","condition:measurement:")
+          "native:gem_level:","native:links:","native:item_generation:","level_requirement:","level:","usage:","condition:measurement","config:scenario","goal_assessment")
     blockers=set()
     stage_prefixes=sorted(("stage:"+row["stage_id"]+":" for row in review.get("facts",{}).get("stages",[])),key=len,reverse=True)
     for subject in pending:
@@ -1692,16 +1696,33 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
             blockers.difference_update(exclusions)
             handled.update(exclusions)
     task_diagnostics=list(scope_diagnostics)
+    resolved_inputs=set()
+    unresolved_inputs=set()
     for row in diagnostics:
         if row.get("action") in {"edit_input","review_claims","repair_evidence","record_user_basis","link_claim","revise_conclusion","review_configuration"}:
             # A source uncertainty can be reviewed as a condition; missing goal structure cannot.
             actual=row.get("actual")
             claim_id=actual.get("claim_id") if isinstance(actual,dict) else actual if isinstance(actual,str) else None
-            if row.get("code") in {"goal_claim_unresolved","usage_claim_unresolved"} and assessed(conclusions.get(claim_id)): continue
             subject=row.get("required_subject") or row.get("subject")
-            if row.get("action")=="review_configuration" and any(subject in claim["subjects"] and assessed(conclusions.get(claim["claim_id"])) for claim in claims): continue
+            dependency=subject
+            resolved=row.get("code") in {"goal_claim_unresolved","usage_claim_unresolved"} and current_claim(claim_id,"goal" if row.get("code")=="goal_claim_unresolved" else subject)
+            if row.get("action")=="review_configuration":
+                reviewed_ids={claim["claim_id"] for claim in claims if current_claim(claim["claim_id"],subject)}
+                if subject and subject.startswith("configuration:"):
+                    name=subject.removeprefix("configuration:")
+                    dependency="config:scenario" if name=="candidate" else "config:scenario:"+name.removeprefix("stage:")
+                    resolved=facts.configuration_reviewed(claims,name,reviewed_ids=reviewed_ids)
+                elif subject=="measurement":
+                    dependency="condition:measurement"
+                    resolved=bool(reviewed_ids)
+            if resolved:
+                resolved_inputs.add(dependency)
+                continue
+            unresolved_inputs.add(dependency)
             task_diagnostics.append(row)
             task_pending.append("plan_input:"+row.get("code","unresolved"))
+    handled.update(resolved_inputs-unresolved_inputs)
+    blockers.difference_update(handled)
     conditions=[]
     for row in review.get("condition_reviews",[]):
         valid=(row.get("reference_status")=="resolved" and row["conditions"] and row["fallback"] and row["evidence_refs"]
@@ -1799,8 +1820,6 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     if intent.get("budget") and budget["high"] > intent["budget"]["amount"]: pending.append("budget:upper_bound")
     for item in plan.get("operations", {}).get("items", []):
         if not facts.has_claim(claims, "legality:item:"+str(item["id"])): pending.append("legality:item:"+str(item["id"]))
-    for key in plan.get("scenario", {}):
-        if key not in intent.get("scenario", {}) and not facts.has_claim(claims,"config:"+key): pending.append("config:"+key)
     assessment = plan.get("assessment", {})
     goal_diagnostics=facts.goal_review_diagnostics(assessment,claims)
     if goal_diagnostics: pending.append("goal_assessment")
@@ -2062,10 +2081,11 @@ def report_html(state, outcome):
     detail+="\n"+esc(json.dumps({"single_payments":outcome["readiness"].get("single_payments",[]),"sustained_use":outcome["readiness"].get("sustained_use")},ensure_ascii=False,indent=2))
     timeline=outcome["readiness"].get("timeline")
     if timeline: detail+="\n"+esc(json.dumps(timeline,ensure_ascii=False,indent=2))
-    usage_note=('本次仅生成诊断说明，未导出交付 XML。先处理已知错误，再重新核验与导出。' if outcome['status']=='blocked' else
-                '在 PoECharm 中打开同目录 XML。草案需先处理上方缺口；按准备条件逐项落实后再在游戏内切换。文件不会修改服务器角色。')
-    if read_only: usage_note='本次交付只读评审 HTML 与完整证据 JSON，不导出改进 XML。评审完成不表示作者方案通过或原对象可执行；未知与反驳按逐项结论保留。'
-    elif scoped and outcome['status']!='blocked': usage_note='同目录 XML 是本次所列条件下的原生方案。规划交付完成不表示已取得物资、角色已就绪或实战达标；先落实上方执行条件和退路再切换。'
+    usage_note='本次自检未通过，仅保存内部诊断，未导出交付文件。先处理当前待办，再重新核验与导出。'
+    if task_deliverable(outcome.get('task_completion',{})):
+        usage_note='在 PoECharm 中打开同目录 XML；按准备条件逐项落实后再在游戏内切换。文件不会修改服务器角色。'
+        if read_only: usage_note='本次交付只读评审 HTML 与完整证据 JSON，不导出改进 XML。评审完成不表示作者方案通过或原对象可执行；未知与反驳按逐项结论保留。'
+        elif scoped: usage_note='同目录 XML 是本次所列条件下的原生方案。规划交付完成不表示已取得物资、角色已就绪或实战达标；先落实上方执行条件和退路再切换。'
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(outcome['name'])}</title>
 <style>body{{font:16px/1.7 system-ui;background:#f5f6f8;color:#202a38;max-width:1050px;margin:auto;padding:28px}}section{{background:white;padding:24px;margin:18px 0;border-radius:12px}}table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}small{{color:#526174}}h1{{margin-bottom:6px}}</style>
 <h1>{esc(outcome['name'])}</h1><p>{esc(status)} · PoECharm {esc(outcome['engine_version'])}</p>
@@ -2268,43 +2288,38 @@ def export(args):
     outcome.update(assessment)
     outcome["result"]={k:v for k,v in verification.items() if k!="xml"}
     outcome["next_actions"]=delivery_actions(outcome,outcome["source_plan"],output/"final-assessment.json",output/"review.json",report_exported=True,calculation={"command":"evaluate","arguments":{"run":str(run),"name":args.name,"plan":outcome["source_plan"]}})
-    filename="配装草案.xml" if outcome["status"]=="draft" else "改进配装.xml"
-    blocked=outcome['status']=='blocked'
+    filename="改进配装.xml"
+    deliverable=task_deliverable(outcome["task_completion"])
     read_only=outcome["task_completion"]["kind"]=="read_only_review"
     summary=outcome["publication"]["facts_summary"]+"\n\n"+scenario_summary(verification)
-    summary+=('\n只读评审交付 HTML 与完整证据，不导出改进 XML；原对象的配装状态继续保留。' if read_only else '\n未导出交付 XML；内部候选仅供诊断，当前状态及缺口见正式说明。' if blocked else "\n已导出 XML，通过本机计算、保存回读与最终复算；以上是所列配置下的快照。")
+    summary+=('\n自检未通过，未导出交付文件；内部诊断和复核包保留，按当前待办返修。' if not deliverable else '\n只读评审交付 HTML 与完整证据，不导出改进 XML；原对象的配装状态继续保留。' if read_only else "\n已导出 XML，通过本机计算、保存回读与最终复算；以上是所列配置下的快照。")
     if outcome["comparison_notes"]: summary+="前后口径差异："+"；".join(outcome["comparison_notes"])
-    response={"status":outcome["status"],"file_exported":not blocked,"xml_exported":not blocked and not read_only,"task_completion":outcome["task_completion"],"character_readiness":outcome["character_readiness"],"delivery_brief":outcome["delivery_brief"],
-              "files":[str(output/"配装说明.html"),str(output/"final-assessment.json")] if read_only else [str(output/"配装说明.html")] if blocked else [str(output/filename),str(output/"配装说明.html")],
+    response={"status":outcome["status"],"file_exported":deliverable,"xml_exported":deliverable and not read_only,"task_completion":outcome["task_completion"],"character_readiness":outcome["character_readiness"],"delivery_brief":outcome["delivery_brief"],
+              "files":[] if not deliverable else [str(output/"配装说明.html"),str(output/"final-assessment.json")] if read_only else [str(output/filename),str(output/"配装说明.html")],
+              "details_file":str(output/"final-assessment.json"),
               "facts_summary":summary,"publication":outcome["publication"],"facts":outcome["review_packet"]["facts"],
               "objective_coverage":outcome["objective_coverage"],"pending":outcome["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
               "judgments":[facts.claim_display(c,review=outcome["review_packet"] if outcome["task_completion"]["kind"] in {"read_only_review","build_plan"} else None) for c in outcome["claims"]],"next_actions":outcome["next_actions"],
-              "reply_policy":"直接交付返回的 files，保留草案文件名；blocked 仅交诊断说明，内部候选不能代替已导出交付。最终答复沿用 delivery_brief 的状态与范围，数值、当前名称和比较明细引用同一 HTML，简述已证明收益、代价、全部缺口类别及进入条件。机制和取舍按当前 judgments 的状态、text、条件与诊断核对；revision_pending 的文字尚待重审。平均收支只支持该投影，不能证明动作执行或效果持续；复核token或回读不证明机制、预算或目标达成。"}
+              "reply_policy":"仅交付返回的 files。最终答复沿用 delivery_brief 的状态与范围，数值、当前名称和比较明细引用同一 HTML，简述已证明收益、代价、全部缺口类别及进入条件。机制和取舍按当前 judgments 的状态、text、条件与诊断核对；revision_pending 的文字尚待重审。平均收支只支持该投影，不能证明动作执行或效果持续；复核token或回读不证明机制、预算或目标达成。"}
     if read_only:
         response["reply_policy"]="交付 files 中的只读报告和证据，沿 task_completion 与 delivery_brief 说明本次评审完成情况；character_readiness 的完整原角色错误与未测项继续保留。反驳或证据不足可以完成评审，但不表示作者方案通过、原角色可执行或实战保证。没有改进 XML。"
     elif outcome["task_completion"]["kind"]=="build_plan":
         response["reply_policy"]="交付 files 中的 XML、HTML 与当前核验文件；按 task_completion 与 delivery_brief 说明具体方案交付是否完成，按 character_readiness 保留全部未就绪项。逐项说明执行条件、取得/训练及退路；合法条件快照不表示现实物资已取得、效果持续或实战目标已经达到。"
-    if outcome["status"]=="blocked":
-        response.update(errors=outcome["task_completion"]["errors"] if read_only else outcome["errors"],next="已生成只读诊断报告；处理 task_completion 的原对象保留问题后重新 evaluate，不能为收尾修改原角色。" if read_only else "已生成诊断说明；先解决已知矛盾并重新 evaluate。")
+    if not deliverable:
+        response.update(errors=outcome["task_completion"]["errors"],next="内部诊断已保存；按 task_completion 和 next_actions 修源、登记当前判断、复核并重算。",reply_policy="自检未通过，files 为空，不提供最终附件或声称交付完成。读取 details_file 的 task_completion 与 next_actions 继续返修；确实无法完成时如实说明失败原因与缺口，内部诊断不作为最终交付。")
     outcome["response"]=response
     write_json(output/"final-assessment.json",outcome)
     write_json(output/"review.json",outcome["review_packet"])
     write_text(output/"配装说明.html",report_html(state,outcome))
-    if read_only:
+    if read_only or not deliverable:
         for old_name in ("配装草案.xml","改进配装.xml"):
             (output/old_name).unlink(missing_ok=True)
-        write_json(output/"delivery.json",{"file_exported":not blocked,"xml_exported":False,"status":outcome["status"],"candidate":args.name,
-                   "files":{name:bx.digest((output/name).read_bytes()) for name in ("配装说明.html","final-assessment.json")},"review_token":outcome["review_packet"]["token"]})
-        state.update(phase="evaluated" if blocked else "exported",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":not blocked,"xml_exported":False,"status":outcome["status"]});write_json(run/"run.json",state)
-        return response
-    if outcome["status"]=="blocked":
-        for old_name in ("配装草案.xml","改进配装.xml"):
-            (output/old_name).unlink(missing_ok=True)
-        write_json(output/"delivery.json",{"file_exported":False,"status":"blocked","candidate":args.name})
-        state.update(phase="evaluated",updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":False,"status":"blocked"}); write_json(run/"run.json",state)
+        write_json(output/"delivery.json",{"file_exported":deliverable,"xml_exported":False,"status":outcome["status"],"candidate":args.name,
+                   "files":{name:bx.digest((output/name).read_bytes()) for name in ("配装说明.html","final-assessment.json","review.json")},"review_token":outcome["review_packet"]["token"]})
+        state.update(phase="exported" if deliverable else "evaluated",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":deliverable,"xml_exported":False,"status":outcome["status"]});write_json(run/"run.json",state)
         return response
     write_text(output/filename,xml)
-    (output/("改进配装.xml" if filename=="配装草案.xml" else "配装草案.xml")).unlink(missing_ok=True)
+    (output/"配装草案.xml").unlink(missing_ok=True)
     write_json(output/"delivery.json",{"file_exported":True,"status":outcome["status"],"candidate":args.name,
                "files":{name:bx.digest((output/name).read_bytes()) for name in (filename,"配装说明.html","final-assessment.json","review.json")},"review_token":outcome["review_packet"]["token"]})
     state.update(phase="exported",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":True,"status":outcome["status"]})
@@ -2735,19 +2750,23 @@ def calculate_route(args):
     bx.require(input_artifacts_current(checked),"核对期间阶段模板变化，请重跑 route。",location="/stages")
     evidence_file=output.with_suffix(".evidence.json")
     review_file=output.with_suffix(".review.json")
-    delivered_xmls=[Path(row['xml_path']) for row in stage_summary if row.get('xml_path') and row['status']!='blocked']
+    snapshot_xmls=[Path(row['xml_path']) for row in stage_summary if row.get('xml_path')]
+    deliverable=task_deliverable(completion)
+    delivered_xmls=[Path(row['xml_path']) for row in stage_summary if row.get('xml_path') and row['status']!='blocked'] if deliverable else []
     actions=delivery_actions({k:checked[k] for k in ("errors","pending","diagnostics","reference_contract","claims","task_completion","character_readiness")}|{"status":checked["delivery_status"]},path,evidence_file,review_file,"/checked_route",report_exported=True,calculation={"command":"route","arguments":{"file":str(path),"out":str(output)}})
-    response={"status":checked["delivery_status"],"file_exported":True,"task_completion":completion,"character_readiness":checked["character_readiness"],"delivery_brief":checked["delivery_brief"],"facts_summary":checked["publication"]["facts_summary"],"errors":checked["errors"],"stage_summary":stage_summary,"files":[str(output),str(evidence_file)]+[str(p) for p in delivered_xmls],"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":checked["pending"],"warnings":warnings,
+    response={"status":checked["delivery_status"],"file_exported":deliverable,"task_completion":completion,"character_readiness":checked["character_readiness"],"delivery_brief":checked["delivery_brief"],"facts_summary":checked["publication"]["facts_summary"],"errors":checked["errors"],"stage_summary":stage_summary,"files":[str(output),str(evidence_file)]+[str(p) for p in delivered_xmls] if deliverable else [],"details_file":str(evidence_file),"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":checked["pending"],"warnings":warnings,
              "judgments":[facts.claim_display(c,review=review) for c in claims],
              "reply_policy":"先沿用 task_completion 与 delivery_brief/facts_summary 的规划交付状态，再按当前 judgments 的评审、条件与退路解释路线。character_readiness 保留全部阶段未就绪项，取得与训练未发生；规划完成不等于实际可执行或游戏效果已验证。revision_pending 表示说明待重新评审。聊天与HTML保持同一结论。",
              "next_actions":actions,"scope":"目录核对与实际阶段快照分别列出；仅 calculation 中的数值经过所声明完整输入实算，未物化阶段不宣称精确 DPS/生存/续航。获取位置不证明当前已完成任务。", "next":"按 task_completion 和 next_actions 完成本次规划交付；character_readiness 继续保留阶段执行条件。需要修订时重跑同一route；诊断XML不能作为可执行配装交付，计算或规划完成不代表实际阶段已就绪。"}
+    if not deliverable:
+        response['reply_policy']='自检未通过，files 为空，不提供最终附件或声称交付完成。阶段快照及 HTML 是内部诊断；按 details_file 的 checked_route/task_completion 和 next_actions 修源、复核并重跑 route，保留已算阶段用于恢复。'
     write_json(review_file,review)
     write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings,"next_actions":actions,"response":response})
     write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))
     progress=read_json(output.with_suffix(".state.json"))
-    write_json(output.with_suffix(".state.json"),{**progress,"phase":"exported","file_exported":True,"status":checked["delivery_status"],"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":calculation["engine_fingerprint"],
+    write_json(output.with_suffix(".state.json"),{**progress,"phase":"exported" if deliverable else "evaluated","file_exported":deliverable,"status":checked["delivery_status"],"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":calculation["engine_fingerprint"],
                "input_artifacts":{filename:digest for stage in checked["stages"] for filename,digest in stage.get("calculation",{}).get("input_artifacts",{}).items()},
-               "files":{str(p):bx.digest(p.read_bytes()) for p in [output,evidence_file,review_file]+delivered_xmls},"review_token":review["token"],
+               "files":{str(p):bx.digest(p.read_bytes()) for p in [output,evidence_file,review_file]+snapshot_xmls},"review_token":review["token"],
                "stages":{row["stage_id"]:{k:v for k,v in row.items() if k not in {"stage_id","name"}} for row in stage_summary if row["status"]!="not_calculated"},
                "delivery_brief":checked["delivery_brief"],"task_completion":completion,"character_readiness":checked["character_readiness"],"next_actions":actions})
     return response
@@ -2817,7 +2836,7 @@ def workflow_status(args):
         return {"entrypoint":execution_entrypoint(),**scopes,"phase":state["phase"],"status":state.get("status"),"failure":state.get("failure"),"delivery_brief":state.get("delivery_brief"),"file_exported":ready,"input_unchanged":unchanged,"files_intact":intact,"engine_unchanged":current,"input_artifacts_unchanged":dependencies_current,
                 "state_file":str(location),"completed_stages":[sid for sid,row in state.get("stages",{}).items() if unchanged and current and dependencies_current and (row.get("native_calculated") or row.get("status")=="calculated")],
                 "stage_summary":state.get("stages",{}),"invalid_artifacts":invalid,"pob_path":str(root),
-                "next_actions":state.get("next_actions",[]) if state.get("next_actions") and (ready or state["phase"]=="failed") else [{"action":"resume_route" if not ready else "resolve_route" if state.get("status") in {"blocked","draft"} else "review_delivery","input":str(source),"output":state.get("output"),"pob_path":str(root),"invalid_artifacts":invalid,"reference":"references/leveling.md"}],
+                "next_actions":state.get("next_actions",[]) if state.get("next_actions") and ((unchanged and intact and current and dependencies_current) or state["phase"]=="failed") else [{"action":"resume_route" if not ready else "review_delivery","input":str(source),"output":state.get("output"),"pob_path":str(root),"invalid_artifacts":invalid,"reference":"references/leveling.md"}],
                 "scope":"文件完成需要输入、输出与当前引擎一致；completed_stages仅指原生计算已完成，阶段合法性与依赖看stage_summary。恢复时重新核对来源与判断。"}
     run,state=read_run(args.run)
     records=[]
@@ -3150,8 +3169,9 @@ def main(argv=None):
         result["entrypoint"]=execution_entrypoint()
         result["runtime"]={**engine.PERFORMANCE,"elapsed_seconds":round(time.perf_counter()-started,4)}
         result=bound_reply(result,args)
-        print(json.dumps({"ok": True, **result}, ensure_ascii=False, allow_nan=False))
-        return 0
+        completed=args.command!="export" or result.get("file_exported") is True
+        print(json.dumps({"ok": completed, **result}, ensure_ascii=False, allow_nan=False))
+        return 0 if completed else 2
     except (ValueError, OSError, KeyError, TypeError, IndexError, OverflowError) as exc:
         diagnostic=dict(exc.diagnostic) if getattr(exc,"diagnostic",None) else {"code":"io_error" if isinstance(exc,OSError) else "adapter_contract_failure" if isinstance(exc,(KeyError,TypeError,IndexError)) else "invalid_input","message":str(exc),"action":"inspect_error" if isinstance(exc,(KeyError,TypeError,IndexError)) else "check_io" if isinstance(exc,OSError) else "edit_input","retryable":isinstance(exc,OSError) and transient_io(exc),"location":"/","expected":"valid input and available interface","actual":type(exc).__name__}
         if diagnostic["code"]=="input_revision_stale": diagnostic["action"]="read_current_revision"
