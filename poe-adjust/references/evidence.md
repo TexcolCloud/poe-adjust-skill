@@ -59,7 +59,7 @@ requirements/material_specs 来自实际差异，包括仍插着的禁用/备用
 
 发现偏离先改源并重算，再单独提交 assessment.review，之后 evaluate/export 或重跑 route。token 绑定本次意图、对象、文字、引用、XML/引擎与账目；改变后重审。不要用脚本自动生成语义复核或填 token 假称通过，引用/token 有效不证明文字因果正确。
 
-规划的真实未来依赖可用 condition_reviews：`{subjects,claim_ids,conditions,fallback,evidence_refs}`。subjects 原样取当前 facts.pending，关联本次 supported/partial conclusions，写具体进入条件与在条件失败时能执行的退路（或明确等待再开始）。review.unresolved 是当前复核工作未完成。必要设计/来源/计算仍缺、已知非法、矛盾、许可违反、过期复核不能包装成未来条件；普通生成缺口见[配装](build.md#普通目标生成)。
+规划的真实未来依赖可用 condition_reviews：`{subjects,claim_ids,conditions,fallback,evidence_refs}`。subjects 原样取当前 facts.pending，关联本次 supported/partial conclusions，写具体进入条件与在条件失败时能执行的退路（或明确等待再开始）。把能力/未来条件写在适用结论和 condition_reviews；review.unresolved 只记录当前尚未完成的复核工作，不重复列已审查的未测范围。必要设计/来源/计算仍缺、已知非法、矛盾、许可违反、过期复核不能包装成未来条件；普通生成缺口见[配装](build.md#普通目标生成)。
 
 完整 readonly 评审可否定/未知；规划的 unknown/refuted 目标不能说已完成。task_completion 与 character_readiness 各自说明交付和角色条件。export 冷算/保存回读并核当前来源：blocked 诊断 HTML；draft 草案及缺口；scoped_result 本次已评审范围。build/build_plan 落实际 XML 与 HTML；readonly 仅报告。route 的阶段 XML 以实际有效计算与文件为准。
 

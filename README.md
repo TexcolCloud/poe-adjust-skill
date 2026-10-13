@@ -2,17 +2,17 @@
 
 Windows 上的 PoE1 配装 skill。用户明确调用后，一个 agent 复用本机 PoECharm 的数据和计算、联网核实外部事实，完成查询、复核、调整或开荒规划，交付中文 HTML 和适用 XML。
 
-**lean003已完成本轮精简与普通单agent交付验收，按约定标准放行。** 指令减少68.94%，ZIP减少15.53%，程序沿用2.8.17/schema2。五类普通任务各连续两次通过，最低94、均分98.8；同尺比较未见明显退化。294现有非原生检查、16组冷回读及当前doctor通过，c003的361回归为历史基线。保留伤害口径、药剂目标和移动说明的扣分，不宣称一般准确率或实战通过。源码和原样包已上传并下载回验，TeleAgent适配准备已完成；旧安装及平台实机未更新，heartbeat未恢复。[验证报告](TEST-REPORT.md)是状态依据。
+**已发布的2.8.17/lean003通过普通单agent样本验收；TeleAgent极速尚未放行。** 发布版指令减少68.94%，ZIP减少15.53%，五类普通任务各连续两次通过，最低94、均分98.8，同尺比较未见明显退化。这些离线结果不证明平台或实战通过。极速首轮六份已结束并独立审查，只有两次查询通过，其余未达交付要求。当前工作树2.8.18/ta002修订共享执行流程，保留15文件、六Python/两Lua与schema2；尚待新一轮五类各两次真实验收。旧发布和原样包保留，heartbeat未恢复。[验证报告](TEST-REPORT.md)是状态依据。
 
 ## 使用
 
-从[2.8.17精简实验版发布页](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.17)取得原样包 `poe-adjust-2.8.17-lean003.zip`；验收范围见[验证报告](TEST-REPORT.md)。仓库保持私有，需要有访问权限的GitHub账号。本版本已通过离线单agent交付样本验收，TeleAgent本轮导入与运行尚未验证。旧[2.8.16发布](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16)保留。在TeleAgent的“技能·专家·应用连接 → 我的 → 导入技能”中选择ZIP的步骤对应既有导入方式。
+从[2.8.17精简实验版发布页](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.17)取得原样包 `poe-adjust-2.8.17-lean003.zip`；验收范围见[验证报告](TEST-REPORT.md)。仓库保持私有，需要有访问权限的GitHub账号。本版本已通过离线单agent交付样本验收，本轮TeleAgent导入已核对，运行交付尚待验收。旧[2.8.16发布](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16)保留。在TeleAgent的“技能·专家·应用连接 → 我的 → 导入技能”中选择ZIP的步骤已实际使用。
 
 准备能在 PoECharm 打开的 XML，作为 TeleAgent 附件，并发送：
 
 > 调用 POE 配装助手（poe-adjust）。请先和我聊清目标，再用本机 PoECharm 计算，给我 XML 和中文说明。我的目标是：刷图少死一些、操作简单点。
 
-[使用说明](使用说明.md)面向使用者；无需运行下面的开发命令。已有角色优化、整体换流派、已有交付复核与无 XML 开荒分别有协议；精简版已完成五类单agent交付样本验收，本轮TeleAgent实机尚未开展。
+[使用说明](使用说明.md)面向使用者；无需运行下面的开发命令。已有角色优化、整体换流派、已有交付复核与无 XML 开荒分别有协议。极速首轮的原件、原分与补充证据保留；新候选须重新完整验收，不拼前轮成绩。
 
 ## 实现与边界
 

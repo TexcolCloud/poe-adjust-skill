@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.17"
+VERSION = "2.8.18"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="直接事实展示交付 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary。若加入机制、条件、归因或取舍解释，按 references/build.md#只读解释选择 intent.task_kind=read_only_review，使用 refine 空操作计划的 claims 与当次 review.check 评审，再由同一 publication 生成说明；聊天沿 task_completion 的完成状态，character_readiness 保留完整原对象问题。数字用事实内插，名称沿本机对象。快照只证明所显示的观察；来源列表或局部数值尚未证明的范围继续列为缺口。"
