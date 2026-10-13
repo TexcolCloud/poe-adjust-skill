@@ -22,11 +22,6 @@ import time
 import xml.etree.ElementTree as ET
 import buildxml as bx
 
-# Historical search hints, never current-season or compatibility evidence.
-VERSION_SOURCE_HINTS = {
-    "3.28": {"season": "S29", "name": "沙海幻境", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22602/m14525/202603/982863.shtml"},
-    "3.29": {"season": "S30", "name": "永火之咒", "url": "https://poe.qq.com/webplat/info/news_version3/22557/22558/22601/m14525/202607/988692.shtml"},
-}
 SCRIPTS = Path(__file__).resolve().parent
 CACHE_DIRECTORY = Path(tempfile.gettempdir()) / "poe-adjust-cache"
 PERFORMANCE = {"requests": 0, "worker_calls": 0, "cache_hits": 0, "worker_seconds": 0.0}
@@ -253,7 +248,6 @@ def metadata(root: Path) -> dict:
     locations={tree:[str(path.relative_to(root)).replace("\\","/") for name in ("tree.lua","data.json") if (path:=tree_root/tree/name).is_file()] for tree in trees}
     physical=sorted(path.name for path in tree_root.iterdir() if path.is_dir() and any((path/name).is_file() for name in ("tree.lua","data.json"))) if tree_root.is_dir() else []
     matched = rules is not None and latest == rules.replace(".", "_") and bool(locations.get(latest))
-    hint = VERSION_SOURCE_HINTS.get(rules) if matched else None
     return {"engine_version": current, "data_version": rules if matched else None,
             "available_tree_versions": trees, "latest_standard_tree": latest,
             "data_layout":{"version_manifest":"GameVersions.lua","tree_locations":locations,
@@ -263,9 +257,7 @@ def metadata(root: Path) -> dict:
             "data_version_basis": {"status": "corroborated" if matched else "unresolved",
                 "release": current, "changelog_heading": heading[0] if heading else None,
                 "tree_metadata": latest,"tree_source_files":locations.get(latest,[]),
-                "scope": "本机发布记录与标准树交叉确认；不代表已核实国服改动或所有游戏机制。"},
-            "version_source_hint": {**hint, "status": "unverified_hint",
-                "scope": "历史公告搜索线索，本次尚未联网核实；不表示当前赛季、用户区服或国服现行规则。"} if hint else None}
+                "scope": "本机发布记录与标准树交叉确认；不代表已核实国服改动或所有游戏机制。"}}
 
 
 def check(root: Path) -> dict:
@@ -310,11 +302,59 @@ def character_state(result):
                         for item in sorted(result.get("equipped",[]),key=lambda row:row.get("slot",""))]}
 
 
+def character_changes(before, after):
+    """All canonical native state differences; never infer permission from them."""
+    changes=[]
+    def difference(left,right,path):
+        if isinstance(left,dict) and isinstance(right,dict):
+            for key in sorted(left.keys()|right.keys()):
+                locator=path+'/'+str(key).replace('~','~0').replace('/','~1')
+                if key not in left or key not in right:
+                    changes.append({'locator':locator,'before_present':key in left,'after_present':key in right,
+                                    'before':left.get(key),'after':right.get(key)})
+                else:difference(left[key],right[key],locator)
+        elif isinstance(left,list) and isinstance(right,list) and len(left)==len(right):
+            for index,(a,b) in enumerate(zip(left,right)):difference(a,b,path+'/'+str(index))
+        elif not bx.same_scalar(left,right):changes.append({'locator':path,'before':left,'after':right})
+    difference(character_state(before),character_state(after),'')
+    objects={}
+    for side,calculation in (('before',before),('after',after)):
+        objects[side]={'gems':sorted(calculation.get('gems',[]),key=lambda row:(row.get('group',0),row.get('index',0))),
+                       'equipped':sorted(calculation.get('equipped',[]),key=lambda row:row.get('slot',''))}
+    for change in changes:
+        tokens=change['locator'].split('/')
+        if len(tokens)<3 or tokens[1] not in ('gems','equipped') or not tokens[2].isdigit():continue
+        for side in ('before','after'):
+            rows=objects[side][tokens[1]];index=int(tokens[2])
+            if index<len(rows):
+                change['object_'+side]={key:rows[index][key] for key in ('id','group','index','slot','source','name','name_cn','display_name','name_source','title','title_cn','title_name_source','base','base_cn','display_base','base_name_source') if key in rows[index]}
+                if tokens[1]=='gems' and 'granted_effects' in rows[index]:
+                    change['object_'+side]['granted_effects']=[{key:effect[key] for key in ('id','index','name','name_cn','display_name','operation_field','skill_types','has_global_effect','global_enabled','active_skill_present') if key in effect}
+                                                               for effect in rows[index]['granted_effects']]
+    return changes
+
+
+def config_input_origin(xml):
+    """Observe the active request XML, separately from native runtime defaults."""
+    result={"status":"input_xml_observed" if xml else "no_input_xml", "active_set_id":None,
+            "inputs":{},"placeholders":{},"input_xml_sha256":bx.digest(xml) if xml else None,
+            "scope":"Active request XML Input and Placeholder values only; runtime presence, native save defaults and effect applicability are separate."}
+    if xml:
+        config=bx.active_config(bx.parse(xml));result['active_set_id']=config.get('id')
+        for tag,field in (('Input','inputs'),('Placeholder','placeholders')):
+            for node in config.findall(tag):
+                key=node.get('name')
+                if key: result[field][key]=bx.config_input_value(node,'/config/'+key.replace('~','~0').replace('/','~1'))
+    return result
+
+
 def effect_state(result):
     """Compact current switches; never infer duration from names or visibility."""
     controls=result.get("config_controls",{})
     return {"config_controls_available":isinstance(result.get("config_controls"),dict) and result.get("capabilities",{}).get("native_config_controls",True),
             "config_switches":{key:row.get("value") if type(row.get("value")) is bool else None for key,row in controls.items() if row.get("type")=="check"},
+            "config_values_not_in_controls":{key:value for key,value in result.get("config_values",{}).items() if key not in controls},
+            "configuration_scope":"config_switches 只取当前 config_controls 中的 check 控件；不是全部 config_values，省略的输入不视为 false，输入值仍不证明效果适用。",
             "invalid_config_switch_values":{key:row["value"] for key,row in controls.items() if row.get("type")=="check" and row.get("value") is not None and type(row["value"]) is not bool},
             "global_effects":[{**{key:effect.get(key) for key in ("id","name","description","global_enabled","active_skill_present")},
                                "gem_id":gem.get("id"),"group":gem.get("group"),"index":gem.get("index"),
@@ -494,7 +534,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     PERFORMANCE["worker_calls"] += 1
     try:
         process = subprocess.run(
-            [sys.executable, str(SCRIPTS / "engine.py"), "--worker"],
+            [sys.executable, "-B", str(SCRIPTS / "engine.py"), "--worker"],
             input=json.dumps(request, ensure_ascii=False).encode("utf-8"),
             capture_output=True, timeout=120,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -505,14 +545,15 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
     finally:
         PERFORMANCE["worker_seconds"] += time.perf_counter() - worker_started
     if process.returncode:
-        raw = process.stderr.decode("utf-8", errors="replace")
+        raw = process.stdout.decode("utf-8", errors="replace")
         diagnostic = None
         try:
             failure = json.loads(raw)
             detail = failure["error"]
             diagnostic = failure.get("diagnostic")
             if not isinstance(detail,str) or diagnostic is not None and not isinstance(diagnostic,dict): raise ValueError("invalid worker error")
-        except (ValueError,KeyError,TypeError): detail,diagnostic = raw,None
+        except (ValueError,KeyError,TypeError):
+            detail,diagnostic = "\n".join(value for value in (raw,process.stderr.decode("utf-8",errors="replace")) if value),None
         detail = detail[-5000:]
         # The headless worker may include desktop hotkey instructions in errors.
         # They are irrelevant to this failed calculation, not UI recovery steps.
@@ -528,45 +569,89 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         raise EngineError("计算期间引擎或数据文件发生变化。本次结果已作废，请等待 PoECharm 更新完成后重试。")
     validate_response(request,result)
     result.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
-    names, oil_names = {}, {}
-    for filename in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv", "Items_Oils.csv"):
-        translations = root.parent / "Data/Translate/zh-rCN" / filename
+    names = {role:{} for role in ("display","nodes","skills","oils","config","bases","items")}
+    name_sources = {role:{} for role in names}
+    oil_names = {}
+    translation_root = root.parent / "Data/Translate/zh-rCN"
+    translation_files = [translation_root / filename for filename in ("GUI.csv", "tree_dn.csv", "Items_Gems.txt.csv", "Items_Oils.csv", "ConfigOptions.csv", "Uniques.txt.csv")]
+    translation_files += sorted(translation_root.glob("Items_*.txt.csv"))
+    for translations in dict.fromkeys(translation_files):
         if translations.is_file():
             with translations.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
-                rows = [row for row in csv.reader(stream) if len(row) >= 2]
-                names.update({row[0]: row[1] for row in rows})
-                if filename == "Items_Oils.csv":
+                rows = [row for row in csv.reader(stream) if len(row) >= 2 and row[0].strip() and row[1].strip()]
+                roles = {"GUI.csv":("display",), "tree_dn.csv":("nodes",), "Items_Gems.txt.csv":("skills",),
+                         "Items_Oils.csv":("oils",), "ConfigOptions.csv":("config",), "Uniques.txt.csv":("items",)}.get(translations.name,("bases","items"))
+                for role in roles:
+                    for native_name,translated_name,*_ in rows:
+                        if native_name in names[role] and names[role][native_name] != translated_name:
+                            names[role][native_name] = None
+                            name_sources[role].pop(native_name,None)
+                        elif native_name not in names[role]:
+                            names[role][native_name] = translated_name
+                            name_sources[role][native_name] = "translations/" + translations.name
+                if translations.name == "Items_Oils.csv":
                     oil_names.update({row[0].replace(" ", ""): row[0] for row in rows})
-    for calculation in result.get("calculations", [result]):
+    for index,calculation in enumerate(result.get("calculations", [result])):
         validate_contract(calculation, catalog_only=bool(catalog or queries) and not health_probe and not xml_batch and not crafts)
         calculation.update({key: info[key] for key in ("engine_version", "engine_fingerprint", "data_version", "data_version_basis")})
+        origin=config_input_origin(xml_batch[index] if xml_batch is not None else xml)
+        calculation['config_input_origin']=origin
+        controls=list(calculation.get('config_controls',{}).values())
+        catalog_entries=list(calculation.get('catalog',[]))
+        for query_result in calculation.get('catalog_batch',[]): catalog_entries.extend(query_result['entries'])
+        controls.extend(entry['current_control'] for entry in catalog_entries if isinstance(entry.get('current_control'),dict))
+        for control in controls:
+            key=control.get('id');known=origin['status']=='input_xml_observed'
+            control['input_origin']={'status':origin['status'],'input_present':key in origin['inputs'] if known else None,
+                'input_value':origin['inputs'].get(key),'placeholder_present':key in origin['placeholders'] if known else None,
+                'placeholder_value':origin['placeholders'].get(key)}
+            label_role='config' if control.get('label') in names['config'] else 'display'
+            if names[label_role].get(control.get('label')):
+                control['label_cn']=names[label_role][control['label']]
+                control['display_label']=f"{control['label_cn']}（{control['label']}）"
+                control['label_source']=name_sources[label_role][control['label']]
         calculation["character_identity"]={"digest":bx.digest(json.dumps(character_state(calculation),ensure_ascii=False,sort_keys=True,allow_nan=False)),
             "basis":"current_native_active_state","scope":"当前原生配置、天赋、技能效果开关与装备规格；不等于输入 XML 字节摘要，不证明机制或实战可行。"}
         calculation["effect_state"]=effect_state(calculation)
         if info["available_tree_versions"] and calculation.get("latest_tree_version") and calculation["latest_tree_version"] not in info["available_tree_versions"]:
             raise EngineError("运行中的天赋数据与安装元数据不一致，请等更新完成后重试。")
-        entries = calculation.get("gems", []) + calculation.get("catalog", []) + calculation.get("classes", []) + calculation.get("secondary_ascendancies", []) + calculation.get("active_skills", []) + calculation.get("damage_sources", []) + calculation.get("granted_passives", [])
+        catalog_roles={"gems":"skills","skills":"skills","classes":"display","bases":"bases","nodes":"nodes","uniques":"items"}
+        entries = [(role,entry) for key,role in (("gems","skills"),("equipped","items"),("classes","display"),
+                   ("secondary_ascendancies","display"),("active_skills","skills"),("damage_sources","skills"),("granted_passives","nodes"))
+                   for entry in calculation.get(key,[])]
+        entries += [(catalog_roles.get(catalog,"display"),entry) for entry in calculation.get("catalog",[])]
         for query_result in calculation.get("catalog_batch", []):
-            entries += query_result["entries"]
-        entries += [ascendancy for entry in entries for ascendancy in entry.get("ascendancies", [])]
-        ingredients = [ingredient for entry in entries for ingredient in entry.get("anoint_recipe", [])]
+            entries += [(catalog_roles.get(query_result['kind'],"display"),entry) for entry in query_result["entries"]]
+        entries += [("display",ascendancy) for _,entry in entries for ascendancy in entry.get("ascendancies", [])]
+        ingredients = [ingredient for _,entry in entries for ingredient in entry.get("anoint_recipe", [])]
         for ingredient in ingredients:
             ingredient["name"] = oil_names.get(ingredient["id"], ingredient["id"])
-        entries += ingredients
-        for entry in entries:
-            if entry.get("name") in names:
-                entry["name_cn"] = names[entry["name"]]
+        entries += [("oils",ingredient) for ingredient in ingredients]
+        for role,entry in entries:
+            if names[role].get(entry.get("name")):
+                entry["name_cn"] = names[role][entry["name"]]
                 entry["display_name"] = f"{entry['name_cn']}（{entry['name']}）"
+                entry["name_source"] = name_sources[role][entry["name"]]
+            if role in ('items','bases') and names['bases'].get(entry.get("base")):
+                entry["base_cn"] = names['bases'][entry["base"]]
+                entry["display_base"] = f"{entry['base_cn']}（{entry['base']}）"
+                entry["base_name_source"] = name_sources['bases'][entry["base"]]
+            if role=='items' and names['items'].get(entry.get('title')):
+                entry['title_cn']=names['items'][entry['title']]
+                entry['title_name_source']=name_sources['items'][entry['title']]
+                if not entry.get('display_name'):
+                    label=entry['title_cn']+('，'+str(entry.get('base_cn') or entry['base']) if entry.get('base') else '')
+                    entry['display_name']=label+'（'+str(entry.get('name') or entry['title'])+'）'
             if "owner_class_name" in entry or "ascendancy_internal_name" in entry:
                 owner=entry.get("owner_class_name") or "普通天赋"
-                entry["qualified_name"]=" / ".join(str(v) for v in (names.get(owner,owner), entry.get("ascendancy_internal_name") or entry.get("type"),
+                entry["qualified_name"]=" / ".join(str(v) for v in (names['display'].get(owner) or owner, entry.get("ascendancy_internal_name") or entry.get("type"),
                     entry.get("display_name",entry.get("name")), "起点" if entry.get("is_ascendancy_start") else None, "ID "+str(entry.get("id"))) if v)
         for alternatives in calculation.get("stat_metadata",{}).values():
             for meaning in alternatives:
-                meaning["display_label"]=names.get(meaning["label"],meaning["label"])
-        for key in ("main_skill_name", "class", "ascendancy"):
-            if calculation.get(key) in names:
-                calculation[key + "_cn"] = names[calculation[key]]
+                meaning["display_label"]=names['display'].get(meaning["label"]) or meaning["label"]
+        for key,role in (("main_skill_name","skills"),("class","display"),("ascendancy","display")):
+            if names[role].get(calculation.get(key)):
+                calculation[key + "_cn"] = names[role][calculation[key]]
         node_queries = [row for row in calculation.get("catalog_batch", []) if row["kind"] == "nodes"]
         if catalog == "nodes": node_queries.append({"query": query, "total": calculation["catalog_total"], "entries": calculation["catalog"]})
         for row in node_queries:
@@ -669,5 +754,7 @@ if __name__ == "__main__":
         request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         sys.stdout.buffer.write(json.dumps(worker(request), ensure_ascii=False, allow_nan=False).encode("utf-8"))
     except Exception as exc:
-        sys.stderr.buffer.write(json.dumps({"error":str(exc),"diagnostic":getattr(exc,"diagnostic",None)},ensure_ascii=False,allow_nan=False).encode("utf-8"))
+        # stdout is the protocol channel for both success and failure. Runtime
+        # diagnostics on stderr must not erase the native validation response.
+        sys.stdout.buffer.write(json.dumps({"error":str(exc),"diagnostic":getattr(exc,"diagnostic",None)},ensure_ascii=False,allow_nan=False).encode("utf-8"))
         raise SystemExit(1)

@@ -1,18 +1,18 @@
-# POE 配装助手（TeleAgent）
+# POE 配装助手
 
-面向 Windows TeleAgent 的 PoE1 国服配装 skill。用户明确调用后，多轮聊清目标，复用本机 PoECharm 的数据和计算，再联网核实需要的外部事实，交付原生生成的角色 XML 与中文 HTML 说明。
+Windows 上的 PoE1 配装 skill。用户明确调用后，一个 agent 复用本机 PoECharm 的数据和计算、联网核实外部事实，完成查询、复核、调整或开荒规划，交付中文 HTML 和适用 XML。
 
-**当前为 2.8.16 实验版。** 316 项离线检查及本机安装自检通过；本轮物化 78/100、续航 74/100、独立目标复核 80/100，三项核心均未放行。数值复算成功不等于配装建议可靠，当前结果需要人工审核。[完整验证范围与已知缺口](TEST-REPORT.md)是状态依据。
+**lean003已完成本轮精简与普通单agent交付验收，按约定标准放行。** 指令减少68.94%，ZIP减少15.53%，程序沿用2.8.17/schema2。五类普通任务各连续两次通过，最低94、均分98.8；同尺比较未见明显退化。294现有非原生检查、16组冷回读及当前doctor通过，c003的361回归为历史基线。保留伤害口径、药剂目标和移动说明的扣分，不宣称一般准确率或实战通过。旧安装和平台实机未更新，heartbeat未恢复；用户已授权先上传此版本，再准备TeleAgent适配。[验证报告](TEST-REPORT.md)是状态依据。
 
 ## 使用
 
-从 [2.8.16 实验版发布页](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16) 下载 `poe-adjust-2.8.16.zip`。私有仓库需要有访问权限的 GitHub 账号；上传后的包已下载核对，与本机冻结包一致。在 TeleAgent 的“技能·专家·应用连接 → 我的 → 导入技能”中选择 ZIP，不需要另装 Python 或维护游戏数据表。
+从[2.8.17精简实验版发布页](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.17)取得原样包 `poe-adjust-2.8.17-lean003.zip`；验收范围见[验证报告](TEST-REPORT.md)。仓库保持私有，需要有访问权限的GitHub账号。本版本已通过离线单agent交付样本验收，TeleAgent本轮导入与运行尚未验证。旧[2.8.16发布](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16)保留。在TeleAgent的“技能·专家·应用连接 → 我的 → 导入技能”中选择ZIP的步骤对应既有导入方式。
 
 准备能在 PoECharm 打开的 XML，作为 TeleAgent 附件，并发送：
 
 > 调用 POE 配装助手（poe-adjust）。请先和我聊清目标，再用本机 PoECharm 计算，给我 XML 和中文说明。我的目标是：刷图少死一些、操作简单点。
 
-[使用说明](使用说明.md)面向使用者；无需运行下面的开发命令。已有角色优化、整体换流派、已有交付复核与无 XML 开荒分别有协议；本轮未重新验证开荒和整体换流派的完成质量。
+[使用说明](使用说明.md)面向使用者；无需运行下面的开发命令。已有角色优化、整体换流派、已有交付复核与无 XML 开荒分别有协议；精简版已完成五类单agent交付样本验收，本轮TeleAgent实机尚未开展。
 
 ## 实现与边界
 
@@ -22,7 +22,7 @@
 
 | 位置 | 用途 |
 |---|---|
-| [poe-adjust/SKILL.md](poe-adjust/SKILL.md) | TeleAgent 加载入口与任务分流 |
+| [poe-adjust/SKILL.md](poe-adjust/SKILL.md) | 单执行者入口与任务分流 |
 | [poe-adjust/references](poe-adjust/references/commands.md) | 五份按需协议，命令以当前实现为准 |
 | `poe-adjust/scripts/` | 六个 Python 模块、两个 Lua 适配文件，单一 `poe.py` CLI |
 | [tests/test_workflow.py](tests/test_workflow.py) | 接口与原生行为回归，不是配装答案评测集 |
@@ -30,7 +30,7 @@
 | [DESIGN.md](DESIGN.md) | 当前职责、证据与恢复边界 |
 | [WORKLOG.md](WORKLOG.md) | 本轮交接与历史检索 |
 
-只使用 Python 标准库；运行环境需要已安装的 Windows TeleAgent 与 PoECharm。仓库不包含这两个软件、游戏数据和私人角色文件。
+只使用 Python 标准库；本轮单执行者验证需要Windows、可用Python及PoECharm。仓库不包含原生软件、游戏数据和私人角色文件；下列TeleAgent安装说明对应既有发布路径。
 
 ## 维护
 
@@ -40,9 +40,9 @@ python -B -m unittest discover -s tests -v
 python -B package.py
 ```
 
-完整原生测试依赖本轮约定的盾牌角色样本；跨机直接运行可能失败或跳过，具体输入要求见[测试报告](TEST-REPORT.md#如何复现程序检查)。不能将跳过说成通过。打包文件生成于 `dist/`，本机已冻结包的 SHA256 为 `c35fe88bb63b1422e8ff58305089cb9fd422d483944ea45af1849b983ffe6518`；重新打包的 ZIP 容器时间可能变化，应同时核对内部文件。
+完整原生测试依赖约定的盾牌角色样本；跨机直接运行可能失败或跳过，具体输入要求见[测试报告](TEST-REPORT.md#如何复现程序检查)。不能将跳过说成通过。打包文件生成于 `dist/`，各冻结包的大小、SHA256和验收范围见测试报告；重新打包的ZIP容器时间可能变化，应同时核对内部文件。
 
-本轮已结束，持续迭代自动化已暂停；新增开发需用户重新提出。交付源、安装和包保持 2.8.16，后续问题保留为明确限制。
+2026-10-13用户授权上传已验收版本并准备TeleAgent适配。原精简轮已停止，持续迭代自动化保持暂停；旧发布不覆盖。
 
 ## 历史与许可
 

@@ -323,7 +323,8 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
 def render(route,warnings,engine_version,tree_version,*,evidence_file=None):
     esc=lambda v:html.escape(str(v))
     bullets=lambda rows:"<ul>"+"".join("<li>"+esc(r)+"</li>" for r in rows)+"</ul>"
-    claims={c["claim_id"]:facts.claim_display(c) for c in route["claims"]}
+    review=route.get("final_review")
+    claims={c["claim_id"]:facts.claim_display(c,review=review) for c in route["claims"]}
     def judgment(key):
         claim=claims.get(key)
         if claim is None: return key+" [未找到判断]"
@@ -332,6 +333,11 @@ def render(route,warnings,engine_version,tree_version,*,evidence_file=None):
         if claim["uncertainties"]: parts.append("待核实："+"；".join(claim["uncertainties"]))
         return "；".join(parts)
     brief=route.get("delivery_brief") or facts.delivery_brief(route.get("delivery_status","draft"),route.get("errors",[]),route["pending"])
+    completion=route.get("task_completion",{})
+    readiness=route.get("character_readiness",{})
+    current_summary=(review.get("findings") or "") if review and review.get("status")=="model_reviewed" else "路线总评尚待当前结果复核。"
+    completion_notes=bullets(completion.get("errors",[])+completion.get("pending",[]))
+    readiness_notice=("<p>全部阶段就绪状态："+esc(facts.delivery_brief(readiness["status"],readiness["errors"],readiness["pending"])["message"])+"规划交付完成不表示已经取得物资、完成训练或实际效果已验证。</p>" if readiness else "")
     labels={"blocked":"存在已知错误，不能按本快照执行","draft":"条件草案，依赖仍待核实","calculated":"原生计算完成，是否可执行仍看条件与评审",
             "unsupported":"当前接口不支持本次测量","failed":"本次原生计算失败","not_calculated":"未提供完整阶段快照，不报告精确效果"}
     sections=[]
@@ -355,4 +361,4 @@ def render(route,warnings,engine_version,tree_version,*,evidence_file=None):
     source=f'<p>完整数值、资料原文与引用索引：<a href="{esc(evidence_file)}">核对记录</a></p>' if evidence_file else ""
     published=route.get("publication",{})
     current_facts=bullets([s["text"] for s in published.get("statements",[])]+[m["text"] for m in published.get("measurements",[])])
-    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(route['name'])}</title><style>body{{font:16px/1.7 system-ui;max-width:1050px;margin:auto;padding:28px;background:#f5f6f8;color:#202a38}}section{{background:white;margin:18px 0;padding:24px;border-radius:12px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}td{{padding:6px;border-bottom:1px solid #ddd}}</style><h1>{esc(route['name'])}</h1><p>{esc(brief['message'])} · {esc(route['class_display_name'])} · {esc(route['ascendancy_display_name'])}</p><section><h2>当前核验结论</h2>{current_facts}</section><p>{esc(route['goal'])}</p>{objectives}<p>范围：{esc(route['scope'])}。这是一条有进入条件的路线；仅有 calculation 记录的阶段按实际装入的装备、技能、天赋与配置实算；其余阶段不报告精确效果。计算完成不代表输入合法、物资取得或阶段就绪。</p><h2>已知错误</h2>{bullets(route.get('errors',[]))}<details><summary>全部待核实项与警告</summary>{bullets(route['pending']+warnings)}</details>{''.join(sections)}<section><h2>判断、来源与风险</h2>{bullets(route['risks']+route['notes'])}{conclusions}{source}</section><p>本机引擎 {esc(engine_version)}；天赋数据 {esc(tree_version)}。</p></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(route['name'])}</title><style>body{{font:16px/1.7 system-ui;max-width:1050px;margin:auto;padding:28px;background:#f5f6f8;color:#202a38}}section{{background:white;margin:18px 0;padding:24px;border-radius:12px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse}}td{{padding:6px;border-bottom:1px solid #ddd}}</style><h1>{esc(route['name'])}</h1><p>{esc(brief['message'])} · {esc(route['class_display_name'])} · {esc(route['ascendancy_display_name'])}</p><section><h2>当前核验结论</h2>{current_facts}<p>{esc(current_summary)}</p>{completion_notes}{readiness_notice}</section><p>{esc(route['goal'])}</p>{objectives}<p>范围：{esc(route['scope'])}。这是一条有进入条件的路线；仅有 calculation 记录的阶段按实际装入的装备、技能、天赋与配置实算；其余阶段不报告精确效果。计算完成不代表输入合法、物资取得或阶段就绪。</p><h2>已知错误</h2>{bullets(route.get('errors',[]))}<details><summary>全部待核实项与警告</summary>{bullets(route['pending']+warnings)}</details>{''.join(sections)}<section><h2>判断、来源与风险</h2>{bullets(route['risks']+route['notes'])}{conclusions}{source}</section><p>本机引擎 {esc(engine_version)}；天赋数据 {esc(tree_version)}。</p></html>'''

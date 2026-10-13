@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 .work/
+.poe-evidence/
 test-output/
 dist/

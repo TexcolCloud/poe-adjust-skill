@@ -192,6 +192,15 @@ for id, entry in pairs(build.spec.tree.alternate_ascendancies or {}) do
 end
 table.sort(result.secondary_ascendancies, function(a,b) return a.id < b.id end)
 result.slots = {}
+local function ordinaryCraftSupport(item)
+  if type(item.affixes) ~= "table" or type(data.itemMods.Explicit) ~= "table"
+    or type(item.GetModSpawnWeight) ~= "function" then return json.null end
+  for id, mod in pairs(data.itemMods.Explicit) do
+    if item.affixes[id] and (mod.type == "Prefix" or mod.type == "Suffix")
+      and item:GetModSpawnWeight(mod) > 0 then return true end
+  end
+  return false
+end
 for name, slot in pairs(build.itemsTab.slots) do
   table.insert(result.slots, {name = name, weapon_set = slot.weaponSet, active = slot.weaponSet == nil or slot.weaponSet == (build.itemsTab.activeItemSet.useSecondWeaponSet and 2 or 1)})
 end
@@ -306,6 +315,9 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   local requiredLevel = limit and instance and instance.gemData and assert(instance.reqLevel, "Native trigger target requirement is unavailable")
   table.insert(result.active_skills, {id = skill.activeEffect.grantedEffect.id, name = skill.activeEffect.grantedEffect.name,
     description = skill.activeEffect.grantedEffect.description or json.null,
+    effective_level = type(skill.activeEffect.level) == "number" and skill.activeEffect.level or json.null,
+    effective_quality = type(skill.activeEffect.quality) == "number" and skill.activeEffect.quality or json.null,
+    effective_specification_source = "mainEnv.player.activeSkillList.activeEffect",
     skill_types = skillTypes(skill.activeEffect.grantedEffect),
     base_cast_time_seconds = skill.activeEffect.grantedEffect.castTime or json.null,
     group = groupIndex, index = gemIndex, slot = skill.socketGroup and skill.socketGroup.slot,
@@ -327,6 +339,7 @@ result.config_keys, result.config_lists = {}, {}
 result.config_types = setmetatable({}, {__jsontype = "object"})
 result.capabilities.native_config_types = true
 result.config_values = scalarTable(mainEnv.configInput)
+result.config_placeholders = scalarTable(mainEnv.configPlaceholder)
 result.config_defaults = setmetatable({}, {__jsontype = "object"})
 result.config_saved_values = setmetatable({}, {__jsontype = "object"})
 assert(type(build.configTab.GetDefaultState) == "function", "Native config save defaults are unavailable")
@@ -338,9 +351,9 @@ end
 result.config_labels = {}
 local configControls, includedControls = {}, {}
 result.config_controls = setmetatable({}, {__jsontype = "object"})
-local function configApplySource(apply)
-  if type(apply) ~= "function" or type(debug) ~= "table" or type(debug.getinfo) ~= "function" then return nil end
-  local info = debug.getinfo(apply, "S")
+local function nativeFunctionSource(fn)
+  if type(fn) ~= "function" or type(debug) ~= "table" or type(debug.getinfo) ~= "function" then return nil end
+  local info = debug.getinfo(fn, "S")
   local path = info and info.source and info.source:match("^@(.+)")
   if not path then return nil end
   path = path:gsub("\\", "/"):gsub("^%./", "")
@@ -352,6 +365,7 @@ local function configApplySource(apply)
   local count = last - first + 1
   return {source = "engine/"..path, line = first, count = math.min(count, 200), total_lines = count}
 end
+result.config_loader_source = nativeFunctionSource(build.configTab.Load)
 for _, entry in ipairs(configOptions) do
   if entry.var then
     table.insert(result.config_keys, entry.var)
@@ -362,14 +376,16 @@ for _, entry in ipairs(configOptions) do
     local value, default = result.config_values[entry.var], build.configTab:GetDefaultState(entry.var)
     local row = {id=entry.var, type=entry.type, label=entry.label, value=value == nil and json.null or value,
       default=default == nil and json.null or default, raw_present=value~=nil,
+      runtime_placeholder_present=result.config_placeholders[entry.var]~=nil,
+      runtime_placeholder_value=result.config_placeholders[entry.var] == nil and json.null or result.config_placeholders[entry.var],
       shown=ok and shown or json.null, value_basis=value~=nil and "current_mainEnv.configInput" or "unknown",
-      scope="Current native configuration and control visibility; not effect applicability or duration coverage"}
+      scope="Native configInput/control observation, separately from configPlaceholder and XML tags. Calculations may consume runtime placeholders; raw input absence alone does not determine effective use. Visibility and values do not measure effect applicability or duration coverage"}
     if ok then row.shown = shown end
     if value == nil and entry.type == "check" and type(default) == "boolean" then
       row.value, row.value_basis = default, "native_unchecked_default"
     end
     if type(entry.tooltip) == "string" then row.tooltip=entry.tooltip end
-    row.apply_source = configApplySource(entry.apply)
+    row.apply_source = nativeFunctionSource(entry.apply)
     for field, name in pairs({ifSkill="if_skill", ifOption="if_option", ifFlag="if_flag", ifCond="if_cond", ifEnemyCond="if_enemy_cond"}) do
       if type(entry[field]) == "table" then
         row[name] = setmetatable({}, {__jsontype = "array"})
@@ -380,10 +396,12 @@ for _, entry in ipairs(configOptions) do
     includedControls[entry.var] = ok and shown or value~=nil and value~=default
     if entry.type == "list" then
       local values = setmetatable({}, {__jsontype = "array"})
+      row.options = setmetatable({}, {__jsontype = "array"})
       if type(entry.list) == "table" then
         for _, option in ipairs(entry.list) do
           assert(type(option.val) == "string" or type(option.val) == "number" or type(option.val) == "boolean", "Unsupported native config option: " .. entry.var)
           table.insert(values, option.val)
+          table.insert(row.options, scalarTable(option))
           if option.val == result.config_values[entry.var] then result.config_labels[entry.var] = option.label end
         end
       end
@@ -431,13 +449,26 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
   for gemIndex, gem in ipairs(group.gemList) do
     local grantedEffect = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
     local grantedEffects = setmetatable({}, {__jsontype = "array"})
+    local effectiveSpecifications = setmetatable({}, {__jsontype = "array"})
     for effectIndex, effect in ipairs(gem.gemData and gem.gemData.grantedEffectList or {grantedEffect}) do
-      local present = false
+      local present, nativeEffect = false, nil
       for _, skill in ipairs(mainEnv.player.activeSkillList) do
-        if skill.activeEffect.srcInstance == gem and skill.activeEffect.grantedEffect == effect then present = true; break end
+        if gem.enabled and skill.activeEffect.srcInstance == gem and skill.activeEffect.grantedEffect == effect then present = true; nativeEffect = skill.activeEffect; break end
+      end
+      local effectSource = nativeEffect and "mainEnv.player.activeSkillList.activeEffect" or nil
+      if not nativeEffect and gem.enabled and group.slotEnabled and (group.enabled or groupIndex == result.main_group)
+        and gem.supportEffect and gem.supportEffect.srcInstance == gem and gem.supportEffect.grantedEffect == effect then
+        nativeEffect, effectSource = gem.supportEffect, "MAIN gem.supportEffect"
+      end
+      local effectiveLevel = nativeEffect and type(nativeEffect.level) == "number" and nativeEffect.level or json.null
+      local effectiveQuality = nativeEffect and type(nativeEffect.quality) == "number" and nativeEffect.quality or json.null
+      if nativeEffect then
+        table.insert(effectiveSpecifications, {effect_id = effect.id, effective_level = effectiveLevel,
+          effective_quality = effectiveQuality, source = effectSource})
       end
       table.insert(grantedEffects, {index = effectIndex, id = effect.id, name = effect.name, description = effect.description or json.null,
         has_global_effect = effect.hasGlobalEffect == true, global_enabled = gem["enableGlobal"..effectIndex] == true,
+        effective_level = effectiveLevel, effective_quality = effectiveQuality, effective_specification_source = effectSource or json.null,
         skill_types = skillTypes(effect), base_cast_time_seconds = effect.castTime or json.null,
         support = effect.support == true, active_skill_present = present})
       -- The editable spelling is an interface field, its meaning comes from this effect's position.
@@ -455,8 +486,23 @@ for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
       table.insert(supported, activeGem.skillId or activeGem.nameSpec)
     end
     table.sort(supported)
+    local effectiveLevel, effectiveQuality, effectiveSource = json.null, json.null, json.null
+    local effectiveStatus = "not_observed"
+    if #effectiveSpecifications > 0 then
+      local first = effectiveSpecifications[1]
+      effectiveLevel, effectiveQuality, effectiveSource = first.effective_level, first.effective_quality, first.source
+      effectiveStatus = "observed"
+      for _, row in ipairs(effectiveSpecifications) do
+        if row.effective_level ~= effectiveLevel or row.effective_quality ~= effectiveQuality then
+          effectiveLevel, effectiveQuality, effectiveSource, effectiveStatus = json.null, json.null, json.null, "effect_dependent"
+          break
+        end
+      end
+    end
     table.insert(result.gems, {group = groupIndex, index = gemIndex, id = gem.skillId, name = gem.nameSpec,
       enabled = gem.enabled, group_enabled = group.enabled, slot = group.slot, source = group.source, level = gem.level, quality = gem.quality,
+      effective_level = effectiveLevel, effective_quality = effectiveQuality, effective_specification_source = effectiveSource,
+      effective_specification_status = effectiveStatus, effective_specifications = effectiveSpecifications,
       slot_enabled = group.slotEnabled, enable_global1 = gem.enableGlobal1 == true, enable_global2 = gem.enableGlobal2 == true,
       granted_effects = grantedEffects,
       count = gem.count or 1, group_count = group.groupCount or 1,
@@ -491,8 +537,10 @@ for name, slot in pairs(build.itemsTab.slots) do
         if mod.extra or not mod.modList then table.insert(unparsed, mod.line) end
       end
     end
-    table.insert(result.equipped, {slot = name, id = slot.selItemId, name = item.name, base = item.baseName, base_recognised = item.base ~= nil,
+    table.insert(result.equipped, {slot = name, id = slot.selItemId, name = item.name, title = item.title, base = item.baseName, base_recognised = item.base ~= nil,
       type = item.type, text = item:BuildRaw(), assigned = true,
+      rarity = item.rarity, ordinary_craft_supported = ordinaryCraftSupport(item),
+      ordinary_craft_scope = "Current Item.affixes intersects the ordinary Explicit pool with positive native spawn weight; capability only, not validation of this item's actual modifiers, item level, acquisition or crafting process",
       socket_node_id = slot.nodeId, socket_allocated = allocated,
       effective_in_calculation = included,
       activity_source = "Native MAIN player.itemList/flasks/tinctures; assignment and activation flag are separate from effective inclusion",
@@ -500,8 +548,10 @@ for name, slot in pairs(build.itemsTab.slots) do
       valid_for_slot = build.itemsTab:IsItemValidForSlot(item, name) == true,
       socket_colours_always_match = item.sockets and item.sockets.colourAlwaysMatches or false,
       requirements = item.requirements, unparsed = unparsed,
+      flask_base = item.base and item.base.flask and scalarTable(item.base.flask),
       flask_local = item.flaskData and scalarTable(item.flaskData),
-      flask_scope = item.flaskData and "Item-local values; excludes character modifiers, current charges, refill events and actual effect coverage"})
+      flask_local_source = item.flaskData and nativeFunctionSource(item.BuildModListForSlotNum),
+      flask_scope = item.flaskData and "Native item.flaskData after item-local modifier and quality processing, distinct from item.base.flask; excludes character modifiers, current charges, refill events and actual effect coverage"})
   end
 end
 table.sort(result.equipped, function(a, b) return a.slot < b.slot end)

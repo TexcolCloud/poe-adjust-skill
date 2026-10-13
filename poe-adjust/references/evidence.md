@@ -1,103 +1,66 @@
-# 证据、使用条件与交付（schema_version 2）
+# 判断、操作与自审（schema_version 2）
 
-配装和开荒共用本协议。具体用户目标不套预设答案；程序检查确定性输入、可读取事实与关联，模型评审资料含义、取舍与目标是否完整覆盖。
+配装、只读解释和路线共用；任务范围见[配装](build.md)。程序核对字段、事实、引用与版本，你判断文字含义、原因、覆盖和目标。
 
-## 证据、结论与使用方式
+## 来源与判断
 
-每条 evidence：`evidence_id/kind/subject` 必需。其余字段按下列 kind 使用；ID 在 intent+plan 合并后唯一，不以 native: 开头。status/digest/origin 由程序生成。
+evidence 必需 evidence_id/kind/subject，ID 在 intent 与 plan 合并后唯一，不以 native: 开头。status/digest/origin 由程序生成。
 
-- user_statement：text 是实际表达，输出 user_declared。用户库存不是程序独立盘点。
-- web：url 与正文实际包含的 excerpt，由脚本读取公开官方/PoEDB 页面，输出 source_observed。其他公开来源可用 TeleAgent 联网工具读取，再使用 artifact。
-- artifact：path 相对声明源 JSON 所在目录解释（intent 文件目录或 plan/route 文件目录），限该目录及子目录内不超过 2 MB 的文本。source_base 返回实际基准目录，越界诊断给出 /evidence/<位置>/path、允许目录与实际路径；需要的联网/探针记录先保存到该目录。excerpt 必须确实存在，记录摘要与采集 URL/时间。artifact_observed 只证明片段可追溯，不证明文件必定来自声称的网站或其中数字已被原生测量。不能用此路径读取平台内部输出目录。
-- local_data：使用 `data read` 的 evidence_template（source/line/count/content_sha256），补 evidence_id/subject。程序从本机重新读取，不接受替代 text/path/url。输出 local_data_observed 只证明原文及摘要，不证明含义与当前方案相关、当季可得或游戏内实测。
-- 原生引用无需声明 evidence。next_actions 指向本次 reference_contract；prefix/fields 描述逻辑根，artifact 指出所在 JSON 的 pointer 和可选 file。用 view 定位、分页读取具体对象，直接复制返回的 native_references；它使用当前数组索引及转义字段名，与文件 revision 一同返回。路线阶段的原生/资源根定位到各自 evaluation.json，未计算阶段没有这些根。只能访问本次已有字段，引用值与引擎/计算 XML 绑定。失败时 source_diagnostic 给出实际父对象、reference_prefix、前10项 available_references 及总数；根据对象身份选择准确引用，更多条目用 view 分页，不从名称猜数组索引。
+| kind | 真实内容与边界 |
+|---|---|
+| user_statement | text 为实际表达；库存仍是用户声明，不是独立盘点 |
+| web | url/excerpt 为公开官方或 PoEDB 页面实际正文；其他网站用可用联网工具存 artifact |
+| artifact | path 相对声明源 JSON 目录，仅该目录/子目录的文本；JSON 用 view.evidence_template 的实际 pointer，文本用真实 excerpt，二者选一。记录 URL/查阅时间；越界按 source_diagnostic 修源 |
+| local_data | data read 的 source/line/count/content_sha256 模板，补 ID/subject；由程序重读，不拿自由 text 替代 |
 
-claim 使用 `claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks`，可声明 `claim_type`。字符串数组与 checks 格式见下文。可比较命题使用 `claim_type:"comparison"`，checks 必须非空；门槛、指标和取舍由模型选择。默认 judgment 只表示模型解释，不证明数值达标。程序不从自由文字猜测阈值。
+原生事实无需声明 evidence，沿当前 reference_contract/view 复制 native_references。阶段根属于各自 evaluation，未算阶段没有该根。检查实际对象、数组索引、XML/引擎与 source_revision；引用失效先读诊断的真实父对象/合法引用再修，不猜根名。artifact/local_data 可追溯不证明含义、真实性、当前相关性或游戏内效果。
 
-conditions 记录结论成立的前提；尚未证实满足且影响本次目标的前提写 uncertainties。假设某固定状态时的条件结果，与该状态实际覆盖用户要求的时段分开判断。收益、费用或动作频率会随状态变化时，模型按当前原文选择需要的状态对照，判断能否覆盖目标；缺少演变依据时保留未知或改选能满足目标的方案。固定状态的重复账目不能代替这种覆盖证明，伤害快照也不能反推未测得的敌人死亡时间。
+claim 字段由 input_contract 给出；基本格式：`{claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks}`。claim_type 默认为 judgment；比较用 comparison 且 checks 非空，例如 `{reference:"当前原生引用",op:"ge",value:本次阈值}`。op 为 eq/ge/le，按原始值比较，eq 也支持同类型布尔/字符串。缺值、null、异类型为 unknown，不能当0；检查只证明所列命题。
 
-通过 edit 新增或修改判断时，程序生成 bindings，绑定所声明对象、来源和当次引擎；保留原判断时，其摘要也保留。对象/来源变化会报告 invalidated_claims，计算时旧判断保持 unresolved。阅读当前事实并重新核对后，用 edit 的 review_claims 提交选定 claim_id，程序刷新摘要。bindings、observations 和状态均由程序生成；直接写入的旧 JSON 可作为草案读取，缺绑定时仍须经 edit 重新评审。摘要绑定不能证明模型解释正确，也不自动解析自由条件的全部语义依赖。
+subjects 关联对象，claim_id 是记录身份。每项目标用 `objective:<objective_id>`；总体用 goal，assessment.goal_claim_ids 只选含 goal 的当前判断。同一 claim 可关联多个适用对象，不必重复正文。依赖以当前 pending/required_subject 为索引：配置用 configuration:candidate 或 configuration:stage:<id>，测量用 measurement，技能用 skill:<skill_ref>，阶段用 stage:<id>，快照用 snapshot:<id>，取得用 acquisition:<instance_id>，训练用 training:<stage>:<instance>，进度用实际 progress subject，物品合法性用 legality:item:<ID>。
 
-缺引用、来源未解决、过期绑定、uncertainties 非空或 checks 未通过，保持 unresolved。model_assessed 表示模型作了有引用的判断；check_status/verification_scope 才说明所列可比较命题的测量范围。objective_coverage.declared_checks_status 与 publication.declared_checks 展示实际比较，不能把 judgment 当作数值证明。
+`assessment:{goal_claim_ids:["总体判断ID"],scope:"实际用户范围",unresolved:[]}`。每项目标写实际实现、依据、条件、代价与未做部分，不能用旧计划或局部数字代替。条件未证实且影响目标时保留 uncertainty；因果、状态覆盖与用户目标不能由“测到一个值”直接推出。联合实验只解释联合变化，零差分只说明该对象/主体/场景/指标的观察。固定状态账目不证明动态效果或敌人死亡时间。
 
-交付使用程序返回的 judgments 展示投影：claim_id/subjects/status 保留对应关系，text/conditions/uncertainties 与 HTML 共用当前规则；revision_pending=true 时旧正文和条件暂不作为操作建议，diagnostics 指向重新评审。当前但未解决或比较不成立的判断仍保留其说明、条件和诊断，不提升状态。完整源 claims、绑定和原文保留在 review 文件用于核对。终端字段被分页时，从 continuations 读取 judgments；展示投影不证明自由文字或配装取舍正确。
+“只有/全部/不存在”等断言需核同一条件下的相关实际对象与机制，主动查支持和反例；已分配节点、装备或技能的事件效果不能因未进入固定每秒账目而被排除。局部观察不足以证明唯一，覆盖未核就限定为已观察范围。改变条件的实验另列，不能代替原状态下的裁决；发现反证时修正源判断与结论。
 
-用户目标逐项使用 `objective:<objective_id>`，对应 intent/route.objectives；每项明确达到/未达到并解释当前对象、依据、条件、代价与未解决项。用户要求的技能、天赋、装备和操作必须在最终方案落实；旧计划文字或关联一个数值不能证明已实现。objective_coverage 只核对来源与关联，不证明目标完整或已经达到。整体 goal 判断说明总体取舍；修复改了组成后重新判断，不继承旧结论。
+## 当前文字与数字
 
-计算场景也关联当前事实：配装判断使用 subjects:`["configuration:candidate"]`，阶段使用 `["configuration:stage:<stage_id>"]`，引用对应 `native:<计算名>#/config_values`、`config_controls` 或具体字段。config_controls 的 value、default 与 value_basis 分开；false 是关闭，null 是未知。核对当前本机配置原文、进度与实际解析值，决定显式覆盖或明示假设。模型把所述操作需要的状态写为 checks，引用当前控件 value 并比较所需值；例如自行选择 eq/true 或 eq/false。程序沿用通用比较器报告实际值与矛盾，不从自由文字猜应启用哪个技能。计数、主体和持续覆盖另找依据，不能由装备存在推定。effect_state 给出护卫、药剂、各实际宝石效果及布尔配置快照，原生观察的 context 同时携带它。缺少当前场景评审会保留 config:scenario；存在引用不自动证明场景选择正确。
+持久 claims 与 review 用返回 text_templates：`{{fact:当前引用}}` 带对象、显示比例和单位，是完整事实句；`{{value:当前引用}}` 仅原始标量，单位/换算自行有据说明。meaning/context 标明 actor、限定对象、XML、配置与引擎；同名指标不能互换。旧手写数字不会随计算刷新。
 
-决定性排除理由区分使用门槛、属性不足、取得渠道与效果适配；优先用当前原文或最小变体对照核验。局部限制能否通过装备、等级或条件解决，由模型结合实际数据判断，程序不添加职业/宝石专用禁令。
+edit 生成 bindings；对象/来源改变出现 invalidated_claims。读新事实，改源正文、条件、操作与关联，再 review_claims 刷新所选绑定。最终复核写对新数字不能修正仍错误的源 claim。程序投影的 judgments 与 HTML 同源，revision_pending 的旧文不作操作建议；有效绑定仍不认证语义。
 
-关联写在 **claim.subjects**，不是 claim_id。例如 objective_id 为 `user-X`，解释该目标的 claim 可以用 claim_id:`explain-X`、subjects:`["objective:user-X","goal"]`。一个判断可以关联多个真实适用的对象，不必为每个字段写重复文字。objective_coverage.required_subject 和 diagnostics 给出缺少的关系；claims[].diagnostics 指向失败引用和实际来源原因。先修这些协议/引用遗漏，再决定哪些确实无法核实。
+配置判断引用当前 config_values/controls、原文与实际进度；需要某控制时写 checks 比较实际 value。装备存在不证明配置开启或效果覆盖，false/默认/null 语义见[资料](data.md)。不能借用户声明认证计算或因果。
 
-原生 observations 与 publication.measurements 的 text_templates 给出当前可用表达式。独立事实段用 fact，例如 `text:"{{fact:native:candidate#/stats/Life}}"`：它已含对象、标签、显示比例和单位，可直接作为完整短句。数值内插用 value，仅插入原始标量；单位和上下文由模型按当前 meaning 明确，附加文字不受程序证明。需要原生显示比例时使用完整 fact，或另写有依据的换算；value 不自动乘 display_multiplier。fact 可以展示数组描述，value 仅适用于数值、布尔、字符串，null/缺值/数组不提供 value 模板。已有两种模式继续可用，程序生成 rendered_text 并将引用纳入 evidence_refs。
+## 动作与资源
 
-observations 保留 origin/status/scope，区分来源实际值、程序派生投影与模型解释；新接口展示已有数值不等于首次测得。meaning 含当次原生显示 label/format、可辨认的 unit/display_multiplier、actor 和限定归属 object_identity；context 含 XML/引擎摘要、职业、主技能和实际配置。相同名称不能替代限定对象。单位或显示比例不明/冲突时保持 unknown，不从字段名猜单位；缺字段保持 unresolved，不能替换为零。
+usage 简单同窗格式为 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`，技能来自当前 active_skills；claim.subjects 含对应 skill:<ref>。频率次/秒、时间秒，未知省略。原生满速、声明降频与实际 DPS 范围分开；不同窗口不借主技能窗口放行。
 
-可比较命题用 `checks:[{"reference":"native:candidate#/stats/Life","op":"ge","value":3000}]`，阈值由本次用户目标/模型理由决定，示例不规定目标。op 为 eq/ge/le；数值按**原始值**比较，eq 也支持同类型布尔/字符串，布尔不当数字。budget 与 resources 是当前程序核验结果，可引用 `native:budget#/within_limit` 或 `native:resources#/timeline/status`。预算确认示例为 eq/true；缺值、null 或异类型为 unknown，矛盾为 refuted，带 expected/actual 的诊断不能由文字或自审 token 消除。checks 证明精确命题，不能证明任意自由文字、因果、来源可信度或整套实战可行。
+独立 single_payments 从每项满可用储量单独检查，不证明连续动作或任意时点。mean_use 是单技能满速费用减固定净回复；mean_pool_depletion_seconds 只是平均耗尽投影，不含混合动作、吸取、充能、药剂、额外损失或动态状态，不认证无限续航。
 
-条件依据与最终验收分别记录：报价、库存、充能启动等前提引用实际来源/原生值；最终判断可引用 budget/resources。核验报告不能反过来充当生成它自己的前提，循环引用不会补齐该项依据。引用绑定规范化后的当前 XML，原生调用的运输格式差异不作为新方案身份。
+混合动作使用 `timeline:{duration_seconds:秒数,repeat:false,events:[{skill_ref:"当前引用",at:秒数}]}`。一个 at 只支付一次，不是开始持续施放。事件处于窗口内，按顺序支付；重复周期用 repeat:true，检查接缝及终点恢复初始储量。有限窗口支付通过仍只证明该窗口，sustained_use 不能升级成无限使用。
 
-“测得某值”“机制导致某值”“实际覆盖该条件”“满足用户目标”分别需要对应依据。因果判断先定位具体变体和主体的当前描述/分解，再核对 probe 的 damage_observation、actual_changes、configuration_changes 与 context_changes。所解释的指标须实际出现在观察中；组合变化的总差分按组合表述，归因某个组件则在其余输入一致时观测该组件。零差分只说明此对象在该场景、开关和指标下的观察结果；原文说明没有该增益、对象未生效或不同主体均应先核对。原生未保留请求的状态时先处理具体诊断，不能将未发生的实验作为机制证据。模型可以选择不同条件或接受代价，把它们落进实际候选/阶段；缺少启动或持续覆盖与根本未读到数值分别记录。游戏中额外收益仅在对应条件已有依据时解释，有限投影的保守项不认证整套实战只会更好。
+战前准备在同一 timeline 增加 `preparation:{duration_seconds:秒数,events:[...]}`，对应 usage.phase 为 preparation，其余为 combat。准备一次，等待计时，完整结束余额带入战斗，不自动回满；战斗再使用仍需事件。使用 timeline 时 usage 仅关联 `{skill_ref,claim_id}`（需要时加 phase），不再定义另一组频率/窗口。
 
-常用 subject：`goal`、`progress:normal`、`progress:ascendancy`、`progress:secondary_ascendancy`、`condition:guard`、`condition:Flask 1`、`config:<字段>`、`skill:<skill_ref>`、`dependency:<skill_ref>`、`count:<组>:<宝石位置>`、`resource:Mana:leech`、`resource:EnergyShield:recharge`、`transformation:<槽位>`、`legality:item:<物品ID>`、`migration`、`template_source`。以实际 pending 为索引说明问题；permission、缺失原生量和 capability 缺口不能靠填理由转成程序通过。
+自动技能按当前 SkillTriggerRate/费用安排完整窗口，缺实际触发频率或支付规则保留 unknown；零费用不用虚构支付。手动频率按 usage_rate.basis/metric/repeats，不按技能名猜。payment_schedule/skill_schedules 定位当前实际次数、首末时点、费用与关联，修返时同步源 claim。完整窗口 final 在 duration_seconds，trace 最后一项只是末次动作；准备 final 对接战斗 initial。
 
-`assessment:{goal_claim_ids:["总体claimID"],scope:"实际核对范围",unresolved:[]}`。所选每条判断须在 subjects 中关联 `goal`，并已针对当前证据评审；`objective:<id>` 的逐项目标关联另由 objective_coverage 检查，不能把只有该关联的 ID 当总体判断。goal_assessment 诊断给出具体数组位置、当前 subjects/status 与可用总体 ID；按实际用途选记录或补关联，不改输出状态。goal claim 引用用户目标与本次数值/来源，解释收益、代价、是否满足。scope 覆盖实际用户要求。
+时间线只重放离散费用与固定净回复，不测敌伤、额外损失、吸取、能盾充能、药剂补充、动作互斥、实际触发或效果变化。execution_coverage 保留这些范围。资源支付成功不能替它背书，平均次数不能变成持续 DPS。药剂开启且声明 continuous 仍保留当前 flask_coverage 能力缺口。按目标选择有限窗口即可，不强求所有任务证明无限循环。
 
-简单频率/同一窗口用 usage，每行 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`。skill_ref 来自本次 active_skills，对应 claim.subjects:`skill:<引用>`。频率为次/秒，窗口为秒，有限非负；未知省略。程序核对原生动作频率、单次支付和满速费用，只有费用符合单次支付乘频率时才线性投影。同一窗口可合并，不同窗口不会借用主技能窗口放行；混合动作使用下文 timeline。降频不沿用满速吸取，未重算的 DPS 仍为原生快照。资源缺口和启动前不足不能被 prose 消除。
+## 物资与价格
 
-usage.claim_id 关联当前实际存在的判断；缺标识、技能 subject 不符或判断未评审均给出具体位置和当次可选 ID。按最终对象修正关系和正文，不能用另一个自造 ID 代替已有判断。
+requirements/material_specs 来自实际差异，包括仍插着的禁用/备用宝石、加工和退点；原 XML 没有不证明用户没有。inventory/shopping 公共字段 kind、quantity、evidence_refs：gem 用 skill_id/level/quality，item 用当前 spec_sha256，service 用 service_id。item_id 只属某个 XML，跨阶段身份用规格与物理实例。
 
-readiness.single_payments 列出所有当前启用技能对三资源的独立单次支付、可用储量、原生定位和三值状态，包括尚未声明 usage 的副技能。每项从满可用储量独立检查，不证明连续动作或任意时点都可支付；生命支付后须存活，EB 与能盾恢复上限从当前原生规则读取，缺字段保持 unknown。resources.snapshot_balance_nonnegative 只比较当前账目中的声明频率与假设回复。timeline.resources[].initial_pool_restored 仅表示窗口支付成功且终点恢复起始储量；readiness.resources 中对应事实为 timeline_initial_pool_restored。旧 repeatable/ repeatable_at_native_regen_only 字段已删除，重复支付统一看 sustained_use 的当前状态及范围；finite_window_only 为 unknown。execution_coverage 另列整套动作实际执行、触发与效果覆盖的未测量部分。无共同时间线时，即使面板吸取大于消耗也不能写成已证实持续恢复。
+库存来源 subject 沿 requirement_id，用户实际 context.quantity，装备匹配 spec_sha256；同规格合并，不重复使用同份数量依据。报价 low/high 为整条 quantity 总价，来源 context 匹配 realm:cn、league、currency、quantity、low/high、装备规格和实际 checked_at；quote:<物资引用> 判断关联同一来源与规格。国际服价无汇率/国服依据不算国服已核实价格。
 
-每行 mean_use 给出当前技能原生满速 cost_per_second、fixed_net_regeneration_per_second 及相减后的 net_drain_per_second。固定净回复优先用当前 Net<Resource>Regen，否则要求同时读到回复和持续伤害；缺值不填零。mean_pool_depletion_seconds 仅在正净消耗下给平均储量耗尽估算，生命保留正储量；非正净消耗或缺值为 null，不宣称无限续航。它是独立平均投影，不模拟离散扣费、其他动作、命中吸取、充能、药剂或效果变化；准确动作支付与混合节奏用 timeline。
+预算 true 需完整来源及总上界在限额内；已知必要下界超限为 false，其他 null。totals_complete=false 金额仅部分。未知、估算、条件交易与已核实分别说明，来源有链接也不等于成交或拥有。
 
-共同时间线为 `timeline:{duration_seconds:时长秒数,repeat:false,events:[{skill_ref:"当前引用",at:窗口内秒数}]}`。模型按目标选择：repeat=false 检查一次有限窗口；repeat=true 检查重复周期，省略时保留已有周期输入的语义。动作处于 `[0,duration_seconds)`，按时间排序；同一时刻按输入顺序支付，不推断不同技能可以同时执行。最大1000动作是工程限制，较长计划分批表达。程序逐次扣原生费用，在动作间按固定净回复补充到可用上限，核对同技能动作间隔；重复周期另查循环接缝。Life/魔力/能盾分别记录初始、trace 和最终值；EB 从当前原生支付规则读取。
+## 最终复核与交付
 
-有战前准备时，在同一 timeline 增加 `preparation:{duration_seconds:准备总时长,events:[{skill_ref,at}]}`；usage 为对应技能声明 `phase:"preparation"`，其他默认 combat。阶段由模型决定，不按技能名分类。准备从当前可用储量开始只执行一次，允许的等待也计入其时长；实际结束余额带入战斗，不自动回满。未安排的准备动作仍为输入缺口，准备未知余额向战斗传播。战斗中再次使用的技能仍在战斗 events 安排；当前带费用自动技能仍需战斗支付证据。程序检查准备到战斗的同技能间隔；skill_schedules 列出每个实际引用的事件数及首末时点。预先施放、没有再施放的事件与效果存活/持续生效分别判断，后者保留具体条件或未知。
+方案/claims 修订后计算，沿 next_actions.review_current_result 读取真实 user_goal_sources、objective_coverage、pending 与当前 check 方法。对照用户原话，不只看已拆目标。自己按 review_template 逐项填写所有 objectives/conclusions 的 scope/findings、支持/反证引用、conditions、unimplemented 与 verdict(supported/partial/refuted/unknown)。空数组也明确保存；supported 需支持，refuted 需反证。
 
-publication 的 resource_snapshot 展示原账目范围，resource statements 按 phase 分别展示 preparation/combat；window.at 是本阶段总时长，last_event_at 是末次动作时点，final 是完整窗口终点，准备 final 进入战斗 initial。event_count/repeat 描述实际记录的动作与周期，不证明覆盖全部用户操作或实际持续效果。基础施法时间仅是当前基础属性；总准备、改速后的实际施法与支付范围分别找对应依据。
+发现偏离先改源并重算，再单独提交 assessment.review，之后 evaluate/export 或重跑 route。token 绑定本次意图、对象、文字、引用、XML/引擎与账目；改变后重审。不要用脚本自动生成语义复核或填 token 假称通过，引用/token 有效不证明文字因果正确。
 
-时间线检查范围只有离散费用和固定净回复，未计敌人伤害、额外资源损失、吸取、能盾充能、药剂补充、动作互斥或条件变化；缺项可能使实际更好或更差。自动技能可投影声明的固定原生频率支付：读取 SkillTriggerRate 与每秒费用，模型选相位并在 events 安排完整窗口，程序检查相邻间隔、首尾缺口和重复接缝，同时核对每秒费用等于单次费用×该频率。automatic_schedules 说明所验证的支付安排；实际触发、启动、目标和效果变化仍未测得。缺安排为 edit_input，缺原生触发频率/支付规则、非离散费用或回复量为 unknown；零费用自动技能无需虚构支付。手动技能频率可由当前原生速度或零速度技能的冷却倒数得到，读取 usage_rate.basis/metric/repeats，不按技能名猜。有限窗口支付通过只证明所列储量、固定回复和动作；sustained_use 仍保持 unknown。重复周期还需接缝合法且结束恢复起始储量；平均回复够但瞬间不够为 refuted。模型仍须检查操作、冷却、目标和实际覆盖范围。使用 timeline 时，usage 仅关联 `{skill_ref,claim_id}`，不重复定义另一组频率/窗口。阶段使用 snapshot.timeline，规则相同。
+规划的真实未来依赖可用 condition_reviews：`{subjects,claim_ids,conditions,fallback,evidence_refs}`。subjects 原样取当前 facts.pending，关联本次 supported/partial conclusions，写具体进入条件与在条件失败时能执行的退路（或明确等待再开始）。review.unresolved 是当前复核工作未完成。必要设计/来源/计算仍缺、已知非法、矛盾、许可违反、过期复核不能包装成未来条件；普通生成缺口见[配装](build.md#普通目标生成)。
 
-原生 `equipped[].flask_local` 是单件药剂参数，`flask_scope` 明示不包括角色修正、当前充能、补充事件或实际覆盖。开启药剂的快照若声明 continuous，程序会保留 `capability:flask_coverage:<槽位>`；当前适配没有完整覆盖时序测量。可以研究具体有限窗口与缺口，但不能只写“有药剂”就宣称无限续航。
+完整 readonly 评审可否定/未知；规划的 unknown/refuted 目标不能说已完成。task_completion 与 character_readiness 各自说明交付和角色条件。export 冷算/保存回读并核当前来源：blocked 诊断 HTML；draft 草案及缺口；scoped_result 本次已评审范围。build/build_plan 落实际 XML 与 HTML；readonly 仅报告。route 的阶段 XML 以实际有效计算与文件为准。
 
-## 库存和采购
-
-requirements 从实际 XML 差异产生，包含仍装备的禁用/备用宝石、规格变化、装备改造和退点资源。阅读 evaluation.budget.materials，不能用“原 XML 没有，所以用户肯定没有”代替询问。
-
-物资公共字段：kind、quantity、evidence_refs，可选 description。gem 用 skill_id/level/quality；item 用 spec_sha256（读取当前 requirement_id/material_specs，不手算），可选 item_id 仅指某个 XML 内的编号；service 用 service_id。库存写 inventory，报价写 shopping，均不能自填 status。
-
-库存 evidence.subject 为 `gem:<skill_id>:<level>:<quality>`、`item:<spec_sha256>` 或 `service:<service_id>`，直接沿用程序返回的 requirement_id。context.quantity 对应用户实际确认数量，装备还匹配 spec_sha256。同规格合并数量，依据不重复。同一条用户声明不反复累计数量。两个阶段都出现 item_id:1 不表示同一规格；相同规格用不同 XML 编号仍按同一规格累计，实物 instance_id 用于首次取得与后续沿用。
-
-报价另含 low/high/currency：low/high 是**该整条 quantity 的总价**。来源 context 需对应 realm:"cn"、league、currency、quantity、low、high，装备还需 spec_sha256，并有实际 checked_at。`quote:<物资引用>` claim 必须引用同一价格记录，解释规格与语义匹配。只写 URL 或 verified_cn 会被拒绝。国际服报价不计成国服已核实价格；无汇率依据不自动换算。
-
-程序区分 unknown、uncertain_range、quote_assessed、user_declared、no_additional_cost、over_budget。within_limit 为三值：已核对完整来源且上界不超过限额为 true，已知必需下界超过为 false，其余为 null；模型估算不提升为 true。totals_complete=false 时金额仅为已列部分。quote_assessed 仍有交易时效条件，非成交保证。
-
-## 结果、完整性与交付
-
-evaluate 保存 candidate.xml、requested.xml、plan.json、evaluation.json、review.json。读取 result 的实际技能、装备、配置、统计与伤害分项，readiness 的资源、errors/pending、budget、claims/evidence 和逐类 validation。diagnostics 带 code/category/subject/evidence_refs/affects/message/status；未知能力不改写成游戏非法。默认值等价性按本机 ConfigTab.GetDefaultState/Save 语义检查，同时核对统计；没有一律丢弃 false。config_values 记录最终保存文件的实际输入，config_saved_values 是省略原生默认值后的保存语义。
-
-delivery_brief 从全部 errors/pending 生成状态和缺口类别；next_actions 指向实际输入与完整详情，先修错误、评审目标/依赖，再复核当次结果。终端只显示部分 pending 时仍含全部类别，不能漏项或用删功能让缺口消失。actual_changes/equipment_changes 来自当前对象和 XML 规格，普通/主升华/次级升华点数分别计数，不把“新增节点总数”再次加算升华。
-
-最终复核使用现有 TeleAgent 模型，不增加另一模型服务。先完成方案/claims 修订并 evaluate，再阅读 review.json 的 facts/claims：核对数字与技能/主体/阶段、因果证据、替代方案排除理由、切换进入条件以及 summary/迁移说明/最终回答的范围。发现问题就修改并重新 evaluate，直到可以如实记录本轮复核。填写源 plan 的 `assessment.review`，再 evaluate：
-
-```json
-{"token":"本次 review.json 的完整 token","findings":"整份方案的核对结果，包括各条说明是否一致","unresolved":[],"objectives":[{"objective_id":"当前实际 objective_id","scope":"此要求已实现及尚未实现的范围","findings":"对应对象、测量、来源、代价和未解决条件"}],"conclusions":[{"claim_id":"当前实际 claim_id","scope":"此条结论成立的对象、场景及范围","findings":"实际依据、条件、发现与取舍；解释和已测量部分分别说明"}]}
-```
-
-先读取 next_actions.review_current_result 指向的当前 facts.objective_coverage 和 facts.pending，再按 review_template 逐项评审。模板列出所有用户 objective_id 和判断 claim_id，scope/findings 留空；objectives 与 conclusions 分别覆盖当次全部 ID，缺 claim 的目标也必须记录未实现部分。重复 ID 报具体位置，陌生 ID 及遗漏保留 draft，coverage 列出差异。只有总评或只有判断评审的旧记录可追溯，但不能代替完整目标复核。程序只核对覆盖与摘要；这些文字不能消除原有物资、资源、目标或机械缺口，也不证明目标已经达到。
-
-token 绑定意图、方案、文字、引用内容、最终 XML/引擎、资源/预算和数值；改变后旧复核失效。reference_contract.identity_references 区分 character（当前原生角色状态）、input_bytes（提交给引擎的 XML 字节）与 saved_bytes（声明保存文件字节）。判断角色一致性选 character 的实际引用；原生保存可能重排 XML，使 input_bytes 改变，即使角色不变。显式引用的文件摘要改变仍须复核，不能删掉摘要校验强行放行。`final_review:missing/stale` 保留 draft，按 export 后的新 review/next_actions 核查；findings/unresolved 不改写机械矛盾或其他缺口。此步骤只证明模型复核针对这一版，不证明语言无误；不要用脚本自动填 token，不能以复核记录宣称全部机制验证。
-
-候选名称为1–48位小写英文/数字/连字符。原件、意图、请求 XML、候选记录/文件及引擎内容都有完整性校验；直接手改输出会要求重算。baseline 缓存按意图、共同场景、引擎及适配版本区分，各候选保留自己的基准。
-
-probe 不改候选文件，可用于 blocked/draft 中仍可计算的输入。返回各变体原生快照、差异与未评审依赖；baseline_damage_observation 和各行 damage_observation 记录当次选定主技能、skill_ref、组、主体、显示定义、XML 与实际配置。dps_metric 按各行当前主技能选择，不假定它等于被修改对象；其他技能的影响应选择对应 main_group 或读取有主体的分项再实算。零差值只支持所测对象在该场景下数值不变，不证明某机制无效。不继承旧宝石的使用结论，最终选择仍写完整 plan/evaluate。批量大小为进程资源保护，自动分批比较。
-
-export 再复算并重核来源和复核 token。blocked 只输出诊断 HTML；draft 输出配装草案 XML 与说明；scoped_result 输出改进 XML 与说明。目录为 `run/output/<候选名称>/`，附 final-assessment.json、review.json、delivery.json。只有 XML 与 HTML 均落盘后 delivery.file_exported 才为 true，清除同候选旧状态的另一 XML 文件；可捕获失败记录 failed/last_operation，并取消本次交付成功身份。进程被强制终止仍可能留下 preparing/exporting，由 status 核对后恢复。无 URL 的本地证据仍正常展示。
-
-publication 是 HTML、最终核验与 facts_summary 的共同事实来源，包含全部缺口类别、实际数值、所列比较和预算/时间线的三值结论，以及当前 capabilities。资源 window.final 是 duration_seconds 时点的储量，包含末次动作之后的固定净回复；trace 最后一行是最后动作时点，不能互换。execution_coverage 单列整套动作可执行性的未测范围；各资源支付通过不能替它背书。delivery_brief.valid_statuses 列出真实交付状态；next_actions 区分可修复依赖与接口能力缺口。聊天先沿用它的状态与事实，再解释模型取舍；预算 null、时间线 unknown 保持对应条件。尚未支持的测量不能靠补输入或填写 token 变成已支持，未来取得/进度也不必伪装成已经发生。checks 与自审仍不证明全部机制或实战效果。
-
-直接交付返回路径，避免另做未经绑定的复制/改名/说明。draft 不改名为改进配装；聊天先说明 delivery_brief 的真实状态与全部剩余类别，再说明已有收益、代价和用户下一步。原生能力缺口可以保留为条件规划；已知非法输入、可修复字段遗漏和来源404不能靠填写复核 token 变成成品。
-
-历史输入迁移：calculation_mode、resource_mode、unused_points_reason、config_evidence、burst_seconds、upgrade_gems、fallback_skill_id、version_status、verified_cn。分别迁入具体 usage、claims、阶段或来源；旧字段显式报错，不保留双套运行路径。
+publication、facts_summary、HTML 与核验共享事实，最终短答用真实状态、已核结果、代价、限制与下一步。源/输出完整性和恢复见[命令](commands.md#恢复与交付完整性)。已有有限支付、未知预算/覆盖、进入条件各保留；导出文件、自审和链接都不能替代目标依据。

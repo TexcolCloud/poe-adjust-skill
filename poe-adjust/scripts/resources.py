@@ -138,6 +138,7 @@ def capabilities():
             "excluded_recovery":["leech","recharge","flask"],
             "unsupported":["action_exclusion","changing_conditions","non_discrete_payments","trigger_realization"],
             "event_reference":"current active_skills[].skill_ref",
+            "event_semantics":"每个 {skill_ref,at} 只声明该时点的一次支付；不是开始持续施放的指令。模型选择真实动作安排，次数、频率和首末时点由同一时间线计算。",
             "scope":"当前配置固定净回复下的离散费用时间线；未计敌人伤害、额外资源损失、命中吸取、充能、药剂补充、动作互斥或条件变化，也不改变原生 DPS。未测量部分可能使实际结果更好或更差。"}}
 
 
@@ -249,7 +250,13 @@ def _timeline_window(result, timeline, skills, *, initial=None, location='/timel
             if single and single>0 and not any(e["skill_ref"]==ref for e in rows) and not skill.get("trigger"):
                 gaps.append("unscheduled:"+ref)
                 pending.append("resource:"+resource+":timeline_schedule:"+ref)
-                diagnostics.append({"code":"timeline_skill_unscheduled","location":location+"/events","skill_ref":ref,"resource_id":resource,"payment":single,"action":"edit_input","message":"此阶段启用的有费用技能未安排到共同时间线；由模型补实际动作或修阶段声明后重算。准备不替代战斗中的效果覆盖。"})
+                diagnostics.append({"code":"timeline_skill_unscheduled","location":location+"/events","skill_ref":ref,"resource_id":resource,"payment":single,
+                                    "skill":{key:skill[key] for key in ("id","name","display_name","group","index","actor","costs","usage_rate","trigger") if key in skill},
+                                    "affected_window":location,"action":"edit_input",
+                                    "repair_options":{"schedule":{"location":location+"/events","event":{"at":None,"skill_ref":ref},"requires":"模型选择实际时点，并核对原生频率及其他动作条件"},
+                                                      "unused":{"usage":{"skill_ref":ref,"phase":"unused"},"requires":"模型确认此阶段确实不使用该技能，并撤回依赖其效果的结论"},
+                                                      "change_character":{"requires":"按当前原生技能位置停用或调整，重新物化及计算"}},
+                                    "message":"此阶段启用的有费用技能未安排到共同时间线；由模型补实际动作、停用或说明阶段不用后重算。准备不替代战斗中的效果覆盖。"})
         known=pool is not None and pool>=0 and starting is not None and starting>=0 and regen is not None and not gaps
         record={"resource_id":resource,"duration_seconds":duration,"initial":starting,"capacity":pool,"net_regeneration_per_second":regen,
                 "included_recovery":"native_net_regen_only","excluded_recovery":capabilities()["timeline"]["excluded_recovery"],"status":"unknown","trace":[],"initial_pool_restored":None,"gaps":gaps}
@@ -263,20 +270,27 @@ def _timeline_window(result, timeline, skills, *, initial=None, location='/timel
                 record["trace"].append({"at":last,"skill_ref":event["skill_ref"],"before":before,"payment":cost,"after":balance,"affordable":affordable})
             balance=min(pool,balance+regen*(duration-last))
             if (resource=="Life" and balance<=0) or (resource!="Life" and balance<0): failed=True
-            record.update(final=balance,status="refuted" if failed else "supported",initial_pool_restored=not failed and balance>=starting-1e-8)
+            record.update(final=balance,minimum_balance=min([starting,balance]+[value for event in record["trace"] for value in (event["before"],event["after"])]),
+                          status="refuted" if failed else "supported",initial_pool_restored=not failed and balance>=starting-1e-8)
             if failed: errors.append("共同时间线中存在无法支付或耗尽的资源："+resource)
             elif repeating and not record["initial_pool_restored"]: pending.append("resource:"+resource+":timeline_repeat")
         elif pool is None or pool<0 or regen is None or any(gap.startswith(('payment_','negative_payment:')) for gap in gaps): pending.append("capability:timeline:"+resource)
         if initial is not None and starting is None: pending.append('resource:'+resource+':preparation_balance')
+        # Sum the same replayed fees, including attempted unaffordable payments.
+        # An incomplete projection has no certified total; empty traces are not zero.
+        record['scheduled_payment_total']=sum(event['payment'] for event in record['trace']) if known else None
+        record['scheduled_payments_by_skill']={ref:sum(event['payment'] for event in record['trace'] if event['skill_ref']==ref) if known else None for ref in skills}
         records.append(record)
     schedules={ref:{'skill_ref':ref,'event_count':sum(event['skill_ref']==ref for event in rows),
                     'first_at':next((event['at'] for event in rows if event['skill_ref']==ref),None),
-                    'last_at':previous.get(ref),'native_rate':native_trigger_rate(skill) if skill.get('trigger') else native_rate(skill)} for ref,skill in skills.items()}
+                    'last_at':previous.get(ref),'native_rate':native_trigger_rate(skill) if skill.get('trigger') else native_rate(skill),
+                    'window_average_rate':sum(event['skill_ref']==ref for event in rows)/duration,
+                    'scheduled_payments':{record['resource_id']:record['scheduled_payments_by_skill'][ref] for record in records}} for ref,skill in skills.items()}
     return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"skill_schedules":schedules,"automatic_schedules":automatic_schedules,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
             "scope":capabilities()["timeline"]["scope"]}
 
 
-def assess(result, intent, plan, claims=None):
+def assess(result, intent, plan, claims=None, *, reference_name="resources"):
     """Report observed constraints and scoped usage, not a universal play style."""
     input_shape(plan)
     claims = claims or []
@@ -339,7 +353,7 @@ def assess(result, intent, plan, claims=None):
         if gem.get("enabled") and gem.get("group_enabled") and (gem.get("count",1)>1 or gem.get("group_count",1)>1): needs(f"count:{gem['group']}:{gem['index']}")
     eb = result.get("resource_rules",{}).get("energy_shield_protects_mana")
     main_usage = usages.get(main.get("skill_ref") if main else None,{})
-    flask_facts=[{k:item[k] for k in ("slot","id","flask_local","flask_scope") if k in item} for item in result.get("equipped",[]) if item["slot"] in flasks]
+    flask_facts=[{k:item[k] for k in ("slot","id","flask_base","flask_local","flask_local_source","flask_scope") if k in item} for item in result.get("equipped",[]) if item["slot"] in flasks]
     if any(row.get("continuous") is True for row in usage):
         pending += ["capability:flask_coverage:"+slot for slot in flasks]
     for resource, cost_key, label in (("Mana","Mana","魔力"),("Life","Life","生命"),("EnergyShield","ES","能量护盾")):
@@ -454,6 +468,19 @@ def assess(result, intent, plan, claims=None):
             if row["status"]!="unknown":
                 target=next(r for r in resources if r["resource_id"]==row["resource_id"])
                 target["timeline_status"]=row["status"];target["timeline_initial_pool_restored"]=row["initial_pool_restored"]
+        for index,row in enumerate(usage):
+            phase=row.get("phase","combat")
+            window=timeline.get("preparation",{}) if phase=="preparation" else timeline
+            schedule=window.get("skill_schedules",{}).get(row["skill_ref"])
+            if schedule is None: continue
+            linked=next((claim for claim in claims if claim["claim_id"]==row.get("claim_id")),{})
+            schedule.update(claim_id=row.get("claim_id"),objective_ids=[subject[len("objective:"):] for subject in linked.get("subjects",[]) if subject.startswith("objective:")])
+            diagnostic=next((d for d in diagnostics if d["location"]==f"/usage/{index}/claim_id" and d["code"].startswith("usage_claim_")),None)
+            if diagnostic is not None:
+                pointer="/timeline"+("/preparation" if phase=="preparation" else "")+"/skill_schedules/"+row["skill_ref"].replace("~","~0").replace("/","~1")
+                diagnostic["payment_schedule"]={**schedule,"phase":phase,"duration_seconds":window["duration_seconds"],"repeat":window["repeat"],
+                    "reference":"native:"+reference_name+"#"+pointer,"window_payment_status":window["status"],
+                    "scope":capabilities()["timeline"]["event_semantics"]+" 所列支付不认证动作实际执行、效果持续或关联目标达成。"}
     payments=single_payments(result)
     for row in payments:
         if row["status"]=="refuted":
@@ -467,5 +494,11 @@ def assess(result, intent, plan, claims=None):
     sustained={"status":timeline["status"] if timeline and (not finite or timeline["status"]=="refuted") else "unknown",
                "basis":"finite_window_only" if finite else "discrete_timeline_at_native_net_regen" if timeline else "no_common_timeline",
                "scope":"本次仅检查所列有限窗口；没有核对重复接缝，窗口支付通过不证明持续重复。" if finite else capabilities()["timeline"]["scope"] if timeline else "仅有资源快照与独立支付事实；连续动作、启动/中断和效果覆盖未测得。"}
-    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"point_budgets":point_budgets,"timeline":timeline,"single_payments":payments,"sustained_use":sustained,"execution_coverage":execution,
+    unscheduled=[row for row in diagnostics if row.get("code")=="timeline_skill_unscheduled"]
+    for row in unscheduled:
+        row["affected_subjects"]=["resource:"+row["resource_id"],"usage:"+row["skill_ref"]]
+        linked=[claim for claim in claims or [] if any(subject==required or subject.startswith(required+":") for subject in claim.get("subjects",[]) for required in row["affected_subjects"])]
+        row["affected_claim_ids"]=[claim["claim_id"] for claim in linked]
+        row["affected_objective_ids"]=sorted({subject[len("objective:"):] for claim in linked for subject in claim.get("subjects",[]) if subject.startswith("objective:")})
+    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"point_budgets":point_budgets,"timeline":timeline,"single_payments":payments,"sustained_use":sustained,"execution_coverage":execution,"unscheduled_skills":unscheduled,
             "conditions":{"guard_active":guard,"active_flasks":flasks,"flask_facts":flask_facts,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。药剂局部数据不证明持续补充，无持续覆盖测量时保留 capability 缺口。"},"resources":resources,"additional_native_costs":extra_costs,"diagnostics":diagnostics}

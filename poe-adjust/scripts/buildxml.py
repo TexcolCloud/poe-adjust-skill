@@ -21,12 +21,13 @@ _UNSET = object()
 
 class ContractError(ValueError):
     """An input error with a concrete field and observable repair information."""
-    def __init__(self, message, *, code="invalid_input", action="edit_input", location=None, expected=None, actual=_UNSET, input_file=None, available_options=None):
+    def __init__(self, message, *, code="invalid_input", action="edit_input", location=None, expected=None, actual=_UNSET, input_file=None, available_options=None, details=None):
         super().__init__(message)
         self.diagnostic={"code":code,"message":message,"action":action,"retryable":False}
         for key,value in (("location",location),("expected",expected),("input_file",input_file),("available_options",available_options)):
             if value is not None: self.diagnostic[key]=value
         if actual is not _UNSET: self.diagnostic["actual"]=actual
+        if details: self.diagnostic.update(details)
 
 
 def require(condition, message, **details):
@@ -122,7 +123,14 @@ def config_value_shape(key, value, native, location):
     if value is None: return  # Deleting an override also permits clearing an obsolete field.
     types=native.get("config_types")
     require(isinstance(types,dict) and native.get("capabilities",{}).get("native_config_types",True) is True,"本机未提供配置字段类型；不能猜测配置输入。",code="native_capability_unavailable",action="inspect_capability",location=location,expected="current native config_types",actual=types)
-    require(key in types,"本机未识别配置字段："+key,code="unknown_native_config",location=location,expected="current native config key",actual=key,available_options=sorted(types))
+    if key not in types:
+        output=key in native.get("stats",{})
+        raise ContractError("本机未识别配置输入："+key+("；这是本次计算输出，不能作为配置写入。" if output else "。"),
+                            code="unknown_native_config",location=location,expected="current native config key",actual=key,
+                            available_options=sorted(types),details={"field_role":"calculated_output" if output else "unknown",
+                            **({"output_locator":"/stats/"+key.replace("~","~0").replace("/","~1")} if output else {}),
+                            "inspect_fields":["config_types","config_controls","gems"],
+                            "repair":{"action":"inspect_current_controls","message":"从当前 config_controls 及 gems.granted_effects 的 operation_field 查可写输入；模型选择控制与场景，再修改 operations 重算。不能把输出键猜成输入。"}})
     kind=types[key]
     if kind=="list":
         lists=native.get("config_lists");options=lists.get(key) if isinstance(lists,dict) else None

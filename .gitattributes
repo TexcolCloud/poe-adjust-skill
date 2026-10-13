@@ -1,0 +1,2 @@
+# Preserve the verified skill bytes, including line endings.
+poe-adjust/** -text whitespace=cr-at-eol

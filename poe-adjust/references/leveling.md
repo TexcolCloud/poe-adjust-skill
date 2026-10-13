@@ -1,128 +1,57 @@
 # 开荒与成长路线（schema_version 2）
 
-用户明确调用后，按本文件规划没有完整角色 XML 的阶段路线。已有角色的精确配装继续使用 [配装协议](build.md) 的 evaluate/export。单一路线是有先后顺序的 stages；不同方向用独立路线候选，不另建分支执行框架。
+没有完整角色时用 route；已有 XML 或完整纯分享码用[配装](build.md)。[资料](data.md)查当前数据，[证据](evidence.md)写判断、动作和复核，[命令](commands.md)保存/恢复。单一路线为顺序 stages，不同方向用独立候选。
 
-证据、usage、采购与最终复核读取 [共同证据协议](evidence.md)，目录和联网查询读取 [资料协议](data.md)。
+## 从可达起点设计
 
-## 从用户目标设计
+复用用户实际起终点、交易/SSF、物资、预算、职业/技能偏好和操作要求；未知不默认为零预算、全新开荒或禁止某玩法。阶段数量、等级和切换时机由目标决定，同级可因任务/取得分段，不套固定剧情模板。
 
-确认实际起点与终点、赛季、交易或 SSF、已有物资、预算、职业/技能偏好及操作负担。用户已说过的内容直接复用；未知不自动填 false、零预算或全新开荒。模型选择攻略数量、候选数量、阶段数量和切换时机。路线可从当前角色开始，同一级可因任务、装备或宝石取得分成多段；不套固定起止等级或至少三个阶段。
+当前 classes/宝石/基底/连线/节点决定合法对象，国服机制版本另读真实来源。research --gems 给逐级要求与取得表候选；匹配字段原样取同一行。奖励行的npc=Quest Reward只是渠道标签，具体宝石、任务阶段和领奖人需同一来源对应，不能用任务末尾NPC推全部奖励。对应不清时选已核商店渠道，核解锁、费用与前段承接，不凭记忆补领奖人。列最小通货及缺通货退路，国际费用与国服未知分开；小号/交易按用户许可。trials 页面位置不证明通关或点数，升华计连接节点。
 
-职业与升华来自当前 classes；宝石、基底和连线来自当前目录。当前目标游戏版本与国服公告分开核对，不能从赛季编号猜机制版本。资料以实际版本正文、原作者具体攻略和本机数据为依据；不把作者首页或旧搬运链接当完整路线证明。路线规模按需要，不为目录查询下载不相关整套构筑。
+先安排最低可用推进，再逐段必要切换，最后可选提升。每次切换核最低装备/连线/属性、取得或加工、前一段能否到达来源、缺物资时用哪段实际配置继续。进入异界所需物资不能依赖尚不能完成的异界内容；原生配方合法也不证明取得。未知进度、训练和未来取得可以是条件；最低规格/来源/可达过渡还没设计是当前工作缺口。
 
-使用 `research --gems` 读取所选 ID 的原生逐等级要求、类型、基础资源及网页取得行。任务奖励/商店分别核对章节、任务、NPC、职业和实际完成条件；可使用后续商店、小号、交易、掉落、制作或用户持有等真实来源。只读到某个早期职业行不表示其他职业永远拿不到。不得凭通用商店印象编造解锁任务。领取同一任务的多种奖励时核对选择数量与费用，不能把一行一个奖励当全部免费同时得到。
+普通目标按[配装的生成协议](build.md#普通目标生成)从可达物等与低规格起生成，不能用未核文本投影代替普通依据。已有物资且接受取得后切换不强制普通备用宝石；其他等待需可用前段承接。用户不玩召唤按原意解释，不机械禁全部 minion 标签。
 
-升华路径读取当前 nodes 的起点/linked；点数包括连接点。`research --trials` 只提供网页观测位置与区域等级，不证明解锁、已通关或奖励总点数。按实际已完成或计划进入条件评审 progress claim，不能从等级或一张固定奖励表推算玩家已获点数。
+## 阶段与物理实例
 
-## 技能、物资与过渡
+顶层与 stage 字段从当前 input_contract 发现。route 常用 schema_version:2、confirmed:true、name/goal/league/scope、当前 class_id/ascendancy、objectives、stages、evidence/claims/constraint_sources/assessment。交易、预算、allow_minions/allow_mule 等只按真实用户表达填写；未知赛季明示未确认，不猜 game_version/version_source。
 
-每组表示同一物理连线，可以多个主动共享辅助，也可以放练级宝石。use 是自由用途描述，没有 main/aura/utility 固定决策枚举。辅助未作用时如实记录；若保留练级用途，不把它算成伤害辅助。仍插着的禁用组占孔；确实未装备才写空 slot。
-
-每颗宝石有稳定 instance_id。同一 ID 的两颗宝石需两个实例；同一颗跨阶段升级沿用实例，不能换 skill_id 后仍称同一颗。自动等级 `auto` 仅在明确请求时选择当前数据可练且角色等级可用的最大值，不代表最优、已练到或已取得。升品质、特殊等级或降级处理说明加工路径和代价，必要时另记物资。
-
-顶层 gems 是可选目录备注，程序从阶段自动收集 ID，省去重复维护清单。required_items 记录首次取得规格与物理实例，取得可早于首次使用。程序区分 acquired、previous_use 与 used：等级上升、品质不变且当前数据可自然训练时，要求 `training:<stage_id>:<instance_id>` 判断；其他规格变化要求 transformation 判断。判断说明训练经验/加工方式、时点和进入前条件，不能将可练等级当作已练到。不同 skill_id 必须另一实例；缺取得依据保持 acquisition_unknown。每个物理宝石实例 quantity 为1，同名两颗需两个 ID。跨阶段沿用不重复采购，提前储备与练级按实际位置和条件安排。
-
-每阶段 bases 映射当前原生槽位到具体基底，`null` 明确该槽没有装备，省略则未提供上下文。程序把声明布局交给本机原生规则，返回 equipment_validation；原生谓词实际读取了未声明槽位时，校验保留未知并列出 unresolved_context，不能把省略当空槽。有快照的阶段使用其实际装备和天赋上下文。目录 valid_slots 只属于该次查询，不能作为全局规则；缺少或不匹配的上下文不套用其他布局。基底最大容量不证明实物已达连数、孔色或特殊效果；取得和规格在进入条件中落实，精确影响用角色 XML 实算。没有具体基底则容量未知，不猜同类武器都一样。weapon_setup 为自由说明，不用固定布局裁决玩法。
-
-核心物资不确定时，模型可以延后切换、等待取得、选择其他流派或安排可执行过渡。用户已备齐、接受取得后再切换的目标，不强制普通备用宝石。声称有过渡就写成具体阶段及连线、装备/属性、资源和进入条件，不能只给 fallback 名称。SSF 禁止依赖交易来自用户明确限制；“不玩召唤”的具体范围按用户意图解释，不把任何 minion 标签都自动禁用。
-
-没有完整阶段 XML 时，只报告本机类型/等级/基础资源、基底容量、路径和来源校验。不虚构精确 DPS、血量、抗性或续航。对关键切换，需要精确数值时填写本文件的 snapshot，由 route 生成阶段 XML 并实算；最终已有角色的调整再使用 evaluate/export；目标装备若是假设，说明假设而非已有实物。手动诅咒、位移、供尸、开关光环等必须落实实际技能和操作，不隐去成本。
-
-## 文件与调用
-
-```powershell
-python '<技能目录>/scripts/poe.py' route --invoked --file '<工作区>/route.json' --out '<工作区>/开荒路线.html'
-```
-
-route 自动分批读取当前宝石、连线、基底和完整升华目录，并核对证据。输出 HTML 及同名 `.evidence.json`。按照 pending 修订；最终 status 是 draft/scoped_result 或预算已知矛盾的 blocked。阶段是否实算以 calculation 及对应 XML/证据记录为准，路线状态不代替实算范围。用 TeleAgent 文件工具交付 XML 和中文 HTML，最终回答直接使用 facts_summary，再解释已引用 claims；不另写重复说明或另一套收益数字。
-
-先读 errors、stage_summary、delivery_brief 和 next_actions。native_calculated:true 仅证明计算完成，status:blocked 仍有错误；修正后再交配装 XML。原生输入错误给 diagnostic.location/expected/actual；unsupported 是接口范围，failed 是本次计算失败，not_calculated 是未提供可计算输入。修复时保留计划功能；若改变技能/天赋/装备，按最终阶段重新评审用户目标、进入条件和资源，不能将删成单宝石的诊断文件当完整路线。HTML 显示实际校验和条件，完整资料留 evidence.json，按需读字段。
-
-顶层字段：
-
-| 字段 | 内容 |
+| stage 内容 | 用法 |
 |---|---|
-| schema_version / confirmed | 2 / true，先完成必要的方向问询 |
-| objectives | 按实际用户要求拆分的 `{objective_id,text,evidence_refs}`；每项对应 `objective:<id>` claim，关联阶段、事实与未解决条件，详细规则见 evidence.md |
-| name / goal / league / scope | 名称、真实用户目标、国服目标赛季、实际起终点与覆盖范围 |
-| class_id / ascendancy | 当前目录职业 ID 与升华英文名；升华尚未定可省略 |
-| game_version / version_source | 目标机制版本和实际官方公告 URL；未核实保留缺口，不自填状态 |
-| trade_mode | 用户明确选择 ssf/trade，未知省略 |
-| allow_minions / allow_mule | 仅在用户明确表达时填布尔值；具体召唤限制由 preference:allow_minions claim 解释 |
-| budget | 已确认的 amount/currency，未知省略；与配装相同的有限非负格式 |
-| gems | `{本机skill_id:{note:"可选目录备注"}}`，不再存获取/备用策略 |
-| stages | 非空执行阶段数组，同级允许，等级不倒退；当前前往章节可回访 |
-| evidence / claims / constraint_sources / assessment | 沿用命令协议，用户 goal/trade_mode/budget/allow_* 对应用户表达；模型方案不冒充用户约束 |
-| inventory / shopping | 沿用命令协议的规格、数量、整条总价与引用 |
-| risks / notes | 文字数组，补充局限和操作提醒，不用非空说明替代证据 |
+| stage_id/name/level | 稳定唯一 ID、名称、实际/目标等级；auto 需要已知角色等级 |
+| act/completed_act | 当前前往章节与已完成章节分开，不代替具体任务完成 |
+| skill_groups | `[{name,slot,use,enabled,gems:[{instance_id,skill_id,level,quality,enabled}]}]`；同组为同一物理连线，use 自由描述 |
+| bases/weapon_setup | `{当前槽:完整基底名}`，null 是无装备，省略是未知；布局说明自由 |
+| gear/passives/checks/transition/resources | 当前实际设计、顺序、检查、过渡与费用范围，文字不代替实算 |
+| ascendancy_nodes/ascendancy_points | 累计目标节点及已声明可用点；普通/次级点数同样依实际进度评审 |
+| required_items | 首次取得的实物/加工需求，沿下节稳定实例与规格 |
+| entry_conditions | 条件 claim_id 数组，subjects 含 stage:<id> |
+| entry_checks | `{check_id,locator,op,value,claim_id}`；locator 指本阶段实际字段如 /stats/FireResist，op/value 按当前目标选择 |
 
-每个 stage：
+把你为推进选定的可计算必要进入条件写入 entry_checks，对照本段 snapshot；缺量为 unknown，未达为 unmet，不能借别段数字或文字清除。先落实满足这些条件的最低装备/技能，再添可选提升；尚缺必要设计不是交付后的实物核查。bases 使用当前布局，未知不冒充空槽；最大孔数不证明实际孔连。禁用组仍占孔，未装备才用空 slot。练级辅助不假称伤害辅助。
 
-| 字段 | 内容 |
-|---|---|
-| stage_id / name | 唯一稳定 ID 与名称 |
-| level | 角色等级，未知可省略/null；auto 宝石等级需要已知角色等级 |
-| act / completed_act | 当前前往章节与已完成章节进度分开，正整数/非负整数；章节号不能代替具体任务完成 |
-| entry_conditions | 该阶段条件 claim_id 数组，claim.subjects 包含 `stage:<stage_id>` |
-| entry_checks | 可选数值/配置条件数组；每条含 check_id、locator、op、value、claim_id，见下文 |
-| bases / weapon_setup | `{原生槽位:完整基底名}`；武器布局可选自由说明 |
-| skill_groups | `[{name,slot,use,enabled,gems:[{instance_id,skill_id,level,quality,enabled}]}]`；level可填auto，quality默认0；单颗enabled默认true，false仍占同一物理组孔位 |
-| gear / passives / checks / transition | 各为文字或文字数组，说明目标属性、天赋顺序、可观察检查与下一段条件 |
-| ascendancy_points / ascendancy_nodes | 本阶段声明可用升华点数与累计目标节点 ID；程序合并当前原生连接路径，不只数大点；留点允许 |
-| normal_points_available / secondary_ascendancy_points | 本阶段声明的普通/次级升华总可用点数，未知省略/null；结合当前任务来源在 `progress:<stage_id>` claim 核对，不用固定章节奖励公式 |
-| resources | 费用、回复、操作与限制的文字说明；引用相应 stage/usage 判断，不作为精确实算结果 |
-| required_items | 本阶段新增取得/加工需求，下面说明 |
+同一颗跨阶段沿用 instance_id；两颗同名宝石两实例，换 skill_id 用新实例。level:auto 仅明确请求时选当次可自然训练且角色等级可用的最大值，不代表最优/已练/已取得。自然等级上升且品质不变，写 training:<stage>:<instance> 判断说明经验、时点与进入前条件；其他规格变化写 transformation 判断及成本。
 
-生成快照的 calculation.configuration_context 列出种子来源、种子 Input 原文、snapshot.operations.config 显式覆盖和 resolved_values 实际值。种子可能来自原生空构筑或指定模板，其已有设置不证明适合本阶段。模型先查 catalog config，按剧情进度、敌人类型和效果实际条件作选择；程序不按等级或职业硬填场景。
+宝石 required_items 形式：`{kind:"gem",instance_id:"稳定实例",skill_id:"当前ID",level:1,quality:0,quantity:1,acquisition:"vendor",available_from_act:1,quest:"所选行任务",npc:"所选行npc原值",class_ids:[当前职业ID],evidence_refs:["真实来源ID"]}`。仅是格式，内容从研究取。取得可早于使用；具体步骤/角色、选择和费用由 acquisition:<instance> 判断解释，不把渠道占位当真实NPC。owned 的 user_statement subject 匹配物资，context 含 instance_id 与 quantity。
 
-宝石 required_items 条目：
+装备用 kind:item/spec_sha256，服务用 kind:service/service_id；实际数量正整数。阶段 material_specs 提供摘要，不手算。XML item_id 不属跨阶段身份。首次取得只登记一次，沿用不重复采购；加工/新实物另记。已匹配 owned 可直接用库存依据，不再抄一份数量。
 
-```json
-{
-  "kind":"gem", "instance_id":"fireball-one", "skill_id":"Fireball",
-  "level":1, "quality":0, "quantity":1,
-  "acquisition":"vendor",
-  "available_from_act":1, "quest":"使用 research 实际返回的任务", "npc":"实际 NPC",
-  "class_ids":[4], "evidence_refs":["对应来源记录"]
-}
-```
+## 关键切换的原生快照
 
-以上仅展示格式，不认证 Fireball 在此职业/阶段的取得方式；必须替换成实际查询行。装备使用 kind:item/spec_sha256，item_id 仅为阶段 XML 内的可选编号，全路线库存/采购用 item:<spec_sha256>；同号不同规格分别登记，同规格合并数量。服务用 kind:service/service_id，quantity 均正整数。acquisition 可表达 owned/quest/vendor/trade/drop/lab/craft 等实际来源，不强制随机来源附普通替代。
+没有完整快照只能报告类型/等级/资源基础、布局、路径与来源，不编精确 DPS/血量/抗性/续航。按目标所依赖的进度、预留、属性、防御与资源变化选择关键阶段，标 key_transition:true 并提供 snapshot，不固定数量或每章都算。用于验证推进的快照落实当时可达的装备、天赋和技能；仅技能演示不能承担整阶段可用结论。实际任务点取得与训练时点对应本段分配，精确目标与实际操作一致，手动技能不隐藏费用。
 
-owned 需要 user_statement 记录，subject 匹配物资引用，context 包含实例对应的 instance_id 与 quantity。购入物资同时关联 inventory/shopping 的规格；不要将同一实例的首次购入费用重复列在后续阶段。quest/vendor 须对应当前页面唯一行，程序不能证明任务已做或奖励选择；由 `acquisition:<instance_id>` claim 解释进入条件、成长到所填等级、费用与限制。其他来源用实际取得的证据及同对象 claim；不能只写一句“能刷到”。
+资源窗口结束后安排能实际执行的降频、补给、退出或前段承接。补给未核不能把下一窗口重置满池；若切换改变预留或其他关键依赖，核新的整套状态及前后进入条件，终点数字不能补证未算的中段。
 
-route 的 claims 可引用声明的网页/资料，以及本次 `native:catalog#/...` 下实际存在的目录字段。初次可用空 claims 得到草案，读取 evidence 文件后补精确引用。必要 subjects：`goal`、`stage:<stage_id>`、`acquisition:<instance_id>`；安排升华用 `progress:<stage_id>`，换分支用 `respec:<stage_id>`，同实例调整特殊规格用 `transformation:<stage_id>:<instance_id>`。这些是对象引用契约，具体策略由模型决定。
+snapshot 可选 template_xml，省略由当前原生空职业角色生成，不手写 XML。operations 复用配装 items/equip/tree/config/main_group/weapon_set；level 与基础技能组由 stage 拥有。operations.gems 只补 count/part 等状态，operations.groups 只补 main_active_skill/include_in_full_dps/group_count，不能偷偷换阶段技能/等级/位置。合法主主动选项从物化 skill_selections 取。
 
-assessment 使用 `{goal_claim_ids:[...],scope:"实际评审范围",unresolved:[]}`；scope 不能缩掉用户已明确要求的终点。每段判断核对所列资源技能确实安排、切换前后依赖未丢、操作满足偏好，以及取得条件可执行。来源观测与模型判断分开显示；缺一条实际来源时保留相应缺口，不凭非空文字消除。
+assumptions 为含 snapshot:<stage> 的 claim_id 数组；usage/timeline 用本阶段计算的 skill_ref，必要时先 route 读 active_skills 再补。metrics 仅取实际输出。configuration_context 区分种子 Input、显式覆盖和 resolved_values：种子场景不证明适合此剧情/目标，模型据当前原文与进度选择。
 
-数值进入条件用 `entry_checks`：`locator` 指向本阶段原生结果，例如 `/stats/FireResist`、`/stats/ManaUnreserved` 或 `/config_values/resistancePenalty`；`op` 为 ge/le/eq；`value` 是模型结合本次目标选定的有限数值，eq 也支持同类型字符串/布尔值。`claim_id` 引用对应 `stage:<id>` 判断，说明为何选择这条门槛。没有固定抗性或等级要求，不能用其他阶段的值替代。缺实际字段为 unknown，未达到为 unmet，即使有文字理由也保留进入条件缺口，路线只能作为条件草案。
+实际装备与 bases 对齐，并出现于截至该阶段的 required_items；当前生成规格、点数、孔位/属性、资源和目标整体核对，模板遗留也包含。native_calculated 只说明算了，blocked 仍修。补路/延期先审 preview 后[采用原生候选](commands.md#采用原生候选)，重跑并核目标/代价。该阶段 xml_path 可作为目录上下文，不能借另一阶段成本。
 
-声称“补抗后切换”时，应把相应装备规格、取得方式及效果放进 snapshot 再算；尚未达到的目标保留 entry_checks.unmet，不能在结论说已解决。资源方案填 snapshot.usage 的频率、使用窗口和恢复条件；药剂单件参数可从 calculation 的原生 equipped[].flask_local 或 data 读取，但不包含角色修正、当前充能或补充事件，不能凭它证明无限覆盖。需检查当前前往章节、已完成章节和配置是在同一阶段时点。
+## 复核与交付
 
-弃用字段：version_status、shared_trials 默认值、upgrade_gems、fallback_skill_id、ascendancy_respec_reason，以及旧固定武器/用途枚举。其有效内容分别进入真实用户声明、后续阶段或有引用的 claims。旧字段不能在新 schema 静默忽略。
+`route --invoked --file '<工作区>/route.json' --out '<工作区>/路线.html'` 生成中文 HTML、evidence/review/state 和实际计算阶段的 XML/evaluation。先读 errors/stage_summary/delivery_brief/next_actions，沿当前 reference_contract 引用 catalog、stage 与资源根。修源保留用户要求，不把删成单宝石的诊断文件当完整路线。
 
-## 关键阶段内部 XML
+按 previous_stage_id 从起点走到终点，核 required_items、instance_transitions、实际装备/配置/进度、费用和条件失败时退路能否执行。每目标 objective:<id>、阶段 stage:<id>、取得/训练/进度等用当前所需 subject 关联，不重复造文字。未装入的天赋或装备不能解释当前面板。
 
-方向确认后通过 [增量保存](commands.md#增量保存方案) 先保存头部，再补本阶段和证据；不必等待整条路线编好才留下可恢复输入。模型依据本次目标识别依赖变化明显的阶段（技能/装备/资源切换等），标注 `key_transition: true`。关键阶段缺少 `snapshot` 会保留待办。阶段数量、进入等级和选择何时切换仍由模型决定，不用固定剧情模板。
-
-`snapshot` 字段：
-
-- `template_xml` 可选，指向真实角色模板；省略时复用当前原生职业空角色。程序生成内部 XML，不要求玩家先有角色，也不要手写最小 XML。
-- `operations` 复用配装协议的 items/equip/tree/config/main_group/weapon_set。角色等级与基础技能组来自本阶段。gems 仅补计数、技能部位等状态；groups 仅补 main_active_skill/include_in_full_dps/group_count，不能在快照偷偷换掉阶段列出的宝石、等级或位置。
-
-  例如 snapshot.operations.groups 使用 `{index:1,main_active_skill:1}`，组启用写 stage.skill_groups[].enabled，单颗开关写其 gems[].enabled；等级写 stage.level。主主动的合法选项来自物化后的 native skill_selections，不能从宝石数猜索引。职业/升华由路线和本阶段分配推导，不需要在快照重复填写。
-- `assumptions` 为 claim_id 数组，对应 claim.subjects 含 `snapshot:<stage_id>`。说明实际假设的装备词缀/孔连、天赋、操作和何时取得；资料只证明某物品存在时，不能说用户已经拥有。
-- `usage` / `timeline` 采用共同证据协议，引用阶段实际 skill_ref；需要时先运行 route，读取该阶段 calculation.active_skills 后补全。同阶段使用一组时间条件。
-- `metrics` 可选指标名数组。只取实际原生输出，不在当前结果中的指标保持未知。
-
-同一次 route 会生成阶段 XML、回读并绑定摘要，然后解析 `native:stage:<stage_id>#/stats/Life` 等实际引用。因此 stage/snapshot/resource 等相关判断可同时引用该阶段原生结果；与资源有关的 claim 还需标明 `stage:<stage_id>` 或 `snapshot:<stage_id>`，避免把另一个阶段的使用说明混入。
-
-内部文件位于输出 HTML 同级 `<输出名>.calculations/<阶段摘要>/snapshot.xml` 和 evaluation.json；snapshot.json 保存已回读的阶段计算，输入/结果/文件摘要和实际引擎指纹一致才复用。`.state.json` 记录计算阶段与交付是否完成，失败后重跑同一 route 命令即可；损坏或失效的阶段重算，来源与判断仍重新核对。`calculation` 分开列明完整装备条件、数值、孔位/属性/天赋检查和资源缺口；没有完整输入或计算失败的阶段不生成虚构统计。现有模板遗留的装备/节点也会进入实算，核对它们是否属于本阶段。
-
-本阶段实际装备需与 bases 一致，具体物品及规格摘要需出现在截至此阶段的 required_items 中。程序在 calculation.material_specs 返回可直接引用的 item_id/spec_sha256/quantity，不必手工计算摘要。快照是条件规划，已回读不代表装备可得、剧情完成或目标达到。HTML 和 evidence.json 的状态仍取决于各阶段与来源缺口。
-
-所有实际基底从当前 catalog 查询，不只查武器；不能凭熟悉的名称造盔甲或靴。被引擎忽略的物品、未满足需求或丢失节点都是已知错误。阶段 tree_diagnostics 给出实际角色上的原生路径；宝石需求诊断给出当前可用等级和属性缺口。程序原生补路或单颗延期候选的 preview 已完整实算；模型审查目标和代价后按[采用原生候选](commands.md#采用原生候选)直接引用凭证，不抄路径或自行拼 XML。保存后重跑 route，核对所选节点/专精、实际点数、技能和全部目标；条件快照尚未证明取得或进度。可用阶段 xml_path 做有上下文的 catalog 查询，另一阶段的路径不能当本阶段成本。publication 的实际天赋点数、固定回复及阶段配置，与文字规划逐项核对；尚未装入的规划不能解释本次面板。逐阶段核对环境配置和已完成进度；终点条件不能自动沿用到前面阶段。声明某任务可选奖励不代表同任务多颗奖励都免费；说明选择、商店费用和宝石成长的可执行路径。资料模板可以直接从 research 的 choices[].evidence_templates 取得，再关联具体实例和 claim。
-
-route 同时生成 `<输出名>.review.json`，集中列出每阶段事实、物资、引用及缺口。按 next_actions 指向的用户目标和全部依赖，用同一 TeleAgent 模型核对数字/对象、因果、替代方案排除、进入条件和结论范围；在原 route.assessment.review 按 review_template 填逐项用户 objectives、逐条 conclusions 及总评，再重跑，具体格式见共同证据协议。改动阶段、说明、来源或本机数据后旧复核失效，不自动将旧文本绑定新数值；state.file_exported 仅证明文件完成，目标实现范围由实际事实与缺口分别说明。
-
-物理实例的 required_items 只登记首次取得，后续沿用不重复计费。再次购买另一颗同名宝石使用新 instance_id；对旧实例升级或改造记录实际转换依据与服务/材料。已匹配的 owned 实例声明自动用于库存核对，无须在 inventory 重抄；显式 inventory 同规格记录会优先使用，但仍核对声明数量和规格。不能重复使用同一份数量凭据抵消多颗物品。
+自己按当前 review_template 审全部目标/判断，在原 route.assessment.review 单独保存后重跑。未来条件用 condition_reviews，原生合法值/生成依据/可修字段错误先修。task_completion 表示本次规划是否完成，character_readiness 保留实际条件；文件导出不证明玩家已备齐、训练或通关。实际 XML/回读/摘要和状态一致才交付，恢复沿[命令](commands.md#恢复与交付完整性)。
