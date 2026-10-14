@@ -330,6 +330,8 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     trigger_level_limit = limit, trigger_target_required_level = requiredLevel,
     info = computed.infoMessage, info_secondary = computed.infoMessage2,
     generals_cry = computed.skillData.triggeredByGeneralsCry or false,
+    native_timing = {duration_seconds = nativeOutput.Duration or json.null, cooldown_seconds = nativeOutput.Cooldown or json.null,
+      source = "Current skill's native player output", scope = "Duration and cooldown observations, not measured effect coverage or cross-skill action exclusion"},
     usage_rate = {value = rate, metric = rateMetric, basis = rateBasis, repeats = repeats, scope = "Actions per second from native rate or inverse native cooldown, divided by repeats; cost projection additionally checks the full native per-second cost. Dynamic effects and cross-skill action exclusion are not measured."},
     costs = scalarTable(costs)})
 end
@@ -366,6 +368,41 @@ local function nativeFunctionSource(fn)
   return {source = "engine/"..path, line = first, count = math.min(count, 200), total_lines = count}
 end
 result.config_loader_source = nativeFunctionSource(build.configTab.Load)
+-- Read the loaded native progress model; never copy a season reward table.
+result.progress_limits = {status = "unsupported", reason = "Native progress model is unavailable"}
+local progressFunction, chapters, actExtra = build.EstimatePlayerProgress
+if type(progressFunction) == "function" and type(debug) == "table" and type(debug.getupvalue) == "function" then
+  local index = 1
+  while true do
+    local name, value = debug.getupvalue(progressFunction, index)
+    if not name then break end
+    if name == "acts" and type(value) == "table" then chapters = value end
+    if name == "actExtra" and type(value) == "function" then actExtra = value end
+    index = index + 1
+  end
+end
+if chapters and actExtra then
+  local rows, valid = setmetatable({}, {__jsontype = "array"}), true
+  for act, values in pairs(chapters) do
+    local extra = type(act) == "number" and actExtra(act, output.ExtraPoints or 0) or nil
+    if type(act) ~= "number" or type(values) ~= "table" or type(values.questPoints) ~= "number" or type(extra) ~= "number" then
+      valid = false; break
+    end
+    table.insert(rows, {entering_act = act, quest_points = values.questPoints, extra_points = extra})
+  end
+  table.sort(rows, function(a,b) return a.entering_act < b.entering_act end)
+  if valid and #rows > 0 then
+    result.progress_limits = {status = "observed", chapters = rows, source = nativeFunctionSource(progressFunction),
+      scope = "Current native chapter reward model plus this character's native ExtraPoints. Bounds do not prove completed quests or actual available points; recommended levels are not enforced"}
+    for _, rule in ipairs(result.rules) do
+      if rule.id == "quest_passive_points" then
+        rule.status, rule.meaning, rule.value, rule.reason = "observed", "engine_constraint", result.progress_limits, nil
+        rule.source, rule.scope = "build.EstimatePlayerProgress upvalues", result.progress_limits.scope
+      end
+    end
+  end
+end
+result.capabilities.native_progress_bounds = result.progress_limits.status == "observed"
 for _, entry in ipairs(configOptions) do
   if entry.var then
     table.insert(result.config_keys, entry.var)

@@ -22,7 +22,7 @@ task_completion 核对审查完成，character_readiness 保留原角色问题�
 
 intent 保存真实请求；confirmed 只是流程记录，程序不独立认证聊天授权。限制用 constraint_sources 将 `/字段名` 关联真实 user_statement。未知省略/null，不把模型建议当用户约束。objectives 为 `{objective_id,text,evidence_refs}` 数组。
 
-常用限制按当前 input_contract 选择：预算 amount/currency、保留主技能/职业/升华、keep_slots 的 item_identity 或 exact_spec、keep_skill_ids、minimum_stats、最大更换件/槽数、目标等级与已知可用点数。任务进度未知不套固定奖励公式，许可缺口只用真实用户回答补齐。用户场景在 intent，模型共同测量场景在 plan。
+常用限制按当前 input_contract 选择：预算 amount/currency、保留主技能/职业/升华、keep_slots 的 item_identity 或 exact_spec、keep_skill_ids、minimum_stats、最大更换件/槽数、目标等级与已知可用点数。点数依实际进度，原生 progress_limits 仅给当次保守上界；许可缺口用真实回答补齐。用户场景在 intent，共同测量场景在 plan。
 
 可计算 plan 起点：`{"schema_version":2,"mode":"refine","summary":"本次具体目的","operations":{}}`。rebuild 也使用相同接口，可选 template_xml 相对 plan 目录，来源与迁移代价需说明。完整字段由当前契约提供；sources/assumptions/legality_notes 的文字不自动成为证据。
 
@@ -40,7 +40,7 @@ intent 保存真实请求；confirmed 只是流程记录，程序不独立认证
 
 main_active_skill 是物化后主动选项序号，与宝石位置不同。计算的 skill_selections 给 index/id/name/gem_index；新组合重新查。granted_effects 的实际 ID、operation_field 与 global_enabled 决定效果开关，effect 序号不代表普通/临时；active_skill_present 只说明原生列表存在。
 
-移动已有宝石要在最终布局移除旧位置再放新位置；停用仍占孔和保留物资。组真正卸下用空 slot。装备 assigned、active、socket_allocated、effective_in_calculation 各有作用，不能用 active=false 推定普通装备未穿；保留规格与保留生效状态按用户口径分别核对。
+移动宝石先移除旧位置再放新位置；启用组分配真实槽位，核该槽总孔数与连线，停用仍占孔和保留物资。撤下组清空宝石；未装备的存放组用空 slot 并停用。装备 assigned、active、socket_allocated、effective_in_calculation 各有作用，保留规格与生效状态按用户口径分别核对。
 
 ## 普通目标生成
 

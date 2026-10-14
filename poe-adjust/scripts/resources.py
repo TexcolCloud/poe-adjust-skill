@@ -303,6 +303,21 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
         used, limit = result.get(used_key), intent.get(limit_key)
         unused[label] = limit - used if type(limit) is int and type(used) is int else None
         point_budgets.append({"pool":label,"used":used,"available":limit,"status":"unknown" if unused[label] is None else "exceeded" if unused[label]<0 else "within_declared_limit","limit_basis":"declared_input" if limit is not None else "not_declared"})
+        if label=='normal' and result.get('progress_limits',{}).get('status')=='observed':
+            chapters=result['progress_limits'].get('chapters',[])
+            level=result.get('level');act=intent.get('act')
+            if act is None and type(intent.get('completed_act')) is int: act=intent['completed_act']+1
+            if chapters and type(level) is int:
+                boundary=max(row['entering_act'] for row in chapters)
+                if type(act) is int: boundary=min(act+1,boundary)
+                row=next((row for row in chapters if row['entering_act']==boundary),None)
+                if row:
+                    maximum=level-1+row['quest_points']+row['extra_points']
+                    point_budgets[-1].update(native_maximum=maximum,native_boundary=boundary,
+                        maximum_scope='本机当前章节任务点模型的上限，不证明已完成任务或实际可用点。')
+                    if (type(used) is int and used>maximum) or (type(limit) is int and limit>maximum):
+                        point_budgets[-1]['status']='exceeded_native_maximum'
+                        errors.append(f"normal 分配/声明 {used}/{limit} 点超过当前等级与章节的原生上限 {maximum}；修正路径或进度，不能用条件声明提高上限。")
         if unused[label] is not None and unused[label] < 0: errors.append(f"{label} 使用 {used} 点，超过已确认可用 {limit} 点。")
         elif limit is None and used: needs("progress:" + label)
     guard = stats.get("GuardSkillActive")

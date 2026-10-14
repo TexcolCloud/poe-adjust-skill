@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.19"
+VERSION = "2.8.20"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="直接事实展示交付 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary。若加入机制、条件、归因或取舍解释，按 references/build.md#只读解释选择 intent.task_kind=read_only_review，使用 refine 空操作计划的 claims 与当次 review.check 评审，再由同一 publication 生成说明；聊天沿 task_completion 的完成状态，character_readiness 保留完整原对象问题。数字用事实内插，名称沿本机对象。快照只证明所显示的观察；来源列表或局部数值尚未证明的范围继续列为缺口。"
@@ -551,6 +551,9 @@ def diagnosis_summary(result):
     if result.get("secondary_ascendancy_points"):
         rows.append(f"另有次级升华已分配 {result['secondary_ascendancy_points']} 点，不能混入普通天赋或主升华点数。")
     rows.extend(row['text'] for row in skill_statements(result,'当前角色'))
+    observations=resource_observations(result)
+    if observations:
+        rows.append('当前原生资源相关字段：'+json.dumps(observations,ensure_ascii=False,sort_keys=True)+'。这些字段不是统一的每秒回复；按实际资源、触发和已分配来源核对含义，不据某列为零排除其他来源。')
     rows += [f"{METRICS[key]}：{stats[key]:g}" for key in (damage, hit, "Life", "EnergyShield", "ChaosResist", "ManaUnreserved") if key in stats]
     rows.append("DPS 已包含引擎的命中计算，不再乘命中率。其他技能是否计入总输出以 damage_sources 的实际分项为准，不能根据装备着召唤宝石推断。")
     rows.append(scenario_summary(result))
@@ -743,7 +746,11 @@ def socket_layout_issues(document, result, unsupported=None):
     for index, group in enumerate(bx.groups(document), 1):
         slot = group.get("slot", "")
         gems = [gem for gem in result["gems"] if gem["group"] == index]
-        if group.get("source") or not slot or not gems:
+        if group.get("source") or not gems:
+            continue
+        if not slot:
+            if group.get('enabled','true')!='false' and any(gem.get('enabled') for gem in gems):
+                errors.append(f"第 {index} 组启用的宝石需要关联实际装备插槽；未指定槽位不能作为可用技能。")
             continue
         offset = offsets.get(slot, 0)
         offsets[slot] = offset + len(gems)
@@ -1212,7 +1219,19 @@ def skill_statements(calculation, name):
                   '（'+activation(g.get('enabled'),'宝石')+'）' for g in gems)+
               '。本机当次名称；缺译名保留原标识。启用标记不证明具体效果适用，辅助对象与实际应用见同一 gems 条目。')
         rows.append({'kind':'native_skill_group','subject':name,'status':'observed','values':{'group':group,'gems':gems},'text':text})
+    for skill in calculation.get('active_skills',[]):
+        timing=skill.get('native_timing',{})
+        if any(bx.finite_number(timing.get(key)) for key in ('duration_seconds','cooldown_seconds')):
+            rows.append({'kind':'native_skill_timing','subject':name,'status':'observed','skill_ref':skill.get('skill_ref'),'values':timing,
+                'text':name+' · '+str(skill.get('display_name') or skill.get('name') or skill.get('id'))+' 原生时长/冷却：'+json.dumps(timing,ensure_ascii=False)+'。按实际使用时点核对覆盖；支付一次不代表效果延续到后续窗口。'})
     return rows
+
+
+def resource_observations(result):
+    """Expose available resource fields without assigning event units or causality."""
+    return {key:value for key,value in result.get('stats',{}).items()
+            if re.search(r'^(?:Life|Mana|EnergyShield|ES).*(?:Gain|Recovery|Regen|Leech|Recharge|Degen|On[A-Z])',key)
+            and bx.finite_number(value) and value!=0}
 
 
 def calculation_facts(result, claims=()):
@@ -1220,19 +1239,20 @@ def calculation_facts(result, claims=()):
     for claim in claims:
         for ref in claim.get("evidence_refs", []):
             if "#/stats/" in ref: referenced.add(ref.split("#/stats/", 1)[1])
+    selected=set(METRICS)|referenced|set(resource_observations(result))
     return {"xml_sha256": result.get("xml_sha256") or result.get("input_xml_sha256"), "engine_fingerprint": result.get("engine_fingerprint"),
             "character_identity":result.get("character_identity"),
             "measurement_audit":result.get("measurement_audit",{}),
             "level": result.get("level"), "class": result.get("class"),"class_cn":result.get("class_cn"), "class_id":result.get("class_id"), "ascendancy": result.get("ascendancy"),"ascendancy_cn":result.get("ascendancy_cn"),"ascendancy_id":result.get("ascendancy_id"),
-            "points":result.get("points"),"nodes":result.get("nodes"),"ascendancy_points":result.get("ascendancy_points"),"secondary_ascendancy_points":result.get("secondary_ascendancy_points"),
+            "points":result.get("points"),"nodes":result.get("nodes"),"ascendancy_points":result.get("ascendancy_points"),"secondary_ascendancy_points":result.get("secondary_ascendancy_points"),"progress_limits":result.get('progress_limits'),
             "main_skill": result.get("main_skill"), "main_skill_name": result.get("main_skill_name"),"main_skill_name_cn":result.get("main_skill_name_cn"),
             "config_values": result.get("config_values", {}), "config_labels": result.get("config_labels", {}),
             "config_placeholders":result.get("config_placeholders",{}),"config_loader_source":result.get("config_loader_source"),
             "config_input_origin":result.get("config_input_origin"),
             "config_controls":result.get("config_controls",{}),"effect_state":engine.effect_state(result),
-            "stats": {k: v for k, v in result.get("stats", {}).items() if k in set(METRICS) | referenced},
+            "stats": {k: v for k, v in result.get("stats", {}).items() if k in selected},
             "available_stat_keys":sorted(result.get("stats",{})),
-            "stat_metadata":{k:v for k,v in result.get("stat_metadata",{}).items() if k in set(METRICS)|referenced},
+            "stat_metadata":{k:v for k,v in result.get("stat_metadata",{}).items() if k in selected},
             "active_skills": result.get("active_skills", []), "damage_sources": result.get("damage_sources", []),
             "gems":result.get("gems",[]),"equipped":result.get("equipped",[]),"resource_rules":result.get("resource_rules",{}),
             "scope": "当前配置与所列主体的原生快照；参考技能必须用其 skill_ref，主技能面板不能代替副技能或阶段。"}
@@ -1972,7 +1992,7 @@ def evaluate(args):
     delivery=run/"output"/args.name/"delivery.json"
     if delivery.is_file():
         write_json(delivery,{"file_exported":False,"status":outcome["status"],"candidate":args.name,"reason":"superseded_by_evaluation"})
-    response={"candidate":str(destination),"evaluation_file":str(destination/"evaluation.json"),"status":outcome["status"],"task_completion":outcome["task_completion"],"character_readiness":outcome["character_readiness"],"errors":outcome["errors"],"pending":outcome["pending"],"warnings":outcome["warnings"],
+    response={"candidate":str(destination),"evaluation_file":str(destination/"evaluation.json"),"status":outcome["status"],"task_completion":outcome["task_completion"],"character_readiness":outcome["character_readiness"],"errors":outcome["task_completion"]["errors"],"pending":outcome["task_completion"]["pending"],"warnings":outcome["warnings"],
               "judgments":[facts.claim_display(c,review=outcome["review_packet"] if intent.get("task_kind") in {"read_only_review","build_plan"} else None) for c in outcome["claims"]],
             "budget":outcome["budget"],"readiness":outcome["readiness"],"roundtrip_verified":True,"delivery_brief":outcome["delivery_brief"],
             "comparison":{k:v for k,v in outcome["comparison"].items() if k in METRICS},"baseline_warnings":baseline.get("warnings",[]),
@@ -2298,7 +2318,7 @@ def export(args):
               "files":[] if not deliverable else [str(output/"配装说明.html"),str(output/"final-assessment.json")] if read_only else [str(output/filename),str(output/"配装说明.html")],
               "details_file":str(output/"final-assessment.json"),
               "facts_summary":summary,"publication":outcome["publication"],"facts":outcome["review_packet"]["facts"],
-              "objective_coverage":outcome["objective_coverage"],"pending":outcome["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
+              "objective_coverage":outcome["objective_coverage"],"errors":outcome["task_completion"]["errors"],"pending":outcome["task_completion"]["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
               "judgments":[facts.claim_display(c,review=outcome["review_packet"] if outcome["task_completion"]["kind"] in {"read_only_review","build_plan"} else None) for c in outcome["claims"]],"next_actions":outcome["next_actions"],
               "reply_policy":"仅交付返回的 files。最终答复沿用 delivery_brief 的状态与范围，数值、当前名称和比较明细引用同一 HTML，简述已证明收益、代价、全部缺口类别及进入条件。机制和取舍按当前 judgments 的状态、text、条件与诊断核对；revision_pending 的文字尚待重审。平均收支只支持该投影，不能证明动作执行或效果持续；复核token或回读不证明机制、预算或目标达成。"}
     if read_only:
@@ -2306,7 +2326,7 @@ def export(args):
     elif outcome["task_completion"]["kind"]=="build_plan":
         response["reply_policy"]="交付 files 中的 XML、HTML 与当前核验文件；按 task_completion 与 delivery_brief 说明具体方案交付是否完成，按 character_readiness 保留全部未就绪项。逐项说明执行条件、取得/训练及退路；合法条件快照不表示现实物资已取得、效果持续或实战目标已经达到。"
     if not deliverable:
-        response.update(errors=outcome["task_completion"]["errors"],next="内部诊断已保存；按 task_completion 和 next_actions 修源、登记当前判断、复核并重算。",reply_policy="自检未通过，files 为空，不提供最终附件或声称交付完成。读取 details_file 的 task_completion 与 next_actions 继续返修；确实无法完成时如实说明失败原因与缺口，内部诊断不作为最终交付。")
+        response.update(next="内部诊断已保存；按 task_completion 和 next_actions 修源、登记当前判断、复核并重算。",reply_policy="自检未通过，files 为空，不提供最终附件或声称交付完成。读取 details_file 的 task_completion 与 next_actions 继续返修；确实无法完成时如实说明失败原因与缺口，内部诊断不作为最终交付。")
     outcome["response"]=response
     write_json(output/"final-assessment.json",outcome)
     write_json(output/"review.json",outcome["review_packet"])
@@ -2498,7 +2518,7 @@ def route_snapshots(route,native,root,folder,output,*,gems=None):
                 write_text(directory/"snapshot.xml",saved)
                 write_json(cache_path,{"request_sha256":bx.digest(requested),"result":calculated,
                                       "result_sha256":bx.digest(json.dumps(calculated,sort_keys=True,ensure_ascii=False,allow_nan=False))})
-            limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points") if stage.get(key) is not None}
+            limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points","act","completed_act") if stage.get(key) is not None}
             tree_details,tree_repairs=native_tree_diagnostics(root,document,calculated,op_path+"/tree",tree_operations=snap.get("operations",{}).get("tree"),limits=limits,usage_plan=snap)
             gem_repairs=native_gem_diagnostics(root,document,calculated,stage_index=stage_index,gems=gems,limits=limits,usage_plan=snap)
             bx.require(all(Path(path).is_file() and bx.digest(Path(path).read_bytes())==digest for path,digest in record.get("input_artifacts",{}).items()),"计算期间阶段模板变化，请重算。",location=f"/stages/{stage_index}/snapshot/template_xml")
@@ -2611,7 +2631,7 @@ def calculate_route(args):
         for slot,base in stage.get("bases",{}).items():
             if actual_bases.get(slot)!=base: errors.append("快照装备与阶段声明的基底不一致："+slot)
         relevant=[c for c in claims if {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
-        limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points") if stage.get(key) is not None}
+        limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points","act","completed_act") if stage.get(key) is not None}
         audit=resources.assess(value,limits,{k:stage["snapshot"][k] for k in ("usage","timeline") if k in stage["snapshot"]},relevant,reference_name="resources:stage:"+sid)
         stage_native["resources:stage:"+sid]={**audit,"engine_fingerprint":value["engine_fingerprint"],"xml_sha256":value.get("xml_sha256"),"origin":"program_assessment"}
         errors+=audit["errors"]; notes+=audit["warnings"]; gaps+=audit["pending"]
@@ -2754,7 +2774,7 @@ def calculate_route(args):
     deliverable=task_deliverable(completion)
     delivered_xmls=[Path(row['xml_path']) for row in stage_summary if row.get('xml_path') and row['status']!='blocked'] if deliverable else []
     actions=delivery_actions({k:checked[k] for k in ("errors","pending","diagnostics","reference_contract","claims","task_completion","character_readiness")}|{"status":checked["delivery_status"]},path,evidence_file,review_file,"/checked_route",report_exported=True,calculation={"command":"route","arguments":{"file":str(path),"out":str(output)}})
-    response={"status":checked["delivery_status"],"file_exported":deliverable,"task_completion":completion,"character_readiness":checked["character_readiness"],"delivery_brief":checked["delivery_brief"],"facts_summary":checked["publication"]["facts_summary"],"errors":checked["errors"],"stage_summary":stage_summary,"files":[str(output),str(evidence_file)]+[str(p) for p in delivered_xmls] if deliverable else [],"details_file":str(evidence_file),"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":checked["pending"],"warnings":warnings,
+    response={"status":checked["delivery_status"],"file_exported":deliverable,"task_completion":completion,"character_readiness":checked["character_readiness"],"delivery_brief":checked["delivery_brief"],"facts_summary":checked["publication"]["facts_summary"],"errors":completion["errors"],"stage_summary":stage_summary,"files":[str(output),str(evidence_file)]+[str(p) for p in delivered_xmls] if deliverable else [],"details_file":str(evidence_file),"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":completion["pending"],"warnings":warnings,
              "judgments":[facts.claim_display(c,review=review) for c in claims],
              "reply_policy":"先沿用 task_completion 与 delivery_brief/facts_summary 的规划交付状态，再按当前 judgments 的评审、条件与退路解释路线。character_readiness 保留全部阶段未就绪项，取得与训练未发生；规划完成不等于实际可执行或游戏效果已验证。revision_pending 表示说明待重新评审。聊天与HTML保持同一结论。",
              "next_actions":actions,"scope":"目录核对与实际阶段快照分别列出；仅 calculation 中的数值经过所声明完整输入实算，未物化阶段不宣称精确 DPS/生存/续航。获取位置不证明当前已完成任务。", "next":"按 task_completion 和 next_actions 完成本次规划交付；character_readiness 继续保留阶段执行条件。需要修订时重跑同一route；诊断XML不能作为可执行配装交付，计算或规划完成不代表实际阶段已就绪。"}

@@ -43,7 +43,7 @@ usage 简单同窗格式为 `{skill_ref,casts_per_second,active_seconds,recovery
 
 自动技能按当前 SkillTriggerRate/费用安排完整窗口，缺实际触发频率或支付规则保留 unknown；零费用不用虚构支付。手动频率按 usage_rate.basis/metric/repeats，不按技能名猜。payment_schedule/skill_schedules 定位当前实际次数、首末时点、费用与关联，修返时同步源 claim。完整窗口 final 在 duration_seconds，trace 最后一项只是末次动作；准备 final 对接战斗 initial。
 
-时间线只重放离散费用与固定净回复，不测敌伤、额外损失、吸取、能盾充能、药剂补充、动作互斥、实际触发或效果变化。execution_coverage 保留这些范围。资源支付成功不能替它背书，平均次数不能变成持续 DPS。药剂开启且声明 continuous 仍保留当前 flask_coverage 能力缺口。按目标选择有限窗口即可，不强求所有任务证明无限循环。
+时间线只重放费用与固定净回复；execution_coverage 保留敌伤、事件恢复、动作互斥及动态效果等未测范围。覆盖结论核实际开关、native_timing、施放与补放时点；准备期施放会随等待到期。主输出和其他动作按真实安排共享时间，原生满速不是同时可执行频率。药剂 continuous 仍受 flask_coverage 限制，按目标核有限窗口即可。
 
 ## 物资与价格
 
@@ -61,6 +61,6 @@ requirements/material_specs 来自实际差异，包括仍插着的禁用/备用
 
 规划的真实未来依赖可用 condition_reviews：`{subjects,claim_ids,conditions,fallback,evidence_refs}`。subjects 原样取当前 facts.pending，关联本次 supported/partial conclusions，写具体进入条件与在条件失败时能执行的退路（或明确等待再开始）。把能力/未来条件写在适用结论和 condition_reviews；review.unresolved 只记录当前尚未完成的复核工作，不重复列已审查的未测范围。必要设计/来源/计算仍缺、已知非法、矛盾、许可违反、过期复核不能包装成未来条件；普通生成缺口见[配装](build.md#普通目标生成)。
 
-完整 readonly 评审可否定/未知；规划的 unknown/refuted 目标不能说已完成。task_completion 与 character_readiness 分别说明交付和角色条件。export 冷算/回读并核当前来源；仅 scoped_result、errors/pending 均空时提供最终 files。draft/blocked 保存内部诊断与恢复快照，不能当最终附件。build/build_plan 交 XML 与 HTML；readonly 仅报告；route 核本次 file_exported/files。
+完整 readonly 评审可否定/未知；规划的 unknown/refuted 目标如实说明未完成。按[入口的完成步骤](../SKILL.md#工作与完成)核成功返回的文件：build/build_plan 交 XML 与 HTML，readonly 仅报告，route 交本次路线文件。
 
 publication、facts_summary、HTML 与核验共享事实，最终短答用真实状态、已核结果、代价、限制与下一步。源/输出完整性和恢复见[命令](commands.md#恢复与交付完整性)。已有有限支付、未知预算/覆盖、进入条件各保留；导出文件、自审和链接都不能替代目标依据。

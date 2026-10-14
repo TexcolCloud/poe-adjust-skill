@@ -388,6 +388,12 @@ class DocumentTests(unittest.TestCase):
         result = {"equipped": [{"slot": "Boots", "id": 1}],
                   "gems": [{"group": 1, "index": i, "color": "G", "enabled": True, "support": i > 1} for i in range(1, 5)]}
         self.assertEqual(poe.socket_layout_issues(self.root, result), [])
+        group=bx.groups(self.root)[0]
+        group.set('slot','')
+        self.assertTrue(poe.socket_layout_issues(self.root,result))
+        group.set('enabled','false')
+        self.assertEqual(poe.socket_layout_issues(self.root,result),[])
+        group.set('enabled','true');group.set('slot','Boots')
         self.root.find("Items/Item").text = "Rarity: NORMAL\nIron Greaves\nSockets: W-W W-W"
         self.assertTrue(any("连线不匹配" in error for error in poe.socket_layout_issues(self.root, result)))
         result["gems"].append({"group": 1, "index": 5})
@@ -1785,6 +1791,14 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_nonstandard_native_resource_observations_reach_facts_and_diagnosis(self):
+        current={'stats':{'LifeOnFutureEvent':7,'ManaFutureGain':-2,'OtherOutput':9},
+                 'points':0,'ascendancy_points':0,'active_skills':[]}
+        projected=poe.calculation_facts(current)
+        self.assertEqual(projected['stats'],{'LifeOnFutureEvent':7,'ManaFutureGain':-2})
+        summary=poe.diagnosis_summary(current)
+        self.assertIn('LifeOnFutureEvent',summary);self.assertIn('ManaFutureGain',summary)
+
     def test_config_input_origin_distinguishes_active_inputs_placeholders_and_runtime(self):
         document=bx.parse(SAMPLE)
         config=document.find('Config');config.set('activeConfigSet','second')
@@ -2905,6 +2919,23 @@ class WorkflowInterfaceTests(unittest.TestCase):
 
 
 class ResourceRegressionTests(unittest.TestCase):
+    def test_declared_point_budget_cannot_override_current_native_progress_bounds(self):
+        result=resource_fixture()
+        result.update(level=20,points=24,progress_limits={'status':'observed','chapters':[
+            {'entering_act':1,'quest_points':0,'extra_points':0},
+            {'entering_act':2,'quest_points':2,'extra_points':0},
+            {'entering_act':3,'quest_points':4,'extra_points':1}]})
+        intent={'normal_points_available':24,'act':1}
+        first=resources.assess(result,intent,{})
+        self.assertTrue(first['errors'])
+        result['progress_limits']['chapters'][1]['quest_points']=5
+        changed=resources.assess(result,intent,{})
+        self.assertFalse(changed['errors'])
+        self.assertEqual(changed['point_budgets'][0]['native_maximum'],24)
+        self.assertEqual(changed['point_budgets'][0]['status'],'within_declared_limit')
+        unknown=resources.assess(result,{}, {})
+        self.assertIn('progress:normal',unknown['pending'])
+
     def secondary(self, result, **costs):
         result['active_skills'].append({'id':'secondary','skill_ref':'secondary','actor':'player',
             'costs':{'ManaCost':10,'LifeCost':0,'ESCost':0,'ManaPerSecondCost':10,'ESPerSecondCost':0,'Speed':1,**costs}})
@@ -4575,6 +4606,9 @@ class TaskCompletionTests(unittest.TestCase):
             with patch.object(poe,'read_candidate',return_value=(run,state,outcome,xml,run)),patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(['Original invalid equipment'],[],['native:unmeasured'])),patch.object(resources,'assess',return_value={'errors':['Original resource conflict'],'warnings':['Original warning'],'pending':['progress:unknown'],'resources':[],'diagnostics':[]}):
                 exported=poe.export(args(run=str(run),name='review'))
             self.assertEqual(exported['status'],'scoped_result');self.assertTrue(exported['file_exported']);self.assertFalse(exported['xml_exported'])
+            self.assertEqual(exported['pending'],[])
+            self.assertEqual(exported['errors'],[])
+            self.assertIn('progress:unknown',exported['character_readiness']['pending'])
             self.assertEqual({Path(path).suffix for path in exported['files']},{'.html','.json'})
             output=run/'output/review';receipt=poe.read_json(output/'delivery.json')
             self.assertTrue(receipt['file_exported']);self.assertFalse(receipt['xml_exported'])
@@ -5058,7 +5092,9 @@ class RealEngineTests(unittest.TestCase):
         cls.original = bx.read_document(cls.sample)
         cls.native = engine.calculate(cls.pob, catalog="bases", query="id:Iron Gauntlets", limit=1)
         current=engine.calculate(cls.pob,bx.serialise(cls.original))
-        cls.intent = intent_for(cls.original,game_version=engine.require_data_version(engine.metadata(cls.pob)),normal_points=current['points']+10,ascendancy_points=current['ascendancy_points']+2)
+        point_budget=resources.assess(current,{}, {})['point_budgets'][0]
+        point_limit=min(current['points']+10,point_budget.get('native_maximum',current['points']+10))
+        cls.intent = intent_for(cls.original,game_version=engine.require_data_version(engine.metadata(cls.pob)),normal_points=point_limit,ascendancy_points=current['ascendancy_points']+2)
         path = Path(cls.temp.name) / "intent.json"
         poe.write_json(path, cls.intent)
         poe.set_intent(args(run=str(cls.run_dir), file=str(path)))

@@ -22,7 +22,7 @@ doctor 的 data_version/树版本表示本机资料。旧角色树与当前共�
 
 ## 技能、配置与明细
 
-宝石保存的 level/quality 与有效规格分开看；effective_specifications 是当次观察，unknown 不猜。active_skills 的 skill_ref、actor、cost/rate 和选择关联限定对象；player、minion、mirage 的伤害与回复不互借。granted_effects 是实际提供效果，不证明触发/覆盖。
+宝石保存的 level/quality 与 effective_specifications 分开；unknown 不猜。active_skills 的 skill_ref/actor、cost/rate、native_timing 限定当次主体、费用、频率及可见时长/冷却；player、minion、mirage 不互借。granted_effects 不证明触发或覆盖。
 
 config_controls 区分 value/default/value_basis，以及 Input/Placeholder、runtime/applied。null 是未知或未覆盖，false 是实际关闭；清除覆盖可能恢复默认。只读到一个控制未生效，不推断全部开关关闭。按当前控件类型、options[].val、visibility 与原文选择控制；数值范围、默认贡献和条件由本次资料/计算判断。需要追机制时沿 apply_source 的 source/line 读实际原文。
 
