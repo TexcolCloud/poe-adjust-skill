@@ -4,7 +4,7 @@
 
 ## 只读解释
 
-直接事实展示沿 inspect/probe 的事实页完成。解释机制、归因、取舍或复核作者是否满足原目标时，用同一 start/intent/evaluate/export，intent 声明 `task_kind:"read_only_review"`。最小 intent 为 schema_version:2、confirmed:true、goal、非空 objectives、真实 user_statement evidence、constraint_sources 中的 `/goal`；objective 的 evidence_refs 对应用户问题。本机范围可省略 league，此时 game_version/version_source 也留空。
+快照数值及已返回资源投影沿 inspect/probe 事实页完成。另证机制因果、配装取舍或复核作者主张时，用 start/intent/evaluate/export，intent 声明 `task_kind:"read_only_review"`。最小 intent 为 schema_version:2、confirmed:true、goal、非空 objectives、真实 user_statement evidence、constraint_sources 中的 `/goal`；objective 的 evidence_refs 对应用户问题。本机范围可省略 league，此时 game_version/version_source 也留空。
 
 plan 使用 `mode:"refine",operations:{}`，保留输入，不使用 template_xml、scenario、measurement 或 baseline_main_group 改被审对象。实验用 probe，作为证据与审查对象分开。解释写 claims；数字/状态读当前事实，评审每项支持、反证、条件与未测范围。
 

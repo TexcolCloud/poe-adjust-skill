@@ -1920,8 +1920,21 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(code,0,stdout.getvalue())
             saved=poe.read_json(output);receipt=json.loads(stdout.getvalue())
             self.assertEqual(saved['reference_contract']['current']['artifact'],{'file':str(output),'pointer':'/calculation'})
+            self.assertEqual(saved['reference_contract']['resources']['artifact'],{'file':str(output),'pointer':'/readiness'})
+            self.assertIsNone(saved['readiness']['timeline'])
+            self.assertEqual(saved['readiness']['sustained_use']['basis'],'no_common_timeline')
+            self.assertTrue(any(row['kind']=='single_payment' for row in saved['publication']['statements']))
+            self.assertEqual(next(row for row in saved['publication']['statements'] if row['kind']=='sustained_use')['status'],'unknown')
             self.assertIs(saved['calculation']['config_controls']['new-mode']['value'],None)
-            self.assertEqual(saved['publication']['statements'],receipt['publication']['statements'])
+            published=receipt['publication'].get('statements')
+            if published is None:
+                continuation=next(row for row in receipt['continuations'] if row['pointer']=='/publication')
+                published=[];offset=0
+                while offset is not None:
+                    chunk=poe.view_json(args(file=continuation['file'],pointer=continuation['pointer']+'/statements',fields='',keys=False,query='',offset=offset,limit=1))
+                    self.assertFalse(chunk.get('deferred_values'))
+                    published.extend(chunk['value']);offset=chunk['next_offset']
+            self.assertEqual(saved['publication']['statements'],published)
             self.assertEqual(saved['publication']['facts_summary'].split('\n\n',1)[0],saved['publication']['delivery_brief']['message'])
             self.assertEqual(saved['publication']['statements'][0]['text'],saved['publication']['delivery_brief']['message'])
             self.assertEqual(receipt['report'],str(report))

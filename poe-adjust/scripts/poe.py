@@ -3114,7 +3114,11 @@ def main(argv=None):
                 if args.out:
                     result['reference_contract']=facts.reference_contract({'current':result['calculation']},{'current':{'file':str(Path(args.out).resolve()),'pointer':'/calculation'}})
                 if report:
+                    result['readiness']=resources.assess(computed,{}, {})
+                    result['reference_contract'].update(facts.reference_contract({'resources':result['readiness']},
+                        {'resources':{'file':str(Path(args.out).resolve()),'pointer':'/readiness'}}))
                     result['publication']=publication('scoped_result',[],[],{'status':'not_requested'},{'current':result['calculation']},
+                        resource_audits={'current':result['readiness']},
                         delivery_label='只读原生快照',delivery_message='已读取本次原生资料与计算；未执行配装目标评审。',
                         scope='只读原生快照；未执行配装设计或目标评审，未证明动作执行、条件适用或效果持续。')
             if report:result['report']=str(report)
@@ -3122,7 +3126,7 @@ def main(argv=None):
                 breakdown_summary=[]
                 inspection_actions=[{'action':'view','file':str(Path(args.out).resolve()),'pointer':'/reference_contract',
                     'explanation_reference':'references/build.md#只读解释',
-                    'scope':'本次计算事实根；view 定位当前对象、名称、原文和引用。直接事实展示沿publication；加入解释前按explanation_reference进入已有claims/复核流程，短答承接当前报告状态与缺口。'}] if args.calculate else []
+                    'scope':'view 定位当前对象、名称、原文和引用。快照数值及已返回的资源投影直接按publication范围说明；另证机制因果、配装取舍或裁决作者主张时，按explanation_reference复核。'}] if args.calculate else []
                 for index,row in enumerate(result.get('calculation',{}).get('breakdowns',[])):
                     pointer='/calculation/breakdowns/'+str(index)
                     breakdown_summary.append({**{key:row[key] for key in ('metric','actor','skill_ref','status','value','main_value','matches_main_value','reason','scope') if key in row},
