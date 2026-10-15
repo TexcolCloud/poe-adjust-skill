@@ -2649,9 +2649,15 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(facts.pointer(poe.read_json(file),repair['errors_pointer']),outcome['errors'])
             self.assertEqual(facts.pointer(poe.read_json(file),repair['pointer']),large)
             self.assertEqual(bounded['task_completion']['pending'],completion['pending'])
-            self.assertEqual([row.get('purpose',row['action']) for row in bounded['next_actions']],
+            def complete_actions(reply):
+                continuation=next((row for row in reply['continuations'] if row['pointer']=='/response/next_actions'),None)
+                tail=facts.pointer(poe.read_json(file),continuation['pointer'])[continuation['offset']:] if continuation else []
+                return reply['next_actions']+tail
+            self.assertEqual(complete_actions(bounded),actions)
+            action_reads=[row for row in bounded['continuations'] if 'purpose' in row]
+            self.assertEqual([row.get('purpose',row['action']) for row in bounded['next_actions']+action_reads],
                              [row['action'] for row in actions])
-            for index,row in enumerate(bounded['next_actions']):
+            for index,row in enumerate(bounded['next_actions']+action_reads):
                 if 'purpose' in row:
                     self.assertEqual(row['action'],'view')
                     self.assertEqual(facts.pointer(poe.read_json(file),row['pointer']),actions[index])
@@ -2661,6 +2667,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
             poe.write_json(file,{'response':response})
             bounded=poe.bound_reply(response,argparse.Namespace(command='evaluate',run=str(run),name='fixture'))
             self.assertLessEqual(len(json.dumps({'ok':True,**bounded},ensure_ascii=False))+1,12000)
+            self.assertEqual(complete_actions(bounded),response['next_actions'])
             for key in ('task_completion','character_readiness'):
                 self.assertEqual(bounded[key]['pending_total'],len(response[key]['pending']))
                 self.assertEqual(bounded[key]['pending_is_preview'],len(bounded[key]['pending'])<len(response[key]['pending']))
