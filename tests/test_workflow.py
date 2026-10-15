@@ -1798,6 +1798,22 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(projected['stats'],{'LifeOnFutureEvent':7,'ManaFutureGain':-2})
         summary=poe.diagnosis_summary(current)
         self.assertIn('LifeOnFutureEvent',summary);self.assertIn('ManaFutureGain',summary)
+        with patch.object(poe,'skill_statements',return_value=[{'kind':'skill','text':'Long skill detail '*1000}]):
+            summary=poe.diagnosis_summary(current)
+        self.assertLess(summary.index('LifeOnFutureEvent'),summary.index('Long skill detail'))
+        review={'objectives':[{'objective_id':'goal','reference_status':'resolved','verdict':'supported',
+                              'evidence_scope':{'counts':{}},'scope':'Declared scope','findings':'Model interpretation '*1000,
+                              'evidence_refs':[],'counter_evidence_refs':[],'conditions':[],'unimplemented':[]}]}
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':current},review=review)
+        self.assertEqual([row['metric'] for row in published['measurements']],['LifeOnFutureEvent','ManaFutureGain'])
+        long_current={**current,'stats':{**current['stats'],**{key:1 for key in poe.METRICS}}}
+        short_review=copy.deepcopy(review);short_review['objectives'][0]['findings']='Requested outcome remains unimplemented'
+        long_publication=poe.publication('draft',[],[],{'status':'unknown'},
+                                       {str(i):long_current for i in range(8)},review=short_review)
+        self.assertIn('Requested outcome remains unimplemented',long_publication['facts_summary'][:5000])
+        self.assertIn('OtherOutput',[row['metric'] for row in poe.publication('draft',[],[],{'status':'unknown'},
+                      {'candidate':current},keys=['OtherOutput'])['measurements']])
+        self.assertEqual(poe.publication('draft',[],[],{'status':'unknown'},{'candidate':current},keys=[])['measurements'],[])
 
     def test_config_input_origin_distinguishes_active_inputs_placeholders_and_runtime(self):
         document=bx.parse(SAMPLE)
@@ -2619,8 +2635,11 @@ class WorkflowInterfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             run=Path(folder);file=run/'candidates/fixture/evaluation.json'
             actions=poe.delivery_actions(outcome,'source.json',str(file),'review.json','/checked_route')
+            completion={'kind':'build','status':'blocked','scope':'Current requested task',
+                        'errors':outcome['errors'],'pending':['dependency:'+str(i) for i in range(40)]}
             response={'status':'blocked','next_actions':actions,'facts_summary':'observed scope '*500,
-                      'readiness':{'long':'x'*16000}}
+                      'readiness':{'long':'x'*16000},'task_completion':completion,
+                      'character_readiness':copy.deepcopy(completion)}
             poe.write_json(file,{'checked_route':outcome,'response':response})
             bounded=poe.bound_reply(response,argparse.Namespace(command='evaluate',run=str(run),name='fixture'))
             repair=bounded['next_actions'][0]
@@ -2629,6 +2648,24 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(repair['repair_count'],40)
             self.assertEqual(facts.pointer(poe.read_json(file),repair['errors_pointer']),outcome['errors'])
             self.assertEqual(facts.pointer(poe.read_json(file),repair['pointer']),large)
+            self.assertEqual(bounded['task_completion']['pending'],completion['pending'])
+            self.assertEqual([row.get('purpose',row['action']) for row in bounded['next_actions']],
+                             [row['action'] for row in actions])
+            for index,row in enumerate(bounded['next_actions']):
+                if 'purpose' in row:
+                    self.assertEqual(row['action'],'view')
+                    self.assertEqual(facts.pointer(poe.read_json(file),row['pointer']),actions[index])
+            response.update(task_completion={**completion,'pending':['task '+str(i)+' '+('x'*180) for i in range(20)],'errors':[]},
+                            character_readiness={**completion,'pending':['role '+str(i)+' '+('x'*820) for i in range(8)],'errors':[]},
+                            next_actions=[{'action':'repair_input','detail':'x'*2200} for i in range(12)],facts_summary='x'*6000)
+            poe.write_json(file,{'response':response})
+            bounded=poe.bound_reply(response,argparse.Namespace(command='evaluate',run=str(run),name='fixture'))
+            self.assertLessEqual(len(json.dumps({'ok':True,**bounded},ensure_ascii=False))+1,12000)
+            for key in ('task_completion','character_readiness'):
+                self.assertEqual(bounded[key]['pending_total'],len(response[key]['pending']))
+                self.assertEqual(bounded[key]['pending_is_preview'],len(bounded[key]['pending'])<len(response[key]['pending']))
+            for continuation in bounded['continuations']:
+                facts.pointer(poe.read_json(file),continuation['pointer'])
             self.assertLess(len(json.dumps(bounded,ensure_ascii=False)),12000)
 
     def test_missing_claim_bindings_return_direct_review_action_before_final_review(self):
@@ -6008,10 +6045,16 @@ class RealEngineTests(unittest.TestCase):
             route['stages'].append({'stage_id':'phase-'+str(index),'name':'Fixture stage','level':12+index,'bases':{'Gloves':'Wool Gloves'},
                 'skill_groups':[{'name':'Fireball','slot':'Gloves','use':'fixture','gems':[{'instance_id':'fire','skill_id':'Fireball','level':1,'quality':0}]}],
                 'required_items':([gem] if index==0 else [])+[item],
-                'snapshot':{'operations':{'items':[{'id':1,'text':text}],'equip':[{'slot':'Gloves','item_id':1}],'main_group':1},'metrics':['Life']}})
+                'snapshot':{'operations':{'items':[{'id':1,'text':text}],'equip':[{'slot':'Gloves','item_id':1}],'main_group':1},
+                            **({'metrics':['Life','FutureRequestedMetric']} if index else {})}})
         source=Path(self.temp.name)/'specs-route.json';output=Path(self.temp.name)/'specs-route.html';poe.write_json(source,route)
-        with patch.object(facts,'gem_facts',return_value={}): poe.route_command(args(invoked=True,file=str(source),out=str(output)))
+        with patch.object(facts,'gem_facts',return_value={}),patch.dict(poe.METRICS,{'FutureOptionalMetric':'Optional display metric'}):
+            poe.route_command(args(invoked=True,file=str(source),out=str(output)))
         checked=poe.read_json(output.with_suffix('.evidence.json'))['checked_route']
+        self.assertIsNone(checked['stages'][0]['calculation']['stats']['FutureOptionalMetric'])
+        self.assertNotIn('stage:phase-0:metric:FutureOptionalMetric',checked['pending'])
+        self.assertIsNone(checked['stages'][1]['calculation']['stats']['FutureRequestedMetric'])
+        self.assertIn('stage:phase-1:metric:FutureRequestedMetric',checked['pending'])
         materials=[row for row in checked['budget_assessment']['materials'] if row['kind']=='item']
         self.assertEqual(len(materials),2);self.assertEqual([row['quantity'] for row in materials],[1,1])
         self.assertEqual([row['remaining'] for row in materials],[0,0])

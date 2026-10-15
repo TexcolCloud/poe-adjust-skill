@@ -29,9 +29,9 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 
 ## 工作与完成
 
-1. 保存完整当次要求，包含目标、限制和最新路径/范围；复用已表达信息，只问影响方向或授权的缺项。未知不补成用户承诺。解释/复核用 `read_only_review`；可按条件实施的局部或整套方案用 `build_plan`；要求当前角色就绪才用 `build`，详见[配装范围](references/build.md#规划交付)。
+1. 将本次用户原话与补充完整保存到授权目录，登记为方向证据；原文决定目标、限制和当前路径，只问影响方向或授权的缺项。解释/复核用 `read_only_review`；可按条件实施的局部或整套方案用 `build_plan`；要求当前角色就绪才用 `build`，详见[配装范围](references/build.md#规划交付)。
 2. 配装/路线先物化原目标终点的最低可用整套对象，再连接可达起点与必要切换，最后添可选提升。关键断言核实际主体、状态、支持与反例；方案整体实算，路线核取得、训练及前段承接。文字门槛对应本段真实配置，必要设计在交付前落实。
-3. 完整 plan/route 可以一次保存；新建或改过的 claims 核对正文与当前证据后，用 `edit` 的 `review_claims` 登记绑定，再计算。每次计算先读 `task_completion`、`delivery_brief` 和 `next_actions`，沿指针处理待办。`errors` 为空仍可能是 `draft`。改对象时同步修源判断和操作，再重算；绑定/引用缺口也属于返修，不靠最终短答补源文件。
+3. 新建或改过的 claims 核对正文与当前证据后，用 `edit` 的 `review_claims` 登记绑定，再计算。每次按 `task_completion` 状态与待办总数处理 `next_actions`，预览沿 `continuations/view` 读全。改对象时同步修源判断和操作，再重算；绑定/引用缺口也属于返修，不靠最终短答补源文件。
 4. 计算对象稳定后，读当次 `review_template/check`，自己逐项目标与判断复核，单独保存 `assessment.review`，再重算。只读评审可正式得出否定/未知；已核到的未知写入结论与范围，`review.unresolved` 留给尚未做完的审查。规划的真实未来依赖按[条件复核](references/evidence.md#最终复核与交付)关联当前待办、进入条件与可执行退路；必要设计、已知错误和过期绑定先修。
 5. 配装沿 export 冷算，路线重跑 route；仅本次返回 `task_completion.status=scoped_result`、errors/pending 均空且 `file_exported` 为真时，交付该返回 `files` 中的附件。返修后重新取成功返回的文件，内部快照留作恢复；无法完成就如实报缺口。`character_readiness` 保留取得、训练、进度与执行条件，分别说明任务完成和角色条件。
 

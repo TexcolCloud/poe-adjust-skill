@@ -44,7 +44,7 @@
 
 snapshot 可选 template_xml，省略由当前原生空职业角色生成，不手写 XML。operations 复用配装 items/equip/tree/config/main_group/weapon_set；level 与基础技能组由 stage 拥有。operations.gems 只补 count/part 等状态，operations.groups 只补 main_active_skill/include_in_full_dps/group_count，不能偷偷换阶段技能/等级/位置。合法主主动选项从物化 skill_selections 取。
 
-assumptions 为含 snapshot:<stage> 的 claim_id 数组；usage/timeline 用本阶段计算的 skill_ref，必要时先 route 读 active_skills 再补。metrics 仅取实际输出。configuration_context 区分种子 Input、显式覆盖和 resolved_values：种子场景不证明适合此剧情/目标，模型据当前原文与进度选择。
+assumptions 为含 snapshot:<stage> 的 claim_id 数组；usage/timeline 用本阶段计算的 skill_ref，必要时先 route 读 active_skills 再补。metrics 按目标指定；默认展示缺值留未知，显式指标缺值列待办。configuration_context 区分种子 Input、显式覆盖和 resolved_values：种子场景不证明适合此剧情/目标，模型据当前原文与进度选择。
 
 实际装备与 bases 对齐，并出现于截至该阶段的 required_items；当前生成规格、点数、孔位/属性、资源和目标整体核对，模板遗留也包含。native_calculated 只说明算了，blocked 仍修。补路/延期先审 preview 后[采用原生候选](commands.md#采用原生候选)，重跑并核目标/代价。该阶段 xml_path 可作为目录上下文，不能借另一阶段成本。
 

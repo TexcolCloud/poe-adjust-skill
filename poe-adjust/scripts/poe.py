@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.20"
+VERSION = "2.8.21"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="直接事实展示交付 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary。若加入机制、条件、归因或取舍解释，按 references/build.md#只读解释选择 intent.task_kind=read_only_review，使用 refine 空操作计划的 claims 与当次 review.check 评审，再由同一 publication 生成说明；聊天沿 task_completion 的完成状态，character_readiness 保留完整原对象问题。数字用事实内插，名称沿本机对象。快照只证明所显示的观察；来源列表或局部数值尚未证明的范围继续列为缺口。"
@@ -550,10 +550,10 @@ def diagnosis_summary(result):
     rows.append(f"本机统计已分配：普通天赋 {result['points']} 点，升华 {result['ascendancy_points']} 点（包含连接小点）。这不是剩余点数；可用上限仍须结合本次确认的等级与任务进度。")
     if result.get("secondary_ascendancy_points"):
         rows.append(f"另有次级升华已分配 {result['secondary_ascendancy_points']} 点，不能混入普通天赋或主升华点数。")
-    rows.extend(row['text'] for row in skill_statements(result,'当前角色'))
     observations=resource_observations(result)
     if observations:
         rows.append('当前原生资源相关字段：'+json.dumps(observations,ensure_ascii=False,sort_keys=True)+'。这些字段不是统一的每秒回复；按实际资源、触发和已分配来源核对含义，不据某列为零排除其他来源。')
+    rows.extend(row['text'] for row in skill_statements(result,'当前角色'))
     rows += [f"{METRICS[key]}：{stats[key]:g}" for key in (damage, hit, "Life", "EnergyShield", "ChaosResist", "ManaUnreserved") if key in stats]
     rows.append("DPS 已包含引擎的命中计算，不再乘命中率。其他技能是否计入总输出以 damage_sources 的实际分项为准，不能根据装备着召唤宝石推断。")
     rows.append(scenario_summary(result))
@@ -1265,9 +1265,9 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
     if delivery_label is not None: brief['label']=delivery_label
     if delivery_message is not None: brief['message']=delivery_message
     measurements=[]
-    selected=list(METRICS) if keys is None else keys
     registry={}
     for name,calculation in calculations.items():
+        selected=list(dict.fromkeys([*resource_observations(calculation),*METRICS])) if keys is None else keys
         for key in selected:
             if key not in calculation.get("stats",{}): continue
             ref="native:"+name+"#/stats/"+key
@@ -2651,7 +2651,7 @@ def calculate_route(args):
         metrics=stage["snapshot"].get("metrics",list(METRICS))
         bx.require(isinstance(metrics,list) and all(isinstance(k,str) and k for k in metrics),"snapshot.metrics 应为指标名数组。")
         missing=[k for k in metrics if k not in value["stats"]]
-        gaps += ["metric:"+k for k in missing]
+        if "metrics" in stage["snapshot"]: gaps += ["metric:"+k for k in missing]
         record.update(status="blocked" if errors else "draft" if gaps else "calculated",native_calculated=True,stats={k:value["stats"].get(k) for k in metrics},errors=errors,pending=gaps,
                       config_values=value["config_values"],readiness=audit,main_skill=value["main_skill"],active_skills=value["active_skills"],roundtrip_verified=True,
                       material_specs=material_specs,entry_checks=condition_checks,facts=calculation_facts(value,relevant))
@@ -3005,7 +3005,7 @@ def bound_reply(value, args):
     bx.require(details.is_file(),"完整返回凭证不存在，不能截断后交付。",code="response_artifact_missing",location="/out",expected="saved full response",actual=str(details))
     saved=read_json(details)
     result=dict(value)
-    result.update(details_file=str(details),output_scope="终端摘要；continuations 指向完整字段，按 view 分页，无须重算。",continuations=[])
+    result.update(details_file=str(details),output_scope="终端摘要；errors/pending 以 *_total 为准，*_is_preview 标识预览。continuations 用 view 读完整字段，无须重算。",continuations=[])
     if args.command=="edit":
         result["next_actions"]=[row for row in value.get('next_actions',[]) if row['action']=='calculate_current_input']+[{"action":"view","file":str(details),"pointer":"/handles","keys":True}]+([{"action":"view","file":str(details),"pointer":"/stage_instances","limit":10}] if result["kind"]=="route" else [])+[{"action":"view","file":str(details),"pointer":"/input_contract"}]
     protected={"entrypoint","runtime","status","file_exported","xml_exported","kind","file","revision","receipt_file","details_file","output_scope","continuations","inspection","probe_file","report","report_sha256","reply_policy"}
@@ -3014,8 +3014,11 @@ def bound_reply(value, args):
         for key in ("task_completion","character_readiness"):
             current=value[key]
             result[key]={field:current[field] for field in ("kind","status","scope") if field in current}
+            preview=key!="task_completion" or len(json.dumps({field:current[field] for field in ("errors","pending")},ensure_ascii=False))>4000
             for field in ("errors","pending"):
-                result[key][field]=current[field][:6];result[key][field+"_total"]=len(current[field])
+                result[key][field]=current[field][:6] if preview else current[field]
+                result[key][field+"_total"]=len(current[field])
+                result[key][field+"_is_preview"]=len(result[key][field])<len(current[field])
             result["continuations"].append({"action":"view","file":str(details),"pointer":prefix+"/"+key,"offset":0,"limit":20})
         protected.update({"task_completion","character_readiness","delivery_brief"})
     text_fields=[(result,key,prefix+'/'+key) for key in ('facts_summary','diagnosis_summary') if isinstance(result.get(key),str)]
@@ -3046,14 +3049,28 @@ def bound_reply(value, args):
                 if continuation:continuation['offset']=len(owner[key])
                 else:result['continuations'].append({'action':'view','file':str(details),'pointer':pointer,'offset':len(owner[key]),'limit':5000})
                 continue
+            previews=[(result[key],field) for key in ('character_readiness','task_completion')
+                      for field in ('errors','pending') if result.get(key,{}).get(field)]
+            if previews:
+                owner,field=previews[0]
+                owner[field]=owner[field][:len(owner[field])//2]
+                owner[field+'_is_preview']=True
+                continue
         bx.require(options,"返回元数据过大。",code="response_too_large",location="/",expected="bounded response metadata",actual={"characters":size(result)})
         key=max(options,key=lambda k:len(json.dumps(result[k],ensure_ascii=False)))
         pointer=prefix+"/"+key.replace("~","~0").replace("/","~1")
         target=facts.pointer(saved,pointer)
         if isinstance(target,(list,dict,str)): result[key+"_total"]=len(target)
-        kept=target[:1] if key=='next_actions' and isinstance(target,list) and len(json.dumps(target[:1],ensure_ascii=False))<=3000 else []
+        kept=[];consumed=0
+        if key=='next_actions' and isinstance(target,list):
+            if target and len(json.dumps(target[:1],ensure_ascii=False))<=3000:
+                kept=target[:1];consumed=1
+            for index,row in enumerate(target[consumed:],consumed):
+                action={"action":"view","file":str(details),"pointer":pointer+'/'+str(index),"purpose":row['action']}
+                if len(json.dumps(kept+[action],ensure_ascii=False))>3000: break
+                kept.append(action)
         result[key]=target[:160] if isinstance(target,str) else kept if isinstance(target,list) else {} if isinstance(target,dict) else target
-        result["continuations"].append({"action":"view","file":str(details),"pointer":pointer,"offset":len(kept),"limit":20})
+        result["continuations"].append({"action":"view","file":str(details),"pointer":pointer,"offset":consumed,"limit":20})
         trimmed.add(key);protected.add(key+"_total")
     return result
 
