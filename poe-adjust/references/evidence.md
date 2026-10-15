@@ -55,7 +55,7 @@ requirements/material_specs 来自实际差异，包括仍插着的禁用/备用
 
 ## 最终复核与交付
 
-方案/claims 修订后计算，沿 next_actions.review_current_result 读取真实 user_goal_sources、objective_coverage、pending 与当前 check 方法。对照用户原话，不只看已拆目标。自己按 review_template 逐项填写所有 objectives/conclusions 的 scope/findings、支持/反证引用、conditions、unimplemented 与 verdict(supported/partial/refuted/unknown)。空数组也明确保存；supported 需支持，refuted 需反证。
+方案/claims 修订后计算，沿 next_actions.review_current_result 读真实 user_goal_sources、objective_coverage、pending 与当前 check。对照原话，按 review_template 逐项填写所有 objectives/conclusions 的 scope、findings、verdict 与 evidence_refs。反证、条件、未实现项有内容时写 counter_evidence_refs、conditions、unimplemented，省略按空数组处理；supported 需支持，refuted 需反证。
 
 发现偏离先改源并重算，再单独提交 assessment.review，之后 evaluate/export 或重跑 route。token 绑定本次意图、对象、文字、引用、XML/引擎与账目；改变后重审。不要用脚本自动生成语义复核或填 token 假称通过，引用/token 有效不证明文字因果正确。
 

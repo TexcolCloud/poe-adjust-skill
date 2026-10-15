@@ -360,8 +360,8 @@ def review_shape(review, *, complete=True, claim_ids=None, objective_ids=None):
             location=path+f"/{field}/{index}"
             bx.require_keys(row,{identity,"scope","findings","verdict","evidence_refs","counter_evidence_refs","conditions","unimplemented"},location)
             if complete:
-                required={identity,"scope","findings","verdict","evidence_refs","counter_evidence_refs","conditions","unimplemented"}
-                bx.require(required<=row.keys(),"逐项复核须明确判断、支持/反证、条件及未实现部分；使用当前 review_template。",location=location,expected=sorted(required),actual=sorted(row),details={"missing_fields":sorted(required-row.keys())})
+                required={identity,"scope","findings","verdict","evidence_refs"}
+                bx.require(required<=row.keys(),"逐项复核须明确对象、范围、判断与依据；有反证、条件或未实现项时填写对应数组。",location=location,expected=sorted(required),actual=sorted(row),details={"missing_fields":sorted(required-row.keys())})
             for key in (identity,"scope","findings"):
                 if complete or key in row or key==identity and expected_ids is not None:
                     bx.require(isinstance(row.get(key),str) and row[key].strip(),key+" 应为非空文字。",location=location+"/"+key,expected="nonempty string",actual=row.get(key))
@@ -834,7 +834,10 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
         if isinstance(value, list): return [stable(v) for v in value]
         return value
     review = assessment.get("review")
-    if review is not None: review_shape(review)
+    if review is not None:
+        review_shape(review)
+        review={**review,**{field:[{**row,**{key:row.get(key,[]) for key in ("counter_evidence_refs","conditions","unimplemented")}}
+                                 for row in review.get(field,[])] for field in ("conclusions","objectives")}}
     summary_refs=claim_references({'text':review['findings']}) if review else []
     explicit_refs=summary_refs+[ref for claim in claims for ref in claim_references(claim)]
     for row in (review or {}).get("conclusions",[])+(review or {}).get("objectives",[]):
@@ -924,7 +927,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
             display.append(current)
         rendered.append(display)
     def template(key,identity):
-        return {identity:key,"scope":"","findings":"","evidence_refs":[],"counter_evidence_refs":[],"conditions":[],"unimplemented":[],"verdict":""}
+        return {identity:key,"scope":"","findings":"","evidence_refs":[],"verdict":""}
     rendered_conditions=[]
     for index,row in enumerate(condition_rows):
         current=dict(row)

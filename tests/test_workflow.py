@@ -1444,6 +1444,37 @@ class ReadOnlyDataTests(unittest.TestCase):
 
 
 class FinalReviewTests(unittest.TestCase):
+    def test_compact_review_matches_explicit_empty_lists_without_mutating_source(self):
+        native={'candidate':{'stats':{'Life':123}}}
+        reference='native:candidate#/stats/Life'
+        claims=[{'claim_id':'life','text':'{{fact:'+reference+'}}','subjects':['goal'],'evidence_refs':[reference]}]
+        observed=facts.assess_claims(claims,{},native)
+        observations={'objective_coverage':[{'objective_id':'requested','text':'Current observation'}]}
+        packet,_=facts.final_review({}, {}, observed, observations, {},native=native)
+        review={'token':packet['token'],'findings':'Current finite observation only.',
+                'conclusions':[review_row('claim_id','life','Current snapshot','Observed directly',verdict='supported',evidence_refs=[reference])],
+                'objectives':[review_row('objective_id','requested','Current request','Current observation reported',verdict='supported',evidence_refs=[reference])]}
+        expected,expected_pending=facts.final_review({}, {}, observed,observations,{'review':review},native=native)
+        compact=copy.deepcopy(review)
+        for field in ('conclusions','objectives'):
+            for row in compact[field]:
+                for key in ('counter_evidence_refs','conditions','unimplemented'):row.pop(key)
+        original=copy.deepcopy(compact)
+        actual,pending=facts.final_review({}, {}, observed,observations,{'review':compact},native=native)
+        self.assertEqual(actual,expected);self.assertEqual(pending,expected_pending)
+        self.assertEqual(compact,original)
+        for invalid in (None,'',False):
+            broken=copy.deepcopy(compact);broken['conclusions'][0]['conditions']=invalid
+            with self.subTest(invalid=invalid),self.assertRaises(bx.ContractError):
+                facts.final_review({}, {}, observed,observations,{'review':broken},native=native)
+        for field in ('scope','findings','verdict','evidence_refs'):
+            broken=copy.deepcopy(compact);broken['conclusions'][0].pop(field)
+            with self.subTest(missing=field),self.assertRaises(bx.ContractError):
+                facts.final_review({}, {}, observed,observations,{'review':broken},native=native)
+        broken=copy.deepcopy(compact);broken['conclusions'][0]['verdict']='refuted'
+        with self.assertRaises(bx.ContractError):
+            facts.final_review({}, {}, observed,observations,{'review':broken},native=native)
+
     def test_review_current_references_render_facts_and_change_invalidates_old_result(self):
         native={'candidate':{'stats':{'Future':7},'character_identity':{'digest':'current'}}}
         observations={'objective_coverage':[{'objective_id':'g','text':'Actual requirement','claim_ids':[],'status':'unresolved'}]}
@@ -1477,7 +1508,7 @@ class FinalReviewTests(unittest.TestCase):
         observations={'objective_coverage':[{'objective_id':'g','text':'Player requirement','claim_ids':[],'status':'unresolved'}]}
         packet,_=facts.final_review({}, {}, [], observations, {})
         row=packet['review_template']['objectives'][0]
-        self.assertEqual(set(row),{'objective_id','scope','findings','verdict','evidence_refs','counter_evidence_refs','conditions','unimplemented'})
+        self.assertEqual(set(row),{'objective_id','scope','findings','verdict','evidence_refs'})
         review={**packet['review_template'],'findings':'Partial result only','objectives':[{**row,'scope':'This finite window',
                 'findings':'Not measured','verdict':'unknown','unimplemented':['No relevant measured result']}]}
         checked,pending=facts.final_review({}, {}, [], observations, {'review':review})

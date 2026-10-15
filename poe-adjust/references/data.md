@@ -2,7 +2,7 @@
 
 ## 只读查询与完成
 
-仅问名称、开关、规格、费用、频率或计算值时，直接 inspect/probe，使用 `--out '<授权工作区>/facts.json' --report '<授权工作区>/事实.html'` 生成事实页，不必建立 intent/plan。逐项回答用户所问对象的当前值或明确未知，交实际 HTML 和简短答复；禁用技能不用为了补数字而启用。加入机制、归因、取舍或原目标审查时转[只读解释](build.md#只读解释)。
+名称、开关、规格、费用、频率及已算数值的含义，直接 inspect/probe，用 `--out '<授权工作区>/facts.json' --report '<授权工作区>/事实.html'` 交事实页与简短答复。当前独立单次支付、固定收支和平均耗尽投影也属事实，按返回范围解释，未测部分明确未知；无需建立 intent/plan。禁用技能保留原状。需要另证机制因果、配装取舍或裁决作者主张时，才转[只读解释](build.md#只读解释)。
 
 ```powershell
 python '<entry>' inspect --input '<原件.xml>' --calculate --out '<工作区>/facts.json' --report '<工作区>/事实.html'

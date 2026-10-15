@@ -21,7 +21,7 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 
 | 请求 | 协议与入口 |
 |---|---|
-| 查名称、状态、规格、费用、频率或数字 | [资料](references/data.md#只读查询与完成)：`inspect/probe --out --report` |
+| 查名称、状态、规格、费用、频率及已算数值的含义 | [资料](references/data.md#只读查询与完成)：`inspect/probe --out --report` |
 | 解释机制或复核真实作者交付 | [配装·只读解释](references/build.md#只读解释)：`read_only_review` |
 | 微调、整套配装或换流派 | [配装](references/build.md)：`start/intent/evaluate/export` |
 | 无完整角色的开荒/成长 | [路线](references/leveling.md)：`route` |
@@ -30,9 +30,9 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 ## 工作与完成
 
 1. 将本次用户原话与补充完整保存到授权目录，登记为方向证据；原文决定目标、限制和当前路径，只问影响方向或授权的缺项。解释/复核用 `read_only_review`；可按条件实施的局部或整套方案用 `build_plan`；要求当前角色就绪才用 `build`，详见[配装范围](references/build.md#规划交付)。
-2. 配装/路线先物化原目标终点的最低可用整套对象，再连接可达起点与必要切换，最后添可选提升。关键断言核实际主体、状态、支持与反例；方案整体实算，路线核取得、训练及前段承接。文字门槛对应本段真实配置，必要设计在交付前落实。
-3. 新建或改过的 claims 核对正文与当前证据后，用 `edit` 的 `review_claims` 登记绑定，再计算。每次按 `task_completion` 状态与待办总数处理 `next_actions`，预览沿 `continuations/view` 读全。改对象时同步修源判断和操作，再重算；绑定/引用缺口也属于返修，不靠最终短答补源文件。
-4. 计算对象稳定后，读当次 `review_template/check`，自己逐项目标与判断复核，单独保存 `assessment.review`，再重算。只读评审可正式得出否定/未知；已核到的未知写入结论与范围，`review.unresolved` 留给尚未做完的审查。规划的真实未来依赖按[条件复核](references/evidence.md#最终复核与交付)关联当前待办、进入条件与可执行退路；必要设计、已知错误和过期绑定先修。
+2. 配装/路线先物化原目标的最低整套终点与必要退路，实算后连接可达起点和切换，再添可选提升。按本路径协议核取得、训练、状态、支持与反例。
+3. 新建或改过的 claims 核正文与当前证据，用 `edit.review_claims` 登记后计算。按 `task_completion` 与待办总数处理 `next_actions`，预览沿 `continuations/view` 读全；返修落实到源对象与判断。
+4. 对象稳定后，沿当次 `review_template/check` 自审原目标与判断，单独保存 `assessment.review` 后重算。已核未知与未来执行条件按[最终复核](references/evidence.md#最终复核与交付)处理，`review.unresolved` 保留未做完的工作。
 5. 配装沿 export 冷算，路线重跑 route；仅本次返回 `task_completion.status=scoped_result`、errors/pending 均空且 `file_exported` 为真时，交付该返回 `files` 中的附件。返修后重新取成功返回的文件，内部快照留作恢复；无法完成就如实报缺口。`character_readiness` 保留取得、训练、进度与执行条件，分别说明任务完成和角色条件。
 
-交付前核实际文件、授权目录、HTML/XML 与当前凭证及短答一致。数字用当前事实模板；解释、条件与代价由你写，引用/token 不认证因果或目标达成。简明交实际绝对路径、已核结果、真实完成状态与限制；文件生成不证明实物已取得、无限续航或实战成功。
+交付前核文件、授权目录、HTML/XML、当前凭证与短答一致。数字用当前事实模板，解释、条件与代价对应实际来源。简明交绝对路径、已核结果、完成状态与限制；生成和自审不证明取得、持续效果或实战成功。
