@@ -2,42 +2,37 @@
 
 ## 只读查询与完成
 
-名称、开关、规格、费用、频率及已算数值的含义，直接 inspect/probe，用 `--out '<授权工作区>/facts.json' --report '<授权工作区>/事实.html'` 交事实页与简短答复。当前独立单次支付、固定收支和平均耗尽投影也属事实，按返回范围解释，未测部分明确未知；无需建立 intent/plan。禁用技能保留原状。需要另证机制因果、配装取舍或裁决作者主张时，才转[只读解释](build.md#只读解释)。
+名称、状态、规格、费用、频率及已算数值的含义用inspect/probe，--out保存JSON、--report交中文事实页。独立单次支付、固定收支与平均耗尽投影也属此路径，无需intent/plan。保留禁用状态，按实际返回范围解释；另证因果或裁决作者时转[配装协议](build.md)。
 
 ```powershell
 python '<entry>' inspect --input '<原件.xml>' --calculate --out '<工作区>/facts.json' --report '<工作区>/事实.html'
-python '<entry>' inspect --input '<原件.xml>' --metrics 'Life,ManaCost' --skill-ref '<当前完整引用>' --actor player --out '<工作区>/detail.json'
-python '<entry>' catalog --kind gems --query '<相关名称>' --out '<工作区>/gems.json'
+python '<entry>' inspect --input '<原件.xml>' --metrics 'Life,ManaCost' --skill-ref '<当前引用>' --actor player --out '<工作区>/detail.json'
 ```
-
-参数与分页沿 `--help` 和[命令协议](commands.md)。查询不会认证角色合法、取得渠道或整套目标达成。
 
 ## 按需目录
 
-当前 catalog 支持 classes/rules/gems/skills/links/bases/affixes/nodes/config/metrics/uniques/translations。只查本次需要的内容；批量 queries 的每项含 kind/query/limit/offset。职业、升华、技能、基底、节点与配置 ID 从本次结果取，不从记忆硬写。
+catalog查当前classes/rules/gems/skills/links/bases/affixes/nodes/config/metrics/uniques/translations。已知的相关独立查询可用--batch一次提交queries，各项kind/query/limit/offset；结果保存--out后用view定向读取。未知先小查再沿真实ID/分页扩查，不从记忆猜ID或逐项倾倒全目录。
 
-节点路径用 `--input` 或当前 class_id 给上下文，升华连接点也算点数。links 使用实际有序技能 ID，验证辅助类型，不代替物理孔连/属性/取得。bases 的 valid_slots 属于该次布局上下文，缺上下文保留未知，不能当全局武器规则。
-
-doctor 的 data_version/树版本表示本机资料。旧角色树与当前共享目录不同则说明范围，目标国服/赛季机制版本仍需实际来源。无需为当前查询读取整套历史 Data 或下载无关构筑。
+节点用--input或class_id提供职业起点，升华连接也计点；links检查技能类型关系，物理孔连/属性/取得另核。bases.valid_slots属于当次布局，缺上下文留未知。doctor的data_version/树版本只是本机资料，旧角色树、目标国服/赛季另说明适用范围。
 
 ## 技能、配置与明细
 
-宝石保存的 level/quality 与 effective_specifications 分开；unknown 不猜。active_skills 的 skill_ref/actor、cost/rate、native_timing 限定当次主体、费用、频率及可见时长/冷却；player、minion、mirage 不互借。granted_effects 不证明触发或覆盖。
+以当前物化对象为准：保存level/quality与effective_specifications分开；active_skills的skill_ref/actor、cost/rate、native_timing限定技能、主体、频率、时长及冷却。原组设置、授予效果和实际辅助也属于对象，不能只数可见普通宝石后称全部已排除。
 
-config_controls 区分 value/default/value_basis，以及 Input/Placeholder、runtime/applied。null 是未知或未覆盖，false 是实际关闭；清除覆盖可能恢复默认。只读到一个控制未生效，不推断全部开关关闭。按当前控件类型、options[].val、visibility 与原文选择控制；数值范围、默认贡献和条件由本次资料/计算判断。需要追机制时沿 apply_source 的 source/line 读实际原文。
+config_controls区分value/default/value_basis及Input/Placeholder、runtime/applied。null不作false；删除覆盖可能恢复默认。选择当前options[].val并读visibility/apply_source原文，再核实际resolved值；一个控件未生效不推出所有开关关闭。
 
-`inspect --metrics` 自动计算，breakdowns 提供实际 value/detail/context、available_metrics 和 MAIN 对照。不同上下文、不同主体、不支持或截断明细明确说明；缺字段不填零或编公式。有限 probe 只证明实际改变的输入在本场景中产生的观察，不直接证明游戏机制不存在。
+inspect --metrics自动计算，breakdowns给value/detail/context、available_metrics与MAIN对照。解释派生值先读实际明细：输入、中间因子、上限与输出分别是什么，哪些因素已经计入；涉及机制时沿来源读原文。公式/主体/场景不同就分开，缺字段留未知。排他判断核相关真实对象与反例；有限probe不能证明机制不存在。
 
-药剂的 flask_base 是基础，flask_local 是单件经本地处理的参数；两者不能重复叠加。它们不含完整角色修正、当前充能、补充事件与持续覆盖，开启快照也不证明无限药剂。
+flask_base为基础、flask_local为单件处理后参数，不重复叠加。角色修正、当前充能、补充与覆盖另核；granted_effects、药剂开启或瞬时数值不证明持续。游戏合法性用当前规则依据，计算接受不单独认证，旧常识也不覆盖本次来源。
 
 ## 读原文和引用
 
-`view` 定位已有 JSON，按 pointer/fields/keys/query 和分页读取相关对象；复制返回 native_references 或 evidence_template，核对当次身份。逻辑根由当前 reference_contract 决定，不能把早先查询根/数组索引搬到新评估。
+view按pointer/fields/keys/query及offset/limit读JSON，续页沿page_unit、continuations/deferred_values。复制当前native_references/evidence_template，核身份与source_revision；逻辑根/索引不跨评估搬用，零、false、null分开。
 
-`data` 提供 list/search/read：先定位当前允许的 source，再以真实相对路径和行号读取上下文。截断片段不直接当完整机制。local_data 使用返回 evidence_template 的 source/line/count/content_sha256，由程序重读；它证明原文可追溯，不证明当季可得或解释成立。不读取平台内部目录、私有过程或无关本机资料。
+data用list/search/read定位公开只读source，再按真实路径/行号读完整上下文；截断片段不充当完整机制。local_data使用source/line/count/content_sha256模板，由程序重读，引用真实含义仍由你判断。不读平台内部目录、私有过程或无关资料。
 
 ## 联网取得与版本
 
-`research --gems '<当前ID列表>'` 返回原生逐级要求、基础类型/资源与页面 choices。核对章节、任务、NPC、职业、实际前提、奖励选择数量和商店费用；早期某职业奖励行不表示其他职业永远拿不到。后续商店、小号/交易等是否适用按真实用户限制判断。来源模板在 choices[].evidence_templates，正文不足则读真实上下文再下结论。
+research --gems '<当前ID列表>'给原生逐级要求与网页choices。取得核宝石/职业/任务/前提/真正NPC/奖励选择和费用，字段取同一行；Quest Reward只是渠道标签，同任务多奖励不等于全可领取。前期无某职业奖励不推出后期商店也无，按用户许可核小号/交易，模板在choices[].evidence_templates。
 
-`research --trials` 的位置/区域等级不证明已通关或实际点数；`research --version` 的真实官方页面不由赛季编号猜机制版。其他公开网站可用可用联网工具，保存 URL、正文片段与实际查阅时间到授权工作区，按[证据](evidence.md)关联。本机数据、网页观测、用户声明和模型解释各自保留范围。
+research --trials的位置/区域等级不证明通关或可用点数；research --version读真实官方正文，不由赛季编号猜规则。其他网页保存URL、实际正文与查阅时间到工作区，沿[证据](evidence.md)引用。本机数据、公开规则、用户声明与模型推断分别说明；未知国服差异保留条件。

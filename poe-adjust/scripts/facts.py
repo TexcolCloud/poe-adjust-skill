@@ -960,7 +960,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
               "completion_pending":list(dict.fromkeys(pending)),
               "review_template":{"token":token,"findings":"","unresolved":[],"condition_reviews":[],"conclusions":[template(key,"claim_id") for key in required],
                                  "objectives":[template(key,"objective_id") for key in required_objectives]},
-              "check": "对照 facts.user_goal_sources 的原话审全部 objectives/conclusions。scope 写实际对象、状态和窗口；findings 从当前证据说明直接观察、必要推断与未知，支持/反证分别放 evidence_refs/counter_evidence_refs。用户要求只证明目标，不能代替结果证据；核原生派生值的实际公式，未知不等于反证，局部观察不推广到其他状态或持续效果。规划逐项核最低整套配置、来源和切换；路线沿 previous_stage_id 核实际装备、required_items、instance_transitions 与退路。conditions 承接设计完整后玩家待取得、训练或执行的具体条件，退路须在条件失败时仍可执行。unimplemented 记录尚缺的必要设计，review.unresolved 记录尚缺的复核工作，两者先完成再交规划；已审未测范围留在 scope/conditions。按原命题选 supported/partial/refuted/unknown，保留有据的有限收益。发现源判断或数字偏离先修源并重算，再单独提交 assessment.review，之后 evaluate/export 或 route。当前数字用 {{fact:引用}}；不自动填 token，绑定不证明语义。",
+              "check": "先对照 facts.user_goal_sources 与当前实际对象逐项核目标：装备、技能、配置、进度、来源、切换和完整窗口是否落实，原生公式已含哪些因子。矛盾先修源重算；再按 references/evidence.md#最终复核与交付填写全部 objectives/conclusions，scope 限实际范围，findings 简写当前支持、反例与未知，数字用 {{fact:引用}}。用户要求不是结果证据。conditions 只承接完整设计后的取得/训练/执行，必要设计缺口记 unimplemented，未完成复核记 review.unresolved，先完成再交规划；readonly 可完整否定或保留未知。单独提交 assessment.review 后重算再导出；绑定不认证语义。",
               "scope": "摘要绑定防止旧复核沿用到新方案；同一模型自审，不能证明自由文字无误或等同独立模型/实战验证。"}
     # A completed model review may honestly retain relevant unmet goals.
     pending += ["objective:"+row["objective_id"]+":review:"+row["verdict"] for row in objectives if row["verdict"]!="supported" or row["unimplemented"]]
