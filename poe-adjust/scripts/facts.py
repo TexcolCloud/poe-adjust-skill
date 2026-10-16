@@ -436,6 +436,12 @@ def render_text(text, evidence):
     return re.sub(r"\{\{(value|fact):([^{}]+)\}\}",substitute,text),missing
 
 
+def stage_claim_ids(stage):
+    snapshot=stage.get("snapshot",{})
+    rows=stage.get("entry_checks",[])+snapshot.get("usage",[])
+    return set(stage.get("entry_conditions",[]))|set(snapshot.get("assumptions",[]))|{row["claim_id"] for row in rows if row.get("claim_id")}
+
+
 def claim_bindings(document, claim, engine_fingerprint):
     """Bind a judgment to its declared source objects, not to other judgments."""
     def digest(value): return bx.digest(json.dumps(value,ensure_ascii=False,sort_keys=True,allow_nan=False))
@@ -443,7 +449,11 @@ def claim_bindings(document, claim, engine_fingerprint):
     result={"document":digest({k:v for k,v in document.items() if k not in omitted}),"engine":engine_fingerprint}
     stages={s["stage_id"]:s for s in document.get("stages",[])}
     objectives={o["objective_id"]:o for o in document.get("objectives",[])}
-    stage_scoped=any(subject[len(prefix):] in stages
+    if stages and claim["claim_id"] in document.get("assessment",{}).get("goal_claim_ids",[]):
+        result["stages"]=digest(document["stages"])
+    linked=[sid for sid,stage in stages.items() if claim["claim_id"] in stage_claim_ids(stage)]
+    result.update({"stage:"+sid:digest(stages[sid]) for sid in linked})
+    stage_scoped=bool(linked) or any(subject[len(prefix):] in stages
                      for subject in claim.get("subjects",[])
                      for prefix in ("stage:","snapshot:","configuration:stage:") if subject.startswith(prefix))
     for subject in claim.get("subjects",[]):
@@ -778,7 +788,7 @@ def objective_coverage(objectives, evidence, claims):
 def goal_review_diagnostics(assessment, claims):
     """Locate incomplete overall-review references; never choose the conclusion."""
     indexed={c["claim_id"]:c for c in claims}
-    available=sorted(c["claim_id"] for c in claims if "goal" in c.get("subjects",[]) and c.get("status")=="model_assessed")
+    available=sorted(c["claim_id"] for c in claims if c.get("status")=="model_assessed")
     diagnostics=[]
     def add(code, location, expected, actual, message):
         diagnostics.append({"code":code,"category":"input","subject":"goal_assessment","status":"unknown",
@@ -790,11 +800,9 @@ def goal_review_diagnostics(assessment, claims):
     for index,key in enumerate(ids):
         claim=indexed.get(key)
         actual={k:claim.get(k) for k in ("claim_id","subjects","status")} if claim else {"claim_id":key}
-        expected={"subjects_include":"goal","status":"model_assessed"}
+        expected={"status":"model_assessed"}
         if claim is None:
             add("goal_claim_missing",f"/assessment/goal_claim_ids/{index}",expected,actual,"未找到当前判断 ID；使用实际已有记录或补充总体判断。")
-        elif "goal" not in claim.get("subjects",[]):
-            add("goal_claim_subject_missing",f"/assessment/goal_claim_ids/{index}",expected,actual,"该判断未关联总体 goal；选定适用的总体判断，或核对其用途后修改 subjects。")
         elif claim.get("status")!="model_assessed":
             add("goal_claim_unresolved",f"/assessment/goal_claim_ids/{index}",expected,actual,"总体判断仍有未解决项；处理其当前诊断与证据，不直接填写输出状态。")
     if not assessment.get("scope","").strip():

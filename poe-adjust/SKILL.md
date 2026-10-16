@@ -29,8 +29,8 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 ## 工作与完成
 
 1. 保存本次完整原话与补充，登记目标和限制，只问影响方向或授权的缺项。只读解释/复核用 `read_only_review`；条件方案用 `build_plan`，当前角色就绪用 `build`。
-2. 配装/路线先做能承担原目标的最低完整对象与必要退路，再接起点、取得与切换。核实际装备、天赋、技能、场景和所需完整时段；终点或关键状态仍没设计就继续改对象，可选提升放后面。解释则先核原对象及当次公式/原文，再下结论。
-3. 用当前证据写 claims，同一判断可关联多个适用对象。核正文后用 `edit.review_claims` 登记并计算，按 `task_completion/next_actions` 修源；待办预览沿 `continuations/view` 读全。格式与引用可解析只证明记录成立，结论仍须对应实际对象。
+2. 配装先物化承担原目标的最低整套与退路；路线先做终点 snapshot 和按原目标选的 entry_checks，实装满足后再连接原起点、取得与切换。核实际装备、天赋、技能、场景与所需时段，可选提升放后面。解释先核原对象及当次公式/原文。
+3. 用 `edit` 保存方案和有当前依据的 claims；新增/改文由程序写绑定，同一理由合并记录。依赖改变后的 `invalidated_claims` 先核正文再用 `review_claims` 登记。计算后按 `task_completion/next_actions` 修源，待办沿 `continuations/view` 读全。
 4. 对象稳定后按[最终复核](references/evidence.md#最终复核与交付)检查原目标、实际变化及全文一致性，再单独保存 `assessment.review`、重算。配装 export 冷算、路线重跑 route；只交本次 `scoped_result`、errors/pending为空、`file_exported:true` 返回的 `files`。失败修源重做，无法完成如实报缺口。
 
 短答、HTML和XML采用同一当前结果与实际名称；数字用事实模板。交绝对路径、取舍与限制，区分已设计的方案和 `character_readiness` 保留的取得、训练、进度及执行条件。自审和文件存在不代替目标实现或实战验证。

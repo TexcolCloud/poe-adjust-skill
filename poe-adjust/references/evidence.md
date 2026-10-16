@@ -15,7 +15,7 @@
 
 原生事实直接复制当前native_references，核XML/引擎/配置/source_revision与真实指针；阶段根属于各段evaluation。失效先读实际父对象/合法引用再修，不猜根名。来源真实可追踪后，再确认它的内容确实支持本句，取得表不替代装备/机制证据。
 
-claims用当前claim_id、text、subjects、evidence_refs及实际conditions/uncertainties/checks。一份判断可关联多个适用对象，不为同一理由重复造文。objectives分别关联objective:<id>，总体goal及assessment.goal_claim_ids，其他subject取当次pending/required_subject（如configuration、skill、stage、snapshot、acquisition、training、progress、legality）。
+claims用当前claim_id、text、subjects、evidence_refs及实际conditions/uncertainties/checks。一份判断可关联多个适用对象，不为同一理由重复造文。目标关联objective:<id>，总体判断由assessment.goal_claim_ids选定，其他subject取当次pending/required_subject（如configuration、skill、stage、snapshot、acquisition、training、progress、legality）。
 
 claim_type默认为judgment；comparison需checks，用当前reference及eq/ge/le比较实际阈值。缺值/null/异类型为unknown，不填0；检查仅证明所列命题。assessment的scope写真实范围、unresolved保留未完成工作。
 

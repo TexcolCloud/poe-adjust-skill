@@ -544,7 +544,7 @@ class RouteTests(unittest.TestCase):
     def check(self):
         return routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,equipment=self.equipment,evidence=self.evidence)
 
-    def test_goal_reference_diagnostics_distinguish_missing_subject_and_unreviewed_claims(self):
+    def test_goal_reference_diagnostics_use_explicit_selection_without_duplicate_subject(self):
         claims=[{"claim_id":"overall","status":"model_assessed","subjects":["goal"]},
                 {"claim_id":"detail","status":"model_assessed","subjects":["objective:direction"]},
                 {"claim_id":"unreviewed","status":"unresolved","subjects":["goal"]}]
@@ -555,11 +555,11 @@ class RouteTests(unittest.TestCase):
         checked=validate()
         self.assertIn("goal_assessment",checked["pending"])
         self.assertEqual([d["location"] for d in checked["diagnostics"]],
-                         ["/assessment/goal_claim_ids/0","/assessment/goal_claim_ids/1","/assessment/goal_claim_ids/2"])
+                         ["/assessment/goal_claim_ids/0","/assessment/goal_claim_ids/2"])
         self.assertEqual([d["code"] for d in checked["diagnostics"]],
-                         ["goal_claim_missing","goal_claim_subject_missing","goal_claim_unresolved"])
-        self.assertTrue(all(d["available_goal_claim_ids"]==["overall"] for d in checked["diagnostics"]))
-        self.route["assessment"]["goal_claim_ids"]=["overall"]
+                         ["goal_claim_missing","goal_claim_unresolved"])
+        self.assertTrue(all(d["available_goal_claim_ids"]==["detail","overall"] for d in checked["diagnostics"]))
+        self.route["assessment"]["goal_claim_ids"]=["detail","overall"]
         checked=validate();self.assertNotIn("goal_assessment",checked["pending"]);self.assertEqual(checked["diagnostics"],[])
         self.route["assessment"]["scope"]="  "
         self.assertEqual(validate()["diagnostics"][0]["location"],"/assessment/scope")
@@ -689,6 +689,17 @@ class RouteTests(unittest.TestCase):
     def test_key_transition_requires_actual_snapshot(self):
         self.route["stages"][0]["key_transition"]=True
         checked,_=self.check();self.assertIn("snapshot:"+self.route["stages"][0]["stage_id"],checked["pending"])
+        stage=self.route["stages"][0];sid=stage["stage_id"]
+        stage["snapshot"]={"assumptions":["Snapshot explanation instead of a claim ID"],"operations":{}}
+        checked,_=self.check()
+        diagnostic=next(d for d in checked["diagnostics"] if d["code"]=="snapshot_assumptions_unresolved")
+        self.assertEqual(diagnostic["location"],"/stages/0/snapshot/assumptions")
+        self.assertEqual(diagnostic["actual"],stage["snapshot"]["assumptions"])
+        stage["snapshot"]["assumptions"]=["chosen"]
+        checked,_=routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,
+                                 equipment=self.equipment,evidence=self.evidence,
+                                 claims=[{"claim_id":"chosen","status":"model_assessed","subjects":["objective:fixture-goal"]}])
+        self.assertNotIn("snapshot_assumptions:"+sid,checked["pending"])
     def test_reused_instance_is_not_acquired_twice(self):
         need={"kind":"gem","instance_id":"one","skill_id":"ShieldCrush","level":1,"quality":0,"quantity":1,"acquisition":"owned"}
         self.route["stages"][0]["required_items"]=[need]
@@ -3938,16 +3949,16 @@ class EditAndRecoveryTests(unittest.TestCase):
 
     def test_unrelated_stage_change_preserves_binding_and_related_change_invalidates(self):
         claims=[{"claim_id":key,"text":"stage explanation","subjects":subjects,"evidence_refs":["u"]}
-                for key,subjects in (("c",["stage:a"]),("combined",["skill:Future","stage:a"]),("overall",["goal","stage:a"]))]
-        first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first"},{"stage_id":"b","name":"second"}],"evidence":[{"evidence_id":"u","kind":"user_statement","subject":"goal","text":"actual user request"}],"claims":claims}})
+                for key,subjects in (("c",["stage:a"]),("combined",["skill:Future","stage:a"]),("overall",["goal","stage:a"]),("selected",["objective:direction","stage:a"]),("usage",["skill:Future"]))]
+        first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first","snapshot":{"usage":[{"skill_ref":"Future","claim_id":"usage"}]}},{"stage_id":"b","name":"second"}],"evidence":[{"evidence_id":"u","kind":"user_statement","subject":"goal","text":"actual user request"}],"claims":claims,"assessment":{"goal_claim_ids":["selected"]}}})
         second=self.edit({"set":{"stages":[{"stage_id":"b","name":"unrelated change"}]}},first["revision"])
-        self.assertEqual(second["invalidated_claims"],["overall"])
+        self.assertEqual(second["invalidated_claims"],["overall","selected"])
         third=self.edit({"set":{"stages":[{"stage_id":"a","name":"related change"}]}},second["revision"])
-        self.assertEqual(third["invalidated_claims"],["c","combined","overall"])
+        self.assertEqual(third["invalidated_claims"],["c","combined","overall","selected","usage"])
         spec=poe.read_json(self.source)
         checked=facts.assess_claims(spec["claims"],{"u":{"status":"user_declared"}},specification=spec,engine_fingerprint="fixture")
         self.assertEqual(checked[0]["status"],"unresolved")
-        refreshed=self.edit({"review_claims":["c","combined","overall"]},third["revision"])
+        refreshed=self.edit({"review_claims":["c","combined","overall","selected","usage"]},third["revision"])
         self.assertEqual(refreshed["invalidated_claims"],[])
 
     def test_review_submission_requires_current_claim_coverage_before_save(self):
@@ -4265,7 +4276,7 @@ class DeliveryIntegrityTests(unittest.TestCase):
 
 class TaskCompletionTests(unittest.TestCase):
     def test_reviewed_configuration_and_goal_have_consistent_pending_and_diagnostics(self):
-        claim={'claim_id':'current','subjects':['configuration:candidate','goal','objective:requested'],
+        claim={'claim_id':'current','subjects':['configuration:candidate','objective:requested'],
                'evidence_refs':['native:candidate#/config_values'],'missing_evidence':[],
                'check_status':'not_requested','status':'unresolved','diagnostics':[]}
         reviewed={'reference_status':'resolved','verdict':'partial','conditions':['Verify coverage before using this scene.'],'unimplemented':[]}
@@ -4449,6 +4460,7 @@ class TaskCompletionTests(unittest.TestCase):
         raw=[{'claim_id':key,'text':'Use the current measured snapshot after the declared future step.',
               'subjects':[subject,'objective:goal'],'evidence_refs':[reference],'uncertainties':['Future step not observed']}
              for key,subject in [('entry','stage:s'),('snapshot','snapshot:s')]]
+        raw[1]['subjects']=['objective:goal']
         specification={'claims':raw}
         for row in raw: row['bindings']=facts.claim_bindings(specification,row,'fixture')
         claims=facts.assess_claims(raw,{},native,specification=specification,engine_fingerprint='fixture')
@@ -6261,6 +6273,27 @@ class RealEngineTests(unittest.TestCase):
         self.assertNotIn("config:scenario:a",response["pending"])
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         self.assertFalse(any(d["code"]=="configuration_review_missing" for d in checked["diagnostics"]))
+        ref=first["calculation"]["active_skills"][0]["skill_ref"]
+        stage["snapshot"]["usage"]=[{"skill_ref":ref,"claim_id":"explicit-use"}]
+        usage_claim={"claim_id":"explicit-use","text":"Current stage action; execution coverage remains unmeasured.",
+                     "subjects":["skill:"+ref],"evidence_refs":["native:stage:a#/active_skills"]}
+        route["claims"].append(usage_claim)
+        usage_claim["bindings"]=facts.claim_bindings(route,usage_claim,engine.fingerprint(self.pob))
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):
+            poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        self.assertFalse(any(d["code"].startswith("usage_claim_") for d in checked["diagnostics"]),checked["diagnostics"])
+        stage["snapshot"]["metrics"].append("UnobservedMetric")
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):
+            poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        metric=next(d for d in checked["diagnostics"] if d["code"]=="snapshot_metric_unobserved")
+        self.assertEqual(metric["location"],"/stages/0/snapshot/metrics")
+        self.assertEqual(metric["actual"],["UnobservedMetric"])
+        self.assertIn("Life",metric["expected"]["observed_stats"])
+        self.assertIn("stage:a:metric:UnobservedMetric",checked["task_completion"]["pending"])
 
     def test_37_unparsed_nonflask_remains_unknown_even_when_native_active_false(self):
         result=engine.calculate(self.pob,bx.serialise(self.original))
@@ -6386,16 +6419,16 @@ class RealEngineTests(unittest.TestCase):
         plan=copy.deepcopy(self.refine)
         plan["claims"]=[{"claim_id":"overall","text":"Limited overall interpretation","subjects":["goal"],"evidence_refs":["native:candidate#/stats/Life"]},
                         {"claim_id":"detail","text":"A detail interpretation","subjects":["objective:direction"],"evidence_refs":["native:candidate#/stats/Life"]}]
-        plan["assessment"]={"goal_claim_ids":["detail","overall"],"scope":"Fixture scope, not a player recommendation"}
+        plan["assessment"]={"goal_claim_ids":["absent","overall"],"scope":"Fixture scope, not a player recommendation"}
         source=Path(self.temp.name)/"goal-contract.json";request=Path(self.temp.name)/"goal-contract-changes.json"
         poe.write_json(request,{"set":plan})
         first=poe.edit_document(args(invoked=True,kind="plan",file=str(source),changes=str(request),if_sha256=None))
         result=poe.evaluate(args(run=str(self.run_dir),plan=str(source),name="goal-contract"))
         self.assertIn("goal_assessment",result["pending"])
         repair=next(a for a in result["next_actions"] if a["action"]=="repair_input")
-        diagnostic=next(d for d in facts.pointer(poe.read_json(self.run_dir/"candidates/goal-contract/evaluation.json"),repair["pointer"]) if d["code"]=="goal_claim_subject_missing")
+        diagnostic=next(d for d in facts.pointer(poe.read_json(self.run_dir/"candidates/goal-contract/evaluation.json"),repair["pointer"]) if d["code"]=="goal_claim_missing")
         self.assertEqual(diagnostic["location"],"/assessment/goal_claim_ids/0")
-        self.assertEqual(diagnostic["actual"]["claim_id"],"detail")
+        self.assertEqual(diagnostic["actual"]["claim_id"],"absent")
         before=poe.read_json(self.run_dir/"candidates/goal-contract/evaluation.json")["result"]["stats"]
         poe.write_json(request,{"replace":{"/assessment/goal_claim_ids":["overall"]}})
         poe.edit_document(args(invoked=True,kind="plan",file=str(source),changes=str(request),if_sha256=first["revision"]))

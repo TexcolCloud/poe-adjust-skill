@@ -186,7 +186,7 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     library=gem_ids(result)
     stages=result.get("stages")
     bx.require(isinstance(stages,list) and stages,"stages 至少一个阶段；同级切换可分阶段。")
-    stage_ids=set(); prior_level=None; instances={}; acquisitions={}; previous_nodes=set(); warnings=[]; pending=[]
+    stage_ids=set(); prior_level=None; instances={}; acquisitions={}; previous_nodes=set(); warnings=[]; pending=[]; diagnostics=[]
     native_slots={s["name"] for s in slots or []}
     coverage,coverage_pending=facts.objective_coverage(route.get("objectives",[]),evidence,claims)
     result["objective_coverage"]=coverage
@@ -206,8 +206,14 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             snap=stage["snapshot"]
             bx.require_keys(snap,SNAPSHOT_FIELDS,stage_path+"/snapshot")
             strings(snap.get("assumptions",[]),sid+" snapshot.assumptions",required=False)
-            valid={c["claim_id"] for c in claims if c["status"]=="model_assessed" and "snapshot:"+sid in c["subjects"]}
-            if not snap.get("assumptions") or not set(snap["assumptions"])<=valid: pending.append("snapshot_assumptions:"+sid)
+            valid={c["claim_id"] for c in claims if c["status"]=="model_assessed"}
+            if not snap.get("assumptions") or not set(snap["assumptions"])<=valid:
+                pending.append("snapshot_assumptions:"+sid)
+                available=sorted(c["claim_id"] for c in claims)
+                if not snap.get("assumptions") or not set(snap["assumptions"])<=set(available):
+                    diagnostics.append({"code":"snapshot_assumptions_unresolved","action":"edit_input","location":stage_path+"/snapshot/assumptions",
+                        "expected":{"claim_ids":available},"actual":snap.get("assumptions",[]),
+                        "message":"assumptions 填本次已有 claim_id 数组；判断正文留在 claims。阶段关联及依赖由这些实际引用确定。"})
         bx.require(isinstance(stage.get("name"),str) and stage["name"],sid+" 需要名称。")
         for key in ("level","act","completed_act","normal_points_available","ascendancy_points","secondary_ascendancy_points"):
             if stage.get(key) is not None: bx.require(type(stage[key]) is int and stage[key]>=(1 if key in {"level","act"} else 0),sid+" 的 "+key+" 无效。")
@@ -309,7 +315,7 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
         if key in route and not facts.has_claim(claims,"preference:"+key): pending.append("preference:"+key)
     assessment=route.get("assessment",{})
     goal_diagnostics=facts.goal_review_diagnostics(assessment,claims)
-    result["diagnostics"]=goal_diagnostics+facts.claim_diagnostics(claims)
+    result["diagnostics"]=goal_diagnostics+diagnostics+facts.claim_diagnostics(claims)
     if goal_diagnostics: pending.append("goal_assessment")
     pending += ["assessment:"+v for v in assessment.get("unresolved",[])]
     result["pending"]=list(dict.fromkeys(pending))

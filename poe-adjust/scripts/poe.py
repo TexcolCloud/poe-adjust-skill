@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.26"
+VERSION = "2.8.27"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -70,6 +70,7 @@ def input_contract(kind):
                               "string_arrays":["subjects","evidence_refs","conditions","uncertainties"],
                               "checks":{"type":"array","entry_fields":["reference","op","value"]},"bindings":"program owned; use review_claims"},
                       assessment={"type":"object","fields":["goal_claim_ids","scope","unresolved","review"],
+                                  "goal_claim_ids":"当前总体判断的非空 claim_id 数组；此引用直接确定总体关联，无需重复 goal 标签。",
                                   "review":"沿当前 review.json 的 review_template，完成输入修订与计算后单独提交；随后再次计算再 export。"})
     if kind=="plan":
         nested["operations"]={"fields":sorted(bx.OPERATION_FIELDS),"gems":{"fields":sorted(set(bx.GEM_FIELDS)|{"group","index"})},
@@ -79,7 +80,9 @@ def input_contract(kind):
     elif kind=="route":
         nested["stages"]={"type":"array","identity":"stage_id","fields":sorted(routes.STAGE_FIELDS),
                           "skill_groups":{"fields":sorted(routes.GROUP_FIELDS),"gems":{"fields":sorted(routes.GEM_FIELDS)}},
-                          "snapshot":{"fields":sorted(routes.SNAPSHOT_FIELDS),"operations":sorted(routes.SNAPSHOT_OPERATION_FIELDS)}}
+                          "snapshot":{"fields":sorted(routes.SNAPSHOT_FIELDS),"operations":sorted(routes.SNAPSHOT_OPERATION_FIELDS),
+                                      "assumptions":"非空当前 claim_id 数组；正文在 claims，程序从引用绑定本阶段，无需重复 snapshot 标签。",
+                                      "metrics":"所选指标取本阶段实际 native stats 字段；未观测项保留缺口并返回可用字段。"}}
     else:
         nested['task_kind']={'values':['build','build_plan','read_only_review'],'default':'build'}
         nested['delivery_scope']={'values':['execution_plan','snapshot_comparison'],'default':'execution_plan','snapshot_comparison':'仅 build_plan，真实用户比较要求的 /delivery_scope 依据；以 delivery_scope claim 复核用户依据和当前 materialization。未改技能组的整套操作安排另保留在角色就绪状态。'}
@@ -1680,9 +1683,9 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
     # Only native-met local dependencies can be reviewed as future conditions.
     # Keep entry_checks/has_claim and the original character pending unchanged.
     conditional_candidates={}
-    def current_claim(identifier,subject):
+    def current_claim(identifier,subject=None):
         claim=indexed.get(identifier)
-        return (claim is not None and subject in claim["subjects"] and assessed(conclusions.get(identifier))
+        return (claim is not None and (subject is None or subject in claim["subjects"]) and assessed(conclusions.get(identifier))
                 and claim["evidence_refs"] and not claim["missing_evidence"]
                 and claim["check_status"] not in {"refuted","unknown"})
     for stage in review.get("facts",{}).get("stages",[]):
@@ -1695,7 +1698,7 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
                 conditional_candidates[subject]={identifier}
         assumptions=stage.get("snapshot_assumptions",[])
         subject="snapshot_assumptions:"+sid
-        if subject in blockers and assumptions and all(current_claim(identifier,"snapshot:"+sid) for identifier in assumptions):
+        if subject in blockers and assumptions and all(current_claim(identifier) for identifier in assumptions):
             conditional_candidates[subject]=set(assumptions)
     scope=review.get("facts",{}).get("delivery_scope",{})
     exclusions=[]
@@ -1724,7 +1727,7 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
             claim_id=actual.get("claim_id") if isinstance(actual,dict) else actual if isinstance(actual,str) else None
             subject=row.get("required_subject") or row.get("subject")
             dependency=subject
-            resolved=row.get("code") in {"goal_claim_unresolved","usage_claim_unresolved"} and current_claim(claim_id,"goal" if row.get("code")=="goal_claim_unresolved" else subject)
+            resolved=row.get("code") in {"goal_claim_unresolved","usage_claim_unresolved"} and current_claim(claim_id,None if row.get("code")=="goal_claim_unresolved" else subject)
             if row.get("action")=="review_configuration":
                 reviewed_ids={claim["claim_id"] for claim in claims if current_claim(claim["claim_id"],subject)}
                 if subject and subject.startswith("configuration:"):
@@ -2613,7 +2616,7 @@ def calculate_route(args):
     validation_pending=set(checked["pending"])
     route_errors=[]
     stage_materials={}
-    for stage in checked["stages"]:
+    for stage_index,stage in enumerate(checked["stages"]):
         sid=stage["stage_id"]
         for item in stage.get("required_items",[]): facts.add_material(stage_materials,item)
         if sid not in snapshots: continue
@@ -2630,7 +2633,8 @@ def calculate_route(args):
         actual_bases={r["slot"]:r["base"] for r in value["equipped"]}
         for slot,base in stage.get("bases",{}).items():
             if actual_bases.get(slot)!=base: errors.append("快照装备与阶段声明的基底不一致："+slot)
-        relevant=[c for c in claims if {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
+        linked=facts.stage_claim_ids(stage)
+        relevant=[c for c in claims if c["claim_id"] in linked or {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
         limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points","act","completed_act") if stage.get(key) is not None}
         audit=resources.assess(value,limits,{k:stage["snapshot"][k] for k in ("usage","timeline") if k in stage["snapshot"]},relevant,reference_name="resources:stage:"+sid)
         stage_native["resources:stage:"+sid]={**audit,"engine_fingerprint":value["engine_fingerprint"],"xml_sha256":value.get("xml_sha256"),"origin":"program_assessment"}
@@ -2651,7 +2655,12 @@ def calculate_route(args):
         metrics=stage["snapshot"].get("metrics",list(METRICS))
         bx.require(isinstance(metrics,list) and all(isinstance(k,str) and k for k in metrics),"snapshot.metrics 应为指标名数组。")
         missing=[k for k in metrics if k not in value["stats"]]
-        if "metrics" in stage["snapshot"]: gaps += ["metric:"+k for k in missing]
+        if "metrics" in stage["snapshot"] and missing:
+            gaps += ["metric:"+k for k in missing]
+            record.setdefault("diagnostics",[]).append({"code":"snapshot_metric_unobserved","action":"edit_input",
+                "location":f"/stages/{stage_index}/snapshot/metrics","actual":missing,
+                "expected":{"observed_stats":sorted(value["stats"])},"reference":"native:stage:"+sid+"#/stats",
+                "message":"本次未观测这些指标；按实际 stats 和原目标核对字段，确无所需观测时保留缺口。"})
         record.update(status="blocked" if errors else "draft" if gaps else "calculated",native_calculated=True,stats={k:value["stats"].get(k) for k in metrics},errors=errors,pending=gaps,
                       config_values=value["config_values"],readiness=audit,main_skill=value["main_skill"],active_skills=value["active_skills"],roundtrip_verified=True,
                       material_specs=material_specs,entry_checks=condition_checks,facts=calculation_facts(value,relevant))

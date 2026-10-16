@@ -4,7 +4,7 @@
 
 ## 先算最低终点，再连接起点
 
-先在同一route中物化原目标终点的最低整套及必要退路：实际装备、天赋、技能、场景与资源安排能承担本次推进目标，再接剧情起点、取得和训练。条件更高的提升态不能补证最低态；终点还没设计时保持未完成，先改对象再扩写说明。
+先在同一route填写终点完整snapshot及按原目标选定的entry_checks：装备、天赋、技能、场景与实际节奏达到本次最低条件，再连接原起点、取得前状态和训练。最低规格本次落实到实物；更高提升态另列。
 
 沿用户实际起终点、交易/SSF、物资、预算、偏好和操作选择，不把未知补成禁令。阶段按目标与切换决定，不套固定章节/数量/统一生存门槛。关键切换应从当时实际状态能进入下一状态；尚未取得的已设计实物是条件，泛称“以后补属性/生存/装备”仍是设计缺口。
 
@@ -22,7 +22,7 @@ skill_groups落实际slot、enabled和各宝石instance_id/skill_id/level/qualit
 
 required_items记录首次取得的实物/加工：gem用稳定实例、当前skill_id、level/quality/quantity、acquisition及同一来源的章节/任务/NPC/class_ids/evidence_refs；item用spec_sha256，service用service_id，规格摘要取material_specs。沿用不重购，owned取真实用户对应实例/规格及quantity声明，XML item_id不是跨段身份。
 
-entry_conditions关联含stage:<id>的claim；可计算进入条件写entry_checks的实际locator/op/value/claim_id，对照本段快照，缺量unknown、未达unmet。每段前后实际装备、配置、进度、训练及费用相接，而非只在文字中换形态。
+entry_conditions关联含stage:<id>的claim；entry_checks用{check_id,locator,op,value,claim_id}，对照本段快照，缺量unknown、未达unmet。每段前后实际装备、配置、进度、训练及费用相接，而非只在文字中换形态。
 
 ## 关键切换的原生快照
 
@@ -30,7 +30,7 @@ entry_conditions关联含stage:<id>的claim；可计算进入条件写entry_chec
 
 snapshot省略template_xml则由原生空职业生成；operations复用配装items/equip/tree/config/main_group/weapon_set。等级与基础技能组由stage拥有，gems/groups只补count/part等状态或主主动选项，不暗换阶段规格/位置。合法选择取物化skill_selections，实际装备与bases及截至本段required_items一致，模板携入也核生成依据。
 
-assumptions关联snapshot:<stage>判断；usage/timeline用本段active_skills引用，必要时先route取真实引用再补。metrics按目标选择，默认缺值未知、显式缺值列待办。configuration_context区分种子Input、覆盖与resolved_values，按该段真实进度选场景并检查实际值，终点场景不借给前段。
+assumptions为当前claim_id数组，正文留claims；本段明确引用的判断由程序绑定阶段。usage/timeline用本段active_skills引用，必要时先route读取。metrics取实际stats字段，默认缺值未知、显式缺值列待办。configuration_context区分种子Input、覆盖与resolved_values，按该段真实进度选场景并检查实际值，终点场景不借给前段。
 
 完整资源窗口按[动作与资源](evidence.md#动作与资源)设计；降频后用实际节奏解释伤害。窗口结束的补给/退出/前段承接可执行，未核补给不重置满池。必要时审原生补路/延期preview后沿[现有入口](commands.md#采用原生候选)采用，重跑核目标。
 

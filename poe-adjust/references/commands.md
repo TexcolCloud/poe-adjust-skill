@@ -19,7 +19,7 @@ start新run为空并保留原件；只读直接inspect/probe。路径缺失沿do
 
 ## 增量保存方案
 
-完整JSON可一次保存。含claims时先核正文与证据，再用edit.review_claims登记后计算；直接计算未登记JSON得到缺绑定草案。set可一次提交完整方案并review_claims，不必拆小事务，intent字段留intent。已有源修订加--if-sha256 '<当前revision>'，新文件直接创建。
+edit.set可一次保存完整方案/claims，新增或改文自动写当前绑定；依赖改变使旧判断失效时，核正文后用review_claims重登。直接计算未登记JSON会得到缺绑定草案。intent字段留intent，已有源修订加--if-sha256 '<当前revision>'。
 
 ```powershell
 python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/changes.json'
