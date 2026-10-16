@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.24"
+VERSION = "2.8.25"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -1665,6 +1665,8 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
     for claim in claims:
         if claim["missing_evidence"] or not claim["evidence_refs"] or claim["check_status"] in {"refuted","unknown"}:
             task_pending.append("plan_claim:"+claim["claim_id"]+":binding_or_check")
+        if conclusions.get(claim["claim_id"],{}).get("unimplemented"):
+            task_pending.append("plan_claim:"+claim["claim_id"]+":unimplemented")
     # These describe missing current work, rather than future execution facts.
     hard=("permission:","metric:","claim_check:","claim_revision:","final_review:","entry_check:",
           "snapshot:","snapshot_assumptions:","native:snapshot:","native:equipment:","native:socket_capacity:",
@@ -2777,14 +2779,15 @@ def calculate_route(args):
              "reply_policy":"先沿用 task_completion 与 delivery_brief/facts_summary 的规划交付状态，再按当前 judgments 的评审、条件与退路解释路线。character_readiness 保留全部阶段未就绪项，取得与训练未发生；规划完成不等于实际可执行或游戏效果已验证。revision_pending 表示说明待重新评审。聊天与HTML保持同一结论。",
              "next_actions":actions,"scope":"目录核对与实际阶段快照分别列出；仅 calculation 中的数值经过所声明完整输入实算，未物化阶段不宣称精确 DPS/生存/续航。获取位置不证明当前已完成任务。", "next":"按 task_completion 和 next_actions 完成本次规划交付；character_readiness 继续保留阶段执行条件。需要修订时重跑同一route；诊断XML不能作为可执行配装交付，计算或规划完成不代表实际阶段已就绪。"}
     if not deliverable:
-        response['reply_policy']='自检未通过，files 为空，不提供最终附件或声称交付完成。阶段快照及 HTML 是内部诊断；按 details_file 的 checked_route/task_completion 和 next_actions 修源、复核并重跑 route，保留已算阶段用于恢复。'
+        response['reply_policy']='自检未通过，files 为空，不提供最终附件或声称交付完成。按 details_file 的 checked_route/task_completion 和 next_actions 修源、复核并重跑 route；保留JSON诊断和已算阶段用于恢复，不生成最终HTML。'
     write_json(review_file,review)
     write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings,"next_actions":actions,"response":response})
-    write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))
+    if deliverable: write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))
+    else: output.unlink(missing_ok=True)
     progress=read_json(output.with_suffix(".state.json"))
     write_json(output.with_suffix(".state.json"),{**progress,"phase":"exported" if deliverable else "evaluated","file_exported":deliverable,"status":checked["delivery_status"],"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":calculation["engine_fingerprint"],
                "input_artifacts":{filename:digest for stage in checked["stages"] for filename,digest in stage.get("calculation",{}).get("input_artifacts",{}).items()},
-               "files":{str(p):bx.digest(p.read_bytes()) for p in [output,evidence_file,review_file]+snapshot_xmls},"review_token":review["token"],
+               "files":{str(p):bx.digest(p.read_bytes()) for p in ([output] if deliverable else [])+[evidence_file,review_file]+snapshot_xmls},"review_token":review["token"],
                "stages":{row["stage_id"]:{k:v for k,v in row.items() if k not in {"stage_id","name"}} for row in stage_summary if row["status"]!="not_calculated"},
                "delivery_brief":checked["delivery_brief"],"task_completion":completion,"character_readiness":checked["character_readiness"],"next_actions":actions})
     return response

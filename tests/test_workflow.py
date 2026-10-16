@@ -3938,16 +3938,16 @@ class EditAndRecoveryTests(unittest.TestCase):
 
     def test_unrelated_stage_change_preserves_binding_and_related_change_invalidates(self):
         claims=[{"claim_id":key,"text":"stage explanation","subjects":subjects,"evidence_refs":["u"]}
-                for key,subjects in (("c",["stage:a"]),("combined",["skill:Future","stage:a"]))]
+                for key,subjects in (("c",["stage:a"]),("combined",["skill:Future","stage:a"]),("overall",["goal","stage:a"]))]
         first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first"},{"stage_id":"b","name":"second"}],"evidence":[{"evidence_id":"u","kind":"user_statement","subject":"goal","text":"actual user request"}],"claims":claims}})
         second=self.edit({"set":{"stages":[{"stage_id":"b","name":"unrelated change"}]}},first["revision"])
-        self.assertEqual(second["invalidated_claims"],[])
+        self.assertEqual(second["invalidated_claims"],["overall"])
         third=self.edit({"set":{"stages":[{"stage_id":"a","name":"related change"}]}},second["revision"])
-        self.assertEqual(third["invalidated_claims"],["c","combined"])
+        self.assertEqual(third["invalidated_claims"],["c","combined","overall"])
         spec=poe.read_json(self.source)
         checked=facts.assess_claims(spec["claims"],{"u":{"status":"user_declared"}},specification=spec,engine_fingerprint="fixture")
         self.assertEqual(checked[0]["status"],"unresolved")
-        refreshed=self.edit({"review_claims":["c","combined"]},third["revision"])
+        refreshed=self.edit({"review_claims":["c","combined","overall"]},third["revision"])
         self.assertEqual(refreshed["invalidated_claims"],[])
 
     def test_review_submission_requires_current_claim_coverage_before_save(self):
@@ -4535,6 +4535,17 @@ class TaskCompletionTests(unittest.TestCase):
             unfinished=assess(incomplete)
             self.assertEqual(unfinished['status'],'draft')
             self.assertIn('plan_objective:requested',unfinished['task_completion']['pending'])
+            incomplete=copy.deepcopy(plan)
+            incomplete['claims'].append({**copy.deepcopy(incomplete['claims'][0]),'claim_id':'aux'})
+            incomplete['assessment'].pop('review')
+            first_incomplete=assess(incomplete)
+            aux_review=copy.deepcopy(review);aux_review['token']=first_incomplete['review_packet']['token']
+            aux_review['conclusions'].append({**copy.deepcopy(aux_review['conclusions'][0]),'claim_id':'aux',
+                'unimplemented':['Necessary transition remains undesigned.']})
+            incomplete['assessment']['review']=aux_review
+            unfinished=assess(incomplete)
+            self.assertEqual(unfinished['status'],'draft')
+            self.assertIn('plan_claim:aux:unimplemented',unfinished['task_completion']['pending'])
             source=run/'plan.json';poe.write_json(source,plan)
             xml=bx.serialise(document);poe.write_text(run/'original.xml',xml);poe.write_text(run/'candidates/plan/requested.xml',xml)
             outcome={**current,'plan':plan,'source_plan':str(source),'evidence_folder':str(run),'baseline':native,'result':native,
@@ -5155,7 +5166,7 @@ class RealEngineTests(unittest.TestCase):
             self.assertIn(effect['id'],effect_control['text'])
             self.assertIn(effect['operation_field'],effect_control['text'])
         self.assertIn('原角色',actual['publication']['facts_summary'])
-        report=(self.run_dir/'output/common-measurement/配装说明.html').read_text(encoding='utf-8')
+        report=poe.report_html(poe.read_json(self.run_dir/'run.json'),actual)
         for effect in observed: self.assertIn(effect['id'],report)
         self.assertIn('原角色到交付',report)
         self.assertIn('global_enabled',report)
@@ -5274,7 +5285,7 @@ class RealEngineTests(unittest.TestCase):
         next(gem for gem in drifted["gems"] if gem.get("source"))["group_enabled"] = True
         errors, _, _ = poe.mechanical_issues(saved, drifted, poe.read_json(self.run_dir / "run.json")["intent"])
         self.assertTrue(any("授予技能状态" in error for error in errors), errors)
-        report = (self.run_dir/"output/refine/配装说明.html").read_text(encoding="utf-8")
+        report = poe.report_html(poe.read_json(self.run_dir/'run.json'),evidence)
         self.assertTrue(evidence["actual_changes"])
         self.assertIn("实际改动", report)
         self.assertEqual(evidence["validation"]["user_constraints"], "passed")
@@ -5407,7 +5418,7 @@ class RealEngineTests(unittest.TestCase):
         output = poe.export(args(run=str(self.run_dir), name="valid-config-value"))
         self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", output["facts_summary"])
         self.assertEqual(output['files'],[])
-        report = (self.run_dir/"output/valid-config-value/配装说明.html").read_text(encoding="utf-8")
+        report = poe.report_html(poe.read_json(self.run_dir/'run.json'),poe.read_json(output['details_file']))
         self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", report)
         self.assertIn(recorded["xml_sha256"], report)
         self.assertIn(recorded["engine_fingerprint"], report)
@@ -5722,8 +5733,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn("ArmourBasePercentile: 0.5", raw)
         output = poe.export(args(run=str(self.run_dir), name="crafted-boots"))
         self.assertEqual(output['files'],[])
-        self.assertIn("crafted_items", (self.run_dir/"output/crafted-boots/配装说明.html").read_text(encoding="utf-8"))
         final=poe.read_json(self.run_dir/'output/crafted-boots/final-assessment.json')
+        self.assertIn("crafted_items",poe.report_html(poe.read_json(self.run_dir/'run.json'),final))
         self.assertFalse(any(gap.startswith('native:item_generation:') for gap in final['pending']))
         bad = copy.deepcopy(recipe)
         conflicting=next(entry for entry in entries if entry['group']==selected[0]['group'] and entry['id']!=selected[0]['id'])
@@ -5875,7 +5886,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "draft", outcome["errors"])
         exported = poe.export(args(run=str(self.run_dir), name="gc-costs"))
         self.assertEqual(exported['files'],[])
-        report = (self.run_dir/"output/gc-costs/配装说明.html").read_text(encoding="utf-8")
+        report = poe.report_html(poe.read_json(self.run_dir/'run.json'),poe.read_json(exported['details_file']))
         self.assertIn("原生 Full DPS 分项", report)
         self.assertIn("automatic_cost_per_second", report)
         self.assertIn("19/0", report)
@@ -6150,6 +6161,7 @@ class RealEngineTests(unittest.TestCase):
                "required_items":[held_gem,held_item],"gear":["Actual fixture gloves"],"transition":["Keep the preceding configuration until the next prerequisite is met"],"snapshot":{"assumptions":["stage"],"operations":{"items":[{"id":201,"text":text}],"equip":[{"slot":"Gloves","item_id":201}],"main_group":1},"metrics":["Life","ManaCost"]}}
         route["stages"]=[stage,{**copy.deepcopy(stage),"stage_id":"b","level":None,"required_items":[]}]
         path=Path(self.temp.name)/"route.json";output=Path(self.temp.name)/"route.html";poe.write_json(path,route)
+        poe.write_text(output,'Previous generated route')
         with patch.object(facts,"gem_facts",return_value={"Fireball":{"status":"unverified"}}):
             response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
@@ -6185,6 +6197,10 @@ class RealEngineTests(unittest.TestCase):
         self.assertNotIn("stats",second["calculation"]);self.assertEqual(second["calculation"]["status"],"not_calculated")
         self.assertIn("native:snapshot:b",response["pending"])
         self.assertEqual(checked["budget_assessment"]["status"],"user_declared")
+        self.assertFalse(output.exists())
+        saved_state=poe.read_json(output.with_suffix('.state.json'))
+        self.assertNotIn(str(output),saved_state['files'])
+        self.assertTrue(poe.workflow_status(args(route_state=str(output.with_suffix('.state.json'))))['files_intact'])
         self.assertEqual(checked["budget_assessment"]["materials"][0]["quantity"],1)
         self.assertEqual(first["calculation"]["material_specs"][0]["spec_sha256"],held_item["spec_sha256"])
         stage["snapshot"]["timeline"]={"duration_seconds":2,"repeat":False,"events":[]}
@@ -6273,7 +6289,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(any(row.get('code')=='native_tree_nodes_unretained' and row['location']==diagnostic['location'] for row in facts.pointer(poe.read_json(output.with_suffix('.evidence.json')),repair['pointer'])))
         self.assertEqual(repair['input_revision'],bx.digest(path.read_bytes()))
         self.assertIn('普通天赋已分配',response['facts_summary'])
-        html=output.read_text(encoding='utf8')
+        self.assertFalse(output.exists())
+        html=routes.render(checked,response['warnings'],self.native['engine_version'],self.native['tree_version'],evidence_file=output.with_suffix('.evidence.json').name)
         self.assertIn('已知错误',html)
         self.assertIn(response['errors'][0].split('：',1)[-1],html)
         self.assertIn('tree_diagnostics',html)
@@ -6354,7 +6371,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertNotIn(final["claims"][0]["rendered_text"],display["text"])
         self.assertEqual(final["response"]["judgments"],exported["judgments"])
         self.assertTrue(any(d["code"]=="claim_binding_missing" for d in display["diagnostics"]))
-        report=(self.run_dir/"output/publication/配装说明.html").read_text(encoding="utf-8")
+        report=poe.report_html(poe.read_json(self.run_dir/'run.json'),final)
         for measurement in exported["publication"]["measurements"]:
             self.assertIn(measurement["text"],report)
 
@@ -6473,7 +6490,8 @@ class RealEngineTests(unittest.TestCase):
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]["stages"][0]
         self.assertTrue(checked["equipment_validation"]["checks"]["Weapon 2"]["valid_for_slot"])
         self.assertNotIn("native:equipment:"+stage["stage_id"]+":Weapon 2",result["pending"])
-        self.assertIn("declared_base_layout",output.read_text(encoding="utf-8"))
+        self.assertIn("declared_base_layout",json.dumps(checked["equipment_validation"]))
+        self.assertFalse(output.exists())
         stage["bases"]["Future Slot"]=None;poe.write_json(path,route)
         with self.assertRaises(engine.EngineError) as error:poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         self.assertEqual(error.exception.diagnostic.get("location"),"/stages/0/bases/Future Slot",error.exception.diagnostic)
@@ -6506,7 +6524,7 @@ class RealEngineTests(unittest.TestCase):
                 self.assertEqual(detail['item_generation'],checked['item_generation'])
                 native_item=next(item for item in detail['native']['equipped'] if item['slot']=='Gloves')
                 self.assertIs(native_item['ordinary_craft_supported'],True);self.assertEqual(native_item['rarity'],'RARE')
-                self.assertIn('生成依据',output.read_text(encoding='utf-8'))
+                self.assertFalse(output.exists())
 
     def test_49_native_target_allocation_counts_shared_paths_and_preserves_known_removal(self):
         seed=engine.calculate(self.pob,class_id=int(bx.active_spec(self.original).get('classId')))

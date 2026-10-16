@@ -451,7 +451,7 @@ def claim_bindings(document, claim, engine_fingerprint):
         if kind=="configuration" and identifier.startswith("stage:"): result[identifier]=digest(stages.get(identifier[len("stage:"):]))
         elif kind in {"stage","snapshot"}: result["stage:"+identifier]=digest(stages.get(identifier))
         elif kind=="objective": result[subject]=digest(objectives.get(identifier))
-        elif stages and not stage_scoped: result["stages"]=digest(document["stages"])
+        elif stages and (kind!="skill" or not stage_scoped): result["stages"]=digest(document["stages"])
     declared={e["evidence_id"]:e for e in document.get("evidence",[])}
     for reference in claim_references(claim):
         if reference.startswith("native:stage:"):
