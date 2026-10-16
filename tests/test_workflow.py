@@ -1891,10 +1891,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
         page=poe.report_html({'intent':{'goal':'Actual player goal'}},outcome)
         self.assertNotIn('在 PoECharm 中打开同目录 XML',page);self.assertIn('未导出交付文件',page)
         actions=poe.delivery_actions(outcome,'plan.json','evaluation.json','review.json')
-        report=next(row for row in actions if row['action']=='export')
-        self.assertEqual(report['purpose'],'diagnostic_report');self.assertFalse(report['file_exported'])
-        self.assertEqual(report['delivery_status'],'blocked')
-        self.assertIn('claims',report['instruction']);self.assertIn('review',report['instruction'])
+        self.assertFalse(any(row['action']=='export' for row in actions))
         self.assertEqual(outcome['errors'],['Known contradiction']);self.assertEqual(outcome['status'],'blocked')
         self.assertFalse(any(row['action']=='export' for row in poe.delivery_actions(outcome,'plan.json','final-assessment.json','review.json',report_exported=True)))
         self.assertFalse(any(row['action']=='export' for row in poe.delivery_actions(outcome,'route.json','route.json','review.json','/checked_route')))
@@ -3940,15 +3937,17 @@ class EditAndRecoveryTests(unittest.TestCase):
         self.assertEqual(error.exception.diagnostic["location"],"/constraint_sources/~1goal")
 
     def test_unrelated_stage_change_preserves_binding_and_related_change_invalidates(self):
-        first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first"},{"stage_id":"b","name":"second"}],"evidence":[{"evidence_id":"u","kind":"user_statement","subject":"goal","text":"actual user request"}],"claims":[{"claim_id":"c","text":"stage explanation","subjects":["stage:a"],"evidence_refs":["u"]}]}})
+        claims=[{"claim_id":key,"text":"stage explanation","subjects":subjects,"evidence_refs":["u"]}
+                for key,subjects in (("c",["stage:a"]),("combined",["skill:Future","stage:a"]))]
+        first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first"},{"stage_id":"b","name":"second"}],"evidence":[{"evidence_id":"u","kind":"user_statement","subject":"goal","text":"actual user request"}],"claims":claims}})
         second=self.edit({"set":{"stages":[{"stage_id":"b","name":"unrelated change"}]}},first["revision"])
         self.assertEqual(second["invalidated_claims"],[])
         third=self.edit({"set":{"stages":[{"stage_id":"a","name":"related change"}]}},second["revision"])
-        self.assertEqual(third["invalidated_claims"],["c"])
+        self.assertEqual(third["invalidated_claims"],["c","combined"])
         spec=poe.read_json(self.source)
         checked=facts.assess_claims(spec["claims"],{"u":{"status":"user_declared"}},specification=spec,engine_fingerprint="fixture")
         self.assertEqual(checked[0]["status"],"unresolved")
-        refreshed=self.edit({"review_claims":["c"]},third["revision"])
+        refreshed=self.edit({"review_claims":["c","combined"]},third["revision"])
         self.assertEqual(refreshed["invalidated_claims"],[])
 
     def test_review_submission_requires_current_claim_coverage_before_save(self):
@@ -4318,6 +4317,7 @@ class TaskCompletionTests(unittest.TestCase):
                          'engine_fingerprint':'fixture','engine_version':'fixture','xml_sha256':native['xml_sha256'],'name':'draft'}
                 state={'intent':intent,'pob_path':str(run),'intent_evidence_folder':str(run)}
                 output=run/'output/draft';poe.write_text(output/'改进配装.xml',xml)
+                poe.write_text(output/'配装说明.html','Previous generated report')
                 with self.subTest(kind=kind),patch.object(poe,'read_candidate',return_value=(run,state,outcome,xml,run)),patch.object(poe,'assess_candidate',return_value=assessed),patch.object(engine,'calculate',return_value=copy.deepcopy(native)):
                     exported=poe.export(args(run=str(run),name='draft'))
                     self.assertFalse(exported['file_exported']);self.assertFalse(exported['xml_exported'])
@@ -4325,8 +4325,8 @@ class TaskCompletionTests(unittest.TestCase):
                     self.assertTrue((output/'final-assessment.json').is_file());self.assertTrue((output/'review.json').is_file())
                     self.assertFalse(poe.read_json(output/'delivery.json')['file_exported'])
                     self.assertEqual(poe.read_json(run/'run.json')['phase'],'evaluated')
-                    page=(output/'配装说明.html').read_text(encoding='utf-8')
-                    self.assertIn('未导出交付',page);self.assertNotIn('同目录 XML 是',page)
+                    self.assertFalse((output/'配装说明.html').exists())
+                    self.assertEqual(set(poe.read_json(output/'delivery.json')['files']),{'final-assessment.json','review.json'})
 
     def test_export_cli_reports_failed_delivery_without_losing_repair_response(self):
         for complete in (False,True):
@@ -4516,7 +4516,7 @@ class TaskCompletionTests(unittest.TestCase):
                     row.update(scope='Conditional planning only',findings='Current snapshot retained; execute after prerequisites are verified.',
                                verdict='partial',evidence_refs=['native:candidate#/stats/Life'],
                                conditions=['Verify the actual acquisition, progress and resource assumptions before execution.'],
-                               unimplemented=['Future execution is not observed.'])
+                               unimplemented=[])
             review['condition_reviews']=[{'subjects':first['review_packet']['facts']['pending'],'claim_ids':['current'],
                 'conditions':['Verify the actual acquisition, progress and resource assumptions before execution.'],
                 'fallback':'Keep the original role and defer this change until the listed prerequisites are verified.',
@@ -4530,6 +4530,11 @@ class TaskCompletionTests(unittest.TestCase):
                 self.assertIn(subject,current['character_readiness']['pending'])
             self.assertEqual(current['review_packet']['objectives'][0]['verdict'],'partial')
             self.assertTrue(current['task_completion']['conditions'])
+            incomplete=copy.deepcopy(plan)
+            incomplete['assessment']['review']['objectives'][0]['unimplemented']=['Necessary equipment specifications and acquisition steps remain undesigned.']
+            unfinished=assess(incomplete)
+            self.assertEqual(unfinished['status'],'draft')
+            self.assertIn('plan_objective:requested',unfinished['task_completion']['pending'])
             source=run/'plan.json';poe.write_json(source,plan)
             xml=bx.serialise(document);poe.write_text(run/'original.xml',xml);poe.write_text(run/'candidates/plan/requested.xml',xml)
             outcome={**current,'plan':plan,'source_plan':str(source),'evidence_folder':str(run),'baseline':native,'result':native,

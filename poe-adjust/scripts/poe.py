@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.23"
+VERSION = "2.8.24"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -1441,9 +1441,6 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
         actions.append({**shared,"action":"review_current_result","review_file":str(review_file),
                         "user_basis_pointer":"/facts/user_goal_sources","objective_pointer":"/facts/objective_coverage","dependencies_pointer":"/facts/pending","method_pointer":"/check","template_pointer":"/review_template",
                         "instruction":"将会改变当前对象、数值或判断的修订落实并重算；读取当次包的原话声明、目标拆分、全部依赖及 check 复核方法，先审方法再逐项目标判断，填写源 assessment.review。保存复核后必须按 calculation 再次 evaluate/route，再 export 配装；不能直接沿用旧候选。诊断所保留的原对象错误和未测项仍明确记录。判断列表完整不代表用户目标完成；不得自动回填 token。"})
-    if outcome.get('status')=='blocked' and isinstance(outcome.get('publication'),dict) and not details_pointer and not report_exported:
-        actions.append({**shared,'action':'export','purpose':'diagnostic_report','delivery_status':'blocked','file_exported':False,
-                        'instruction':'保留当前错误和未测状态，先沿当次 claims/review 核对解释，再用现有 export 生成正式诊断 HTML。无需为了诊断修改用户要求保留的角色；blocked 不导出交付 XML，因果及目标结论仍按当前证据审查。'})
     if read_only and not report_exported and task_deliverable(outcome.get("task_completion",{})):
         actions.append({**shared,"action":"export","purpose":"read_only_report","delivery_status":outcome["status"],"xml_exported":False,
                         "instruction":"沿当前 export 最终复算，交付只读 HTML 和证据；scoped_result 仅表示所列评审完成，原角色状态继续保留。"})
@@ -1653,8 +1650,8 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
     conclusions={row["claim_id"]:row for row in review["conclusions"]}
     objectives={row["objective_id"]:row for row in review["objectives"]}
     def assessed(row):
-        return (row is not None and row.get("reference_status")=="resolved" and row["verdict"] in {"supported","partial"}
-                and (row["verdict"]!="partial" or bool(row["conditions"] or row["unimplemented"])))
+        return (row is not None and row.get("reference_status")=="resolved" and not row["unimplemented"]
+                and row["verdict"] in {"supported","partial"} and (row["verdict"]!="partial" or bool(row["conditions"])))
     handled=set()
     if not coverage: task_pending.append("plan_objective:missing")
     for row in coverage:
@@ -2330,12 +2327,13 @@ def export(args):
     outcome["response"]=response
     write_json(output/"final-assessment.json",outcome)
     write_json(output/"review.json",outcome["review_packet"])
-    write_text(output/"配装说明.html",report_html(state,outcome))
+    if deliverable: write_text(output/"配装说明.html",report_html(state,outcome))
+    else: (output/"配装说明.html").unlink(missing_ok=True)
     if read_only or not deliverable:
         for old_name in ("配装草案.xml","改进配装.xml"):
             (output/old_name).unlink(missing_ok=True)
         write_json(output/"delivery.json",{"file_exported":deliverable,"xml_exported":False,"status":outcome["status"],"candidate":args.name,
-                   "files":{name:bx.digest((output/name).read_bytes()) for name in ("配装说明.html","final-assessment.json","review.json")},"review_token":outcome["review_packet"]["token"]})
+                   "files":{name:bx.digest((output/name).read_bytes()) for name in (["配装说明.html"] if deliverable else [])+["final-assessment.json","review.json"]},"review_token":outcome["review_packet"]["token"]})
         state.update(phase="exported" if deliverable else "evaluated",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":deliverable,"xml_exported":False,"status":outcome["status"]});write_json(run/"run.json",state)
         return response
     write_text(output/filename,xml)

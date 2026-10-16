@@ -55,12 +55,12 @@ requirements/material_specs 来自实际差异，包括仍插着的禁用/备用
 
 ## 最终复核与交付
 
-方案/claims 修订后计算，沿 next_actions.review_current_result 读真实 user_goal_sources、objective_coverage、pending 与当前 check。对照原话，按 review_template 逐项填写所有 objectives/conclusions 的 scope、findings、verdict 与 evidence_refs。反证、条件、未实现项有内容时写 counter_evidence_refs、conditions、unimplemented，省略按空数组处理；supported 需支持，refuted 需反证。
+方案/claims 修订后计算，沿 next_actions.review_current_result 读原话、目标、待办与 check，按 review_template 审全部 objectives/conclusions。scope 写实际范围，findings 从结果证据说明观察、推断与未知；用户原话只证明要求。反证、条件、未实现项分别用 counter_evidence_refs、conditions、unimplemented，省略按空数组；supported 需支持，refuted 需反证，未知不反推不成立。派生值先核公式，避免重复计算已包含的因素。
 
-发现偏离先改源并重算，再单独提交 assessment.review，之后 evaluate/export 或重跑 route。token 绑定本次意图、对象、文字、引用、XML/引擎与账目；改变后重审。不要用脚本自动生成语义复核或填 token 假称通过，引用/token 有效不证明文字因果正确。
+发现偏离先修源重算，单独提交 assessment.review，再 evaluate/export 或 route。token 绑定当次意图、对象、判断与证据，变更后重审；不自动生成语义复核或填 token，绑定不认证语义。
 
-规划的真实未来依赖可用 condition_reviews：`{subjects,claim_ids,conditions,fallback,evidence_refs}`。subjects 原样取当前 facts.pending，关联本次 supported/partial conclusions，写具体进入条件与在条件失败时能执行的退路（或明确等待再开始）。把能力/未来条件写在适用结论和 condition_reviews；review.unresolved 只记录当前尚未完成的复核工作，不重复列已审查的未测范围。必要设计/来源/计算仍缺、已知非法、矛盾、许可违反、过期复核不能包装成未来条件；普通生成缺口见[配装](build.md#普通目标生成)。
+规划的未来依赖用 condition_reviews：`{subjects,claim_ids,conditions,fallback,evidence_refs}`。subjects 取当前 facts.pending，关联本次 supported/partial conclusions，写具体进入条件和条件失败时仍能执行的退路（或等待再开始）。conditions 承接设计完整后玩家待取得、训练或执行的步骤；unimplemented 记录尚缺的必要设计，review.unresolved 记录尚缺的复核工作，两者完成后才交规划。已审未测范围留 scope/conditions，不要求实战消除所有未知。必要来源/计算仍缺、非法、矛盾、许可违反和过期复核继续修；普通生成见[配装](build.md#普通目标生成)。
 
 完整 readonly 评审可否定/未知；规划的 unknown/refuted 目标如实说明未完成。按[入口的完成步骤](../SKILL.md#工作与完成)核成功返回的文件：build/build_plan 交 XML 与 HTML，readonly 仅报告，route 交本次路线文件。
 
-publication、facts_summary、HTML 与核验共享事实，最终短答用真实状态、已核结果、代价、限制与下一步。源/输出完整性和恢复见[命令](commands.md#恢复与交付完整性)。已有有限支付、未知预算/覆盖、进入条件各保留；导出文件、自审和链接都不能替代目标依据。
+publication、facts_summary、HTML 与核验共享事实，短答用真实状态、已核结果、代价、限制与下一步。完整性和恢复见[命令](commands.md#恢复与交付完整性)。

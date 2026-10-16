@@ -443,12 +443,15 @@ def claim_bindings(document, claim, engine_fingerprint):
     result={"document":digest({k:v for k,v in document.items() if k not in omitted}),"engine":engine_fingerprint}
     stages={s["stage_id"]:s for s in document.get("stages",[])}
     objectives={o["objective_id"]:o for o in document.get("objectives",[])}
+    stage_scoped=any(subject[len(prefix):] in stages
+                     for subject in claim.get("subjects",[])
+                     for prefix in ("stage:","snapshot:","configuration:stage:") if subject.startswith(prefix))
     for subject in claim.get("subjects",[]):
         kind,_,identifier=subject.partition(":")
         if kind=="configuration" and identifier.startswith("stage:"): result[identifier]=digest(stages.get(identifier[len("stage:"):]))
         elif kind in {"stage","snapshot"}: result["stage:"+identifier]=digest(stages.get(identifier))
         elif kind=="objective": result[subject]=digest(objectives.get(identifier))
-        elif stages: result["stages"]=digest(document["stages"])
+        elif stages and not stage_scoped: result["stages"]=digest(document["stages"])
     declared={e["evidence_id"]:e for e in document.get("evidence",[])}
     for reference in claim_references(claim):
         if reference.startswith("native:stage:"):
@@ -957,7 +960,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
               "completion_pending":list(dict.fromkeys(pending)),
               "review_template":{"token":token,"findings":"","unresolved":[],"condition_reviews":[],"conclusions":[template(key,"claim_id") for key in required],
                                  "objectives":[template(key,"objective_id") for key in required_objectives]},
-              "check": "先按原话确定本项要求或 claims.text 待审判断的含义，从 facts.user_goal_sources 反向检查 facts.objective_coverage 与 facts.pending。逐项问‘即使当前数值成立，原要求或判断还可能为什么不成立？’scope 界定直接证据的对象、状态和窗口，不能把待审命题缩窄后当作原命题成立。findings 说明证据直接证明什么、原命题还依赖哪些必要前提及其验证情况；必要前提未证明时，原命题用 partial/unknown，列出的条件不等于已经验证。已证明的有限支付、条件下局部收益分别保留，无关未知不否定它们。有 facts.stages 时按 previous_stage_id 从起点检查最低可用的推进配置：结合 required_items、instance_transitions、equipment_reference 所指本次实际装备 与 transition，核对前段能否取得后段必要规格。把退路放到条件已失败的状态下检查行动、资源、取得地点；来源或最低配置尚未设计出来写入 review.unresolved，不能改称未来条件。未来条件只承接已经设计完整、尚待玩家取得、训练或完成任务的步骤。支持/反证放 evidence_refs/counter_evidence_refs，成立条件放 conditions，相关缺口放 unimplemented，按原命题选择 verdict（supported/partial/refuted/unknown）。核对源判断与当前数值、名称、实验输入、共同条件和作用主体；复核写对数值不等于修正了源文字。发现偏离先修源判断并重算，当前事实用本次 {{fact:引用}}，再单独提交新的 assessment.review；提交后配装再次evaluate再export，路线再次route。刷新绑定不等于复核通过，不自动回填 token。",
+              "check": "对照 facts.user_goal_sources 的原话审全部 objectives/conclusions。scope 写实际对象、状态和窗口；findings 从当前证据说明直接观察、必要推断与未知，支持/反证分别放 evidence_refs/counter_evidence_refs。用户要求只证明目标，不能代替结果证据；核原生派生值的实际公式，未知不等于反证，局部观察不推广到其他状态或持续效果。规划逐项核最低整套配置、来源和切换；路线沿 previous_stage_id 核实际装备、required_items、instance_transitions 与退路。conditions 承接设计完整后玩家待取得、训练或执行的具体条件，退路须在条件失败时仍可执行。unimplemented 记录尚缺的必要设计，review.unresolved 记录尚缺的复核工作，两者先完成再交规划；已审未测范围留在 scope/conditions。按原命题选 supported/partial/refuted/unknown，保留有据的有限收益。发现源判断或数字偏离先修源并重算，再单独提交 assessment.review，之后 evaluate/export 或 route。当前数字用 {{fact:引用}}；不自动填 token，绑定不证明语义。",
               "scope": "摘要绑定防止旧复核沿用到新方案；同一模型自审，不能证明自由文字无误或等同独立模型/实战验证。"}
     # A completed model review may honestly retain relevant unmet goals.
     pending += ["objective:"+row["objective_id"]+":review:"+row["verdict"] for row in objectives if row["verdict"]!="supported" or row["unimplemented"]]
