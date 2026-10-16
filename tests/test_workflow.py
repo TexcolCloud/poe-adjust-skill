@@ -4696,7 +4696,7 @@ class TaskCompletionTests(unittest.TestCase):
             task=poe.read_only_completion(document,changed,{'actual_changes':[{'locator':'/level'}]},[],[],complete)
             self.assertEqual(task['status'],'blocked');self.assertTrue(task['errors'])
 
-    def test_read_only_export_saves_report_evidence_and_never_delivers_xml(self):
+    def test_read_only_export_saves_report_and_render_failure_cannot_claim_success(self):
         with tempfile.TemporaryDirectory() as temp:
             run=Path(temp);document,intent,native,plan=self.fixture(run)
             first=self.assess(run,document,intent,native,plan);self.complete_review(first,plan)
@@ -4707,7 +4707,14 @@ class TaskCompletionTests(unittest.TestCase):
                      'engine_fingerprint':'fixture','engine_version':'fixture','xml_sha256':native['xml_sha256'],'name':'review'}
             state={'intent':intent,'pob_path':str(run),'intent_evidence_folder':str(run)}
             xml=bx.serialise(document)
-            with patch.object(poe,'read_candidate',return_value=(run,state,outcome,xml,run)),patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(['Original invalid equipment'],[],['native:unmeasured'])),patch.object(resources,'assess',return_value={'errors':['Original resource conflict'],'warnings':['Original warning'],'pending':['progress:unknown'],'resources':[],'diagnostics':[]}):
+            with patch.object(poe,'read_candidate',return_value=(run,state,outcome,xml,run)),patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',side_effect=lambda *pos,**kw:(['Original invalid equipment'],[],['native:unmeasured'])),patch.object(resources,'assess',return_value={'errors':['Original resource conflict'],'warnings':['Original warning'],'pending':['progress:unknown'],'resources':[],'diagnostics':[]}):
+                exported=poe.export(args(run=str(run),name='review'))
+                previous_report=(run/'output/review/配装说明.html').read_bytes()
+                with patch.object(poe,'report_html',side_effect=OSError('fixture render failure')),self.assertRaises(OSError):
+                    poe.export(args(run=str(run),name='review'))
+                self.assertEqual(poe.read_json(run/'run.json')['phase'],'exporting')
+                self.assertFalse(poe.read_json(run/'output/review/delivery.json')['file_exported'])
+                self.assertEqual((run/'output/review/配装说明.html').read_bytes(),previous_report)
                 exported=poe.export(args(run=str(run),name='review'))
             self.assertEqual(exported['status'],'scoped_result');self.assertTrue(exported['file_exported']);self.assertFalse(exported['xml_exported'])
             self.assertEqual(exported['pending'],[])
@@ -6411,7 +6418,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertFalse(receipt["file_exported"])
         self.assertTrue(all(Path(path).read_bytes()==content for path,content in artifacts.items()))
 
-    def test_39_final_review_and_optional_url_survive_export_and_failed_render_is_not_success(self):
+    def test_39_final_review_and_optional_url_survive_blocked_export_without_render(self):
         plan=copy.deepcopy(self.refine)
         source=Path(self.temp.name)/"local-evidence.txt";source.write_text("Offline local record",encoding="utf-8")
         plan["evidence"]=[{"evidence_id":"artifact","kind":"artifact","subject":"fixture","path":source.name,"excerpt":"Offline local record"}]
@@ -6438,9 +6445,10 @@ class RealEngineTests(unittest.TestCase):
         self.assertFalse(result["file_exported"]);self.assertEqual(result['files'],[])
         manifest=poe.read_json(self.run_dir/"output/reviewed/delivery.json")
         for name,digest in manifest["files"].items(): self.assertEqual(bx.digest((self.run_dir/"output/reviewed"/name).read_bytes()),digest)
-        with patch.object(poe,"report_html",side_effect=OSError("fixture render failure")),self.assertRaises(OSError):
-            poe.export(args(run=str(self.run_dir),name="reviewed"))
-        self.assertEqual(poe.read_json(self.run_dir/"run.json")["phase"],"exporting")
+        with patch.object(poe,"report_html",side_effect=OSError("must not render blocked delivery")) as render:
+            self.assertFalse(poe.export(args(run=str(self.run_dir),name="reviewed"))["file_exported"])
+        render.assert_not_called()
+        self.assertEqual(poe.read_json(self.run_dir/"run.json")["phase"],"evaluated")
         self.assertFalse(poe.read_json(self.run_dir/"output/reviewed/delivery.json")["file_exported"])
         self.assertFalse(poe.export(args(run=str(self.run_dir),name="reviewed"))["file_exported"])
         plan["summary"]="Unreviewed changed explanation"
