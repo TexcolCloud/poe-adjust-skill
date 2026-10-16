@@ -2806,6 +2806,22 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(action["input_file"],"source.json")
         self.assertEqual(action["diagnostics"],diagnostics)
         self.assertLess(actions.index(action),next(i for i,row in enumerate(actions) if row["action"]=="review_current_result"))
+        # Large diagnostics must not bury the current edit/review arguments.
+        diagnostics[0]['source_diagnostic']={'actual':'observed context '*1000}
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);details=run/'candidates/current/evaluation.json'
+            response={'status':'draft','file_exported':False,'files':[], 'next_actions':actions}
+            poe.write_json(details,{'response':response})
+            bounded=poe.bound_reply(response,argparse.Namespace(command='evaluate',run=str(run),name='current'))
+            indexed={row['purpose']:row for row in bounded['continuations'] if 'purpose' in row}
+            self.assertEqual(indexed['review_claims']['changes'],action['changes'])
+            review=next(row for row in actions if row['action']=='review_current_result')
+            for key in ('edit_arguments','review_file','template_pointer'):
+                self.assertEqual(indexed['review_current_result'][key],review[key])
+            continuation=next(row for row in bounded['continuations'] if row['pointer']=='/response/next_actions')
+            self.assertEqual(bounded['next_actions']+actions[continuation['offset']:],actions)
+            self.assertLessEqual(len(json.dumps({'ok':True,**bounded},ensure_ascii=False))+1,12000)
+            self.assertEqual((bounded['status'],bounded['file_exported'],bounded['files']),('draft',False,[]))
 
     def test_calculation_facts_exposes_current_keys_without_inventing_values(self):
         result={'stats':{'SeasonSpecificObservation':0,'SeasonSpecificFlag':False,'Life':1}}

@@ -2,15 +2,13 @@
 
 ## 命令入口
 
-参数用当前--help，JSON归属用input_contract；本文件保留易误用的调用语义。
-
 PowerShell路径分别加引号，JSON用UTF-8序列化或here-string保存，不拼复杂命令行JSON。替换下面占位为本次绝对路径：
 
 ```powershell
 python '<entry>' doctor --pob '<安装>'
 ```
 
-只读数值用inspect/probe。配装与只读解释沿下节完整调用；start的新run为空并保留原件。路径缺失沿doctor定位，不扩工作区或写原生安装。
+只读数值用inspect/probe。配装与只读解释沿下节完整调用；start的新run为空并保留原件。
 
 ## 增量保存方案
 
@@ -37,11 +35,11 @@ python '<entry>' evaluate --run '<run>' --name candidate-a --plan '<工作区>/p
 python '<entry>' export --run '<run>' --name candidate-a
 ```
 
-路线从route.json开始，两次edit用kind route；计算与最终发布用route --invoked --file '<工作区>/route.json' --out '<工作区>/路线.html' --pob '<安装>'。提交复核后重跑同一route。首次和重审均整体替换复核；沿next_actions.review_current_result的edit_arguments核本次凭证/源revision。程序不代写判断或决定通过。
+路线从route.json开始，两次edit用kind route；计算与最终发布用route --invoked --file '<工作区>/route.json' --out '<工作区>/路线.html' --pob '<安装>'。提交复核后重跑同一route。首次和重审均整体替换复核；沿review_current_result的edit_arguments核本次凭证/源revision。
 
 ## 按需读取与修复
 
---out放声明源JSON目录/子目录，避开程序管理的候选/交付文件。先读delivery_brief/errors/stage_summary/next_actions，再用view读相关pointer/fields/keys/query及分页；page_unit、continuations/deferred_values决定续读。复制当次native_references/evidence_template，核source_revision与身份。
+--out放声明源JSON目录/子目录，避开程序管理的候选/交付文件。先读delivery_brief/errors/stage_summary/next_actions；大返回的continuations用purpose标动作，可含当前changes/edit_arguments，核正文后复用。其余内容用view读相关pointer/fields/keys/query，沿page_unit、continuations/deferred_values续读。复制当次native_references/evidence_template，核source_revision与身份。
 
 诊断的location、expected/actual、source_diagnostic给实际修复入口，先看真实节点再改源；revision过期先重读，保存中断按状态收据恢复。输入/证据/能力有新信息才重试，能力缺口如实保留，拒绝操作停止。
 

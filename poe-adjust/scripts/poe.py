@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.30"
+VERSION = "2.8.31"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -3116,7 +3116,10 @@ def bound_reply(value, args):
                 kept=target[:1];consumed=1
             for index,row in enumerate(target[consumed:],consumed):
                 action={"action":"view","file":str(details),"pointer":pointer+'/'+str(index),"purpose":row['action']}
-                if len(json.dumps(kept+action_reads+[action],ensure_ascii=False))>3000: break
+                arguments={key:row[key] for key in ('edit_arguments','changes','review_file','template_pointer') if key in row}
+                direct={**action,**arguments}
+                if len(json.dumps(kept+action_reads+[direct],ensure_ascii=False))<=4000: action=direct
+                if len(json.dumps(kept+action_reads+[action],ensure_ascii=False))>4000: break
                 action_reads.append(action)
         result[key]=target[:160] if isinstance(target,str) else kept if isinstance(target,list) else {} if isinstance(target,dict) else target
         result["continuations"].append({"action":"view","file":str(details),"pointer":pointer,"offset":consumed,"limit":20})
