@@ -253,6 +253,12 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             bx.require(slot in native_slots,"不是当前原生槽位："+slot,location=base_path,expected=sorted(native_slots),actual=slot)
             base=(bases or {}).get(name)
             if name is not None: bx.require(base,"未知本机基底："+name,location=base_path,expected="current native base name",actual=name)
+            if base and "snapshot" not in stage:
+                requirements=base.get("requirements")
+                required=requirements.get("level") if isinstance(requirements,dict) else None
+                if type(required) in (int,float) and stage.get("level") is not None:
+                    bx.require(stage["level"]>=required,"本阶段等级不能装备所列普通基底；选择当前可用规格，特殊实物以完整快照核实际需求。",code="stage_base_level_unmet",location=base_path,
+                               expected={"base":name,"minimum_character_level":required},actual=stage["level"])
             check=layout.get("checks",{}).get(slot,{}) if layout.get("bases")==stage.get("bases",{}) else {}
             if check.get("base")!=name or type(check.get("valid_for_slot")) is not bool:
                 pending.append("native:equipment:"+sid+":"+slot)

@@ -2,7 +2,7 @@
 
 ## 命令入口
 
-使用本次scripts/poe.py与可用Python，doctor返回实际解释器/脚本/安装/能力；不凭包名猜旧位置。--help查参数，input_contract查JSON归属与字段，本文件保留易误用的调用语义。
+参数用当前--help，JSON归属用input_contract；本文件保留易误用的调用语义。
 
 PowerShell路径分别加引号，JSON用UTF-8序列化或here-string保存，不拼复杂命令行JSON。替换下面占位为本次绝对路径：
 
@@ -32,7 +32,15 @@ python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --cha
 | remove | JSON指针数组，删除明确字段 |
 | review_claims | 已核当前文字与证据的claim_id数组，刷新程序绑定 |
 
-同次edit指针按同一源revision解释，stage_id/claim_id/instance_id保持真实身份。变更后读invalidated_claims，修文字和条件再登记；方案及当前计算稳定后，单独提交assessment.review，重算再导出。
+同次edit指针按同一源revision解释，stage_id/claim_id/instance_id保持真实身份。变更后读invalidated_claims，修文字和条件再登记。
+
+对象稳定后，changes只写set.assessment.review，按本次review_template填写除token外的判断/依据/条件。沿next_actions.review_current_result的edit_arguments提交：
+
+```powershell
+python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/review-changes.json' --review-from '<本次details_file>'
+```
+
+路线用kind route。程序核计算凭证、源revision与引擎并关联token，省去手抄标识；只保存模型写出的复核，不决定通过。保存后重算再export/route。
 
 ## 按需读取与修复
 

@@ -1,6 +1,6 @@
 # 判断、操作与自审（schema_version 2）
 
-用于配装、解释/复核与路线。程序核字段、引用、绑定与可算事实；你从实际对象判断含义、取得、覆盖及目标。字段格式沿input_contract，原生引用沿本次reference_contract。
+用于配装、解释/复核与路线；字段沿input_contract，原生引用沿本次reference_contract。
 
 ## 来源与判断
 
@@ -55,8 +55,14 @@ requirements/material_specs取实际差异，含仍插着的停用/备用宝石�
 
 沿next_actions.review_current_result、review_template/check审全部objectives/conclusions。scope限实际对象/状态/窗口，findings简写当前支持、反例与未知，不另抄整段旧计划。引用支持与反证分别放evidence_refs/counter_evidence_refs；supported须有支持，refuted须有反证，未知不反推不成立。用户要求是方向证据，不是结果证据。
 
-conditions承接完整对象之后玩家待取得、训练、通关或执行的具体事项；unimplemented记录本次尚缺的必要设计，review.unresolved记录尚缺复核工作。后两者先做完才交规划。已审未测范围可以留scope/conditions，完整否定/未知可以完成readonly；规划未知/反驳目标如实记未完成。
+| 实际状态 | 写入位置 | 处理 |
+|---|---|---|
+| 完整对象已设计，玩家未来待取得、训练、通关或执行 | conditions及condition_reviews | 写具体条件和退路，可完成规划；就绪仍保留条件 |
+| 本轮必要规格、操作或退路尚未设计 | unimplemented | 继续设计和实算 |
+| 本轮所需评审尚未完成 | review.unresolved | 继续复核 |
+
+已审未测范围留scope/conditions；完整否定/未知可完成readonly，规划目标未知或被反驳则保留未完成。
 
 condition_reviews用{subjects,claim_ids,conditions,fallback,evidence_refs}，subjects取当前facts.pending，关联当前supported/partial判断；退路在条件真的失败时仍能执行，或保留已可用前段等条件满足才切换。来源/计算缺失、已知非法、矛盾或许可缺口回源修，不能仅改评审结论清待办。
 
-对象稳定后单独提交assessment.review，token取当前包，随后evaluate/export或route。按[入口完成步骤](../SKILL.md#工作与完成)取本次成功files；build/build_plan交XML与HTML、readonly仅报告、route交实际路线文件。publication/facts_summary/HTML共享事实，短答采用同一已核结果、代价与限制，恢复见[命令](commands.md#恢复与交付完整性)。
+对象稳定后用[复核提交](commands.md#增量保存方案)关联当前计算，程序传递标识，模型写完整objectives/conclusions及依据；随后重算。按[入口完成步骤](../SKILL.md#工作与完成)取成功files：build/build_plan交XML与HTML、readonly仅报告、route交路线文件。短答沿publication/facts_summary/HTML的当前结果、代价与限制，恢复见[命令](commands.md#恢复与交付完整性)。

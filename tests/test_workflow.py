@@ -527,7 +527,7 @@ class DocumentTests(unittest.TestCase):
 def route_fixture(game_version="3.29"):
     return {"schema_version":2,"name":"离线路线","confirmed":True,"goal":"验证阶段结构","objectives":[{"objective_id":"fixture-goal","text":"验证阶段结构","evidence_refs":["user"]}],"league":"测试赛季","class_id":4,"game_version":game_version,"ascendancy":"Champion","scope":"所列阶段","trade_mode":"ssf",
             "constraint_sources":{"/goal":"user","/trade_mode":"user"},"gems":{"ShieldCrush":{}},
-            "stages":[{"stage_id":"stage-"+str(i),"name":"测试阶段","level":level,"act":act,"entry_conditions":[],"bases":{"Gloves":"Iron Gauntlets"},
+            "stages":[{"stage_id":"stage-"+str(i),"name":"测试阶段","level":level,"act":act,"entry_conditions":[],"bases":{"Gloves":"Wool Gloves"},
                        "skill_groups":[{"name":"输出","slot":"Gloves","use":"按需使用","gems":[{"instance_id":"one","skill_id":"ShieldCrush","level":1,"quality":0}]}],
                        "ascendancy_points":0,"ascendancy_nodes":[],"required_items":[]} for i,(level,act) in enumerate(((1,1),(12,2),(68,11)))]}
 
@@ -538,11 +538,23 @@ class RouteTests(unittest.TestCase):
         self.gems={"ShieldCrush":{"skill_id":"ShieldCrush","name":"Shield Crush","tags":{"grants_active_skill":True},"level_requirements":[{"gem_level":1,"character_level":1,"naturally_trainable":True,"strength":10,"dexterity":0,"intelligence":0,"base_resources":{"manaCost":6}},{"gem_level":20,"character_level":70,"naturally_trainable":True}]}}
         self.classes=[{"id":4,"name":"Duelist","ascendancies":[{"id":3,"name":"Champion"}]}]
         self.evidence={"user":{"kind":"user_statement","status":"user_declared","subject":"intent"}}
-        self.bases={"Iron Gauntlets":{"name":"Iron Gauntlets","sockets":4,"valid_slots":["Gloves"]}}
+        self.bases={"Wool Gloves":{"name":"Wool Gloves","sockets":4,"valid_slots":["Gloves"]}}
         self.slots=[{"name":"Gloves"}]
-        self.equipment={stage["stage_id"]:{"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Iron Gauntlets","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}} for stage in self.route["stages"]}
+        self.equipment={stage["stage_id"]:{"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Wool Gloves","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}} for stage in self.route["stages"]}
     def check(self):
         return routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,equipment=self.equipment,evidence=self.evidence)
+
+    def test_unmaterialized_stage_checks_native_base_level_without_guessing_attributes(self):
+        self.bases["Wool Gloves"]["requirements"]={"level":2,"str":999}
+        with self.assertRaises(bx.ContractError) as error:self.check()
+        self.assertEqual(error.exception.diagnostic["location"],"/stages/0/bases/Gloves")
+        self.assertEqual(error.exception.diagnostic["expected"]["minimum_character_level"],2)
+        self.route["stages"][0]["level"]=2
+        checked,_=self.check()  # No actual attributes were supplied; do not invent them.
+        self.assertEqual(checked["stages"][0]["level"],2)
+        self.route["stages"][0]["level"]=1
+        self.route["stages"][0]["snapshot"]={"assumptions":[],"operations":{}}
+        self.check()  # The actual snapshot item requirements, not its bare base, govern this case.
 
     def test_goal_reference_diagnostics_use_explicit_selection_without_duplicate_subject(self):
         claims=[{"claim_id":"overall","status":"model_assessed","subjects":["goal"]},
@@ -622,7 +634,7 @@ class RouteTests(unittest.TestCase):
         group["gems"]=[dict(group["gems"][0],instance_id=str(i)) for i in range(5)]
         with self.assertRaisesRegex(ValueError,"孔位"):self.check()
     def test_slots_and_capacity_come_from_native_base(self):
-        self.bases["Iron Gauntlets"]["valid_slots"]=["Future Slot"]
+        self.bases["Wool Gloves"]["valid_slots"]=["Future Slot"]
         checked,_=self.check();self.assertNotIn("native:equipment:stage-0:Gloves",checked["pending"])
         self.equipment["stage-0"]["checks"]["Gloves"]["valid_for_slot"]=False
         with self.assertRaisesRegex(ValueError,"不相符"):self.check()
@@ -3452,8 +3464,64 @@ class TimelineTests(unittest.TestCase):
 
 
 class EditAndRecoveryTests(unittest.TestCase):
+    def test_review_from_binds_authored_review_to_current_calculation_without_transcription(self):
+        for case in ('route','plan','export'):
+            with self.subTest(case=case):
+                kind='plan' if case=='export' else case
+                self.source=self.folder/(case+'.json');prior,state_path=self.saved_proposal(kind)
+                file=Path(prior.proposal_file);saved=poe.read_json(file)
+                outcome=saved['checked_route'] if kind=='route' else saved
+                outcome['final_review' if kind=='route' else 'review_packet']={'token':'opaque-current-calculation',
+                    'coverage':{'required_objective_ids':[]}}
+                poe.write_json(file,saved);state=poe.read_json(state_path)
+                if kind=='route':state['files'][str(file)]=bx.digest(file.read_bytes())
+                else:state['candidates']['native']['evaluation_sha256']=bx.digest(file.read_bytes())
+                poe.write_json(state_path,state)
+                if case=='export':
+                    file=self.folder/'run/output/native/final-assessment.json';poe.write_json(file,saved)
+                    poe.write_json(file.parent/'delivery.json',{'file_exported':False,'candidate':'native',
+                        'files':{'final-assessment.json':bx.digest(file.read_bytes())}})
+                review={'findings':'Reviewer-authored result; real input remains blocked.','unresolved':['Actual work remains'],
+                        'conclusions':[],'objectives':[]}
+                poe.write_json(self.request,{'set':{'assessment':{'review':review}}})
+                request=args(invoked=True,kind=kind,file=str(self.source),changes=str(self.request),review_from=str(file))
+                with patch.object(engine,'calculate') as native:
+                    result=poe.edit_document(request)
+                    replay=poe.edit_document(request)
+                native.assert_not_called()
+                self.assertEqual(poe.read_json(self.source)['assessment']['review'],{**review,'token':'opaque-current-calculation'})
+                self.assertEqual(result['reviewed_calculation']['file'],str(file))
+                self.assertTrue(replay['replayed'])
+                self.assertEqual(result['status'],'saved_draft')
+                self.assertEqual(poe.read_json(file),saved)  # Never edits the result or makes it pass.
+
+    def test_review_from_rejects_stale_calculation_and_mixed_changes_before_writes(self):
+        prior,state_path=self.saved_proposal();file=Path(prior.proposal_file)
+        saved=poe.read_json(file);saved['checked_route']['final_review']={'token':'current','coverage':{'required_objective_ids':[]}}
+        poe.write_json(file,saved);state=poe.read_json(state_path);state['files'][str(file)]=bx.digest(file.read_bytes());poe.write_json(state_path,state)
+        review={'findings':'Authored assessment','unresolved':[],'conclusions':[],'objectives':[]}
+        request=args(invoked=True,kind='route',file=str(self.source),changes=str(self.request),review_from=str(file),if_sha256=prior.if_sha256)
+        for change in ('mixed','receipt','source','missing_findings','shape'):
+            with self.subTest(change=change):
+                before=self.source.read_bytes();receipt=self.source.with_suffix('.edit.json');old_receipt=receipt.read_bytes()
+                payload={'set':{'assessment':{'review':copy.deepcopy(review)}}}
+                original_file=file.read_bytes()
+                if change=='mixed':payload['set']['name']='Unreviewed modification'
+                elif change=='receipt':poe.write_json(file,{**saved,'changed':True})
+                elif change=='source':
+                    value=poe.read_json(self.source);value['name']='Later source';poe.write_json(self.source,value)
+                    request.if_sha256=bx.digest(self.source.read_bytes());before=self.source.read_bytes()
+                elif change=='missing_findings':payload['set']['assessment']['review'].pop('findings')
+                else:payload['set']['assessment']=[]
+                poe.write_json(self.request,payload)
+                with self.assertRaises(bx.ContractError):poe.edit_document(request)
+                self.assertEqual(self.source.read_bytes(),before);self.assertEqual(receipt.read_bytes(),old_receipt)
+                file.write_bytes(original_file)
+                if change=='source':
+                    value.pop('name');poe.write_json(self.source,value);request.if_sha256=bx.digest(self.source.read_bytes())
+
     def saved_proposal(self,kind='route'):
-        first=self.edit({'set':{'stages':[{'stage_id':'one','snapshot':{'operations':{'tree':{'nodes_add':[42]}}}}]}}) if kind=='route' else self.edit({'set':{'mode':'refine','operations':{'gems':[{'group':1,'index':1,'skill_id':'FutureSkill','level':20},{'group':1,'index':2,'skill_id':'OtherSkill','level':7}]}}},kind='plan')
+        first=self.edit({'set':{'assessment':{},'stages':[{'stage_id':'one','snapshot':{'operations':{'tree':{'nodes_add':[42]}}}}]}}) if kind=='route' else self.edit({'set':{'assessment':{},'mode':'refine','operations':{'gems':[{'group':1,'index':1,'skill_id':'FutureSkill','level':20},{'group':1,'index':2,'skill_id':'OtherSkill','level':7}]}}},kind='plan')
         file=self.folder/'result.evidence.json' if kind=='route' else self.folder/'run/candidates/native/evaluation.json'
         change={'replace':{'/stages/0/snapshot/operations/tree':{'nodes':[20,42]}}} if kind=='route' else {'set':{'operations':{'gems':[{'group':1,'index':1,'level':5}]}}}
         proposal={'proposal_type':'native_tree_connection' if kind=='route' else 'native_gem_level','changes':change,'adoptable':True,'blockers':[],'preview':{'roundtrip_verified':True}}
@@ -3886,7 +3954,7 @@ class EditAndRecoveryTests(unittest.TestCase):
         for index in range(80):
             stage=copy.deepcopy(template);stage["stage_id"]=f"phase-{index:03d}";stage["name"]="Independently selected stage "+str(index)
             fixture.route["stages"].append(stage)
-            fixture.equipment[stage["stage_id"]]={"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Iron Gauntlets","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}}
+            fixture.equipment[stage["stage_id"]]={"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Wool Gloves","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}}
         fixture.check()
         poe.write_json(self.source,fixture.route);out=self.folder/"large.html";details=out.with_suffix(".evidence.json")
         payload={"status":"draft","file_exported":True,"stages":80,
@@ -5170,11 +5238,27 @@ class RealEngineTests(unittest.TestCase):
         plan['assessment']['review']={**template,'findings':'Only the native interface scope is reviewed',
             'objectives':[{**row,'verdict':'unknown','scope':'Fixture scope only','findings':'Unresolved gameplay dependencies retained'} for row in template['objectives']],
             'conclusions':[{**row,'verdict':'unknown','scope':'Native control mapping only','findings':'Two roles use the chosen controls; no temporal guarantee'} for row in template['conclusions']]}
+        # The author writes findings; the editor binds current native identity.
+        authored=copy.deepcopy(plan['assessment']['review']);authored.pop('token')
+        change=Path(self.temp.name)/'common-measurement-review-change.json'
+        poe.write_json(change,{'set':{'assessment':{'review':authored}}})
+        stdout=io.StringIO()
+        with redirect_stdout(stdout):
+            code=poe.main(['edit','--invoked','--kind','plan','--file',str(Path(self.temp.name)/'common-measurement.json'),
+                          '--changes',str(change),'--review-from',first['evaluation_file']])
+        self.assertEqual(code,0,stdout.getvalue())
+        plan=poe.read_json(Path(self.temp.name)/'common-measurement.json')
+        self.assertEqual(plan['assessment']['review']['token'],first['review_token'])
+        self.assertEqual(plan['assessment']['review']['findings'],authored['findings'])
         second=self.evaluate_plan(plan,'common-measurement')
         self.assertEqual(first['review_token'],second['review_token'])
         exported=poe.export(args(run=str(self.run_dir),name='common-measurement'))
         self.assertNotIn('final_review:stale',exported['pending'])
         actual=poe.read_json(self.run_dir/'output/common-measurement/final-assessment.json')
+        reviewed=poe.edit_document(args(invoked=True,kind='plan',file=str(Path(self.temp.name)/'common-measurement.json'),
+            changes=str(change),review_from=exported['details_file']))
+        self.assertEqual(reviewed['reviewed_calculation']['file'],exported['details_file'])
+        self.assertEqual(poe.read_json(Path(self.temp.name)/'common-measurement.json')['assessment']['review']['token'],actual['review_packet']['token'])
         self.assertEqual(actual['configuration_audit']['measurement_actual'],first_details['configuration_audit']['measurement_actual'])
         self.assertEqual(engine.character_state(actual['original']),engine.character_state(current))
         changes=actual['materialization']['actual_changes']
@@ -5221,7 +5305,7 @@ class RealEngineTests(unittest.TestCase):
         cls.run_dir = Path(cls.temp.name) / "中文 配装任务"
         poe.begin(args(invoked=True, input=str(cls.sample), run=str(cls.run_dir)))
         cls.original = bx.read_document(cls.sample)
-        cls.native = engine.calculate(cls.pob, catalog="bases", query="id:Iron Gauntlets", limit=1)
+        cls.native = engine.calculate(cls.pob, catalog="bases", query="id:Wool Gloves", limit=1)
         current=engine.calculate(cls.pob,bx.serialise(cls.original))
         point_budget=resources.assess(current,{}, {})['point_budgets'][0]
         point_limit=min(current['points']+10,point_budget.get('native_maximum',current['points']+10))

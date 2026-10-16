@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.27"
+VERSION = "2.8.28"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -71,7 +71,7 @@ def input_contract(kind):
                               "checks":{"type":"array","entry_fields":["reference","op","value"]},"bindings":"program owned; use review_claims"},
                       assessment={"type":"object","fields":["goal_claim_ids","scope","unresolved","review"],
                                   "goal_claim_ids":"当前总体判断的非空 claim_id 数组；此引用直接确定总体关联，无需重复 goal 标签。",
-                                  "review":"沿当前 review.json 的 review_template，完成输入修订与计算后单独提交；随后再次计算再 export。"})
+                                  "review":"按当前 review_template 写判断；edit --changes 配合 --review-from 本次 details_file，由程序关联计算标识，随后重算再 export。"})
     if kind=="plan":
         nested["operations"]={"fields":sorted(bx.OPERATION_FIELDS),"gems":{"fields":sorted(set(bx.GEM_FIELDS)|{"group","index"})},
                               "groups":{"fields":sorted(set(bx.GROUP_FIELDS)|{"index"})},"tree":{"fields":sorted(bx.TREE_FIELDS)}}
@@ -233,34 +233,44 @@ def input_artifacts_current(outcome):
     return all(Path(filename).is_file() and bx.digest(Path(filename).read_bytes())==digest for group in groups for filename,digest in group.items())
 
 
-def proposal_request(args, root, source):
-    """Read a saved native proposal through the existing calculation receipts."""
-    path=Path(args.proposal_file).resolve()
-    bx.require(isinstance(getattr(args,"proposal_id",None),str) and args.proposal_id,"采用提案需提供 next_actions 的 proposal_id。",location="/proposal_id")
-    saved=read_json(path); raw_hash=bx.digest(path.read_bytes())
-    if args.kind=="plan":
-        bx.require(path.name=="evaluation.json" and path.parent.parent.name=="candidates","使用 evaluate 返回的 evaluation_file。",location="/proposal_file")
+def calculation_receipt(kind, path, root, source, *, purpose):
+    """Use the same current computation identity for proposals and authored reviews."""
+    path=Path(path).resolve(); location="/proposal_file" if purpose=="proposal" else "/review_from"
+    raw_hash=bx.digest(path.read_bytes()); saved=read_json(path)
+    if kind=="plan":
+        final=path.name=="final-assessment.json" and path.parent.parent.name=="output"
+        bx.require(final or path.name=="evaluation.json" and path.parent.parent.name=="candidates","使用本次 evaluate 的 evaluation_file 或 export 的 details_file。",location=location)
         _,state=read_run(path.parent.parent.parent)
-        bx.require(state.get("candidates",{}).get(path.parent.name,{}).get("evaluation_sha256")==raw_hash,"计算凭证已变化或不完整，请重新 evaluate。",code="proposal_receipt_stale",location="/proposal_file")
+        receipt=read_json(path.parent/"delivery.json") if final else state.get("candidates",{}).get(path.parent.name,{})
+        observed=receipt.get("files",{}).get(path.name) if final else receipt.get("evaluation_sha256")
+        bx.require(observed==raw_hash and (not final or receipt.get("candidate")==path.parent.name),"计算凭证已变化或不完整，请重新 evaluate/export。",code=purpose+"_receipt_stale",location=location)
         outcome=saved; input_file=saved.get("source_plan"); revision=saved.get("source_plan_sha256")
-        bx.require(saved.get("intent_hash")==state.get("intent_hash") and saved.get("original_sha256")==state.get("original_sha256"),"意图或原角色变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
+        bx.require(saved.get("intent_hash")==state.get("intent_hash") and saved.get("original_sha256")==state.get("original_sha256"),"意图或原角色变化，请重新计算。",code=purpose+"_context_stale",location=location)
     else:
-        bx.require(path.name.endswith(".evidence.json"),"使用 route 返回的 .evidence.json。",location="/proposal_file")
+        bx.require(path.name.endswith(".evidence.json"),"使用 route 返回的 .evidence.json。",location=location)
         state=read_json(path.with_name(path.name.removesuffix(".evidence.json")+".state.json"))
-        bx.require(state.get("phase") in {"evaluated","exported"} and state.get("files",{}).get(str(path))==raw_hash,"路线计算凭证已变化或不完整，请重新 route。",code="proposal_receipt_stale",location="/proposal_file")
+        bx.require(state.get("phase") in {"evaluated","exported"} and state.get("files",{}).get(str(path))==raw_hash,"路线计算凭证已变化或不完整，请重新 route。",code=purpose+"_receipt_stale",location=location)
         outcome=saved.get("checked_route",{});input_file=state.get("input");revision=state.get("input_sha256")
-    bx.require(saved.get("skill_version")==VERSION and saved.get("engine_fingerprint")==state.get("engine_fingerprint")==engine.fingerprint(root),"技能或引擎变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
-    bx.require(input_artifacts_current(outcome),"外部角色模板变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
+    bx.require(saved.get("skill_version")==VERSION and saved.get("engine_fingerprint")==state.get("engine_fingerprint")==engine.fingerprint(root),"技能或引擎变化，请重新计算。",code=purpose+"_context_stale",location=location)
+    bx.require(input_artifacts_current(outcome),"外部角色模板变化，请重新计算。",code=purpose+"_context_stale",location=location)
+    bx.require(input_file is not None and Path(input_file).resolve()==source and isinstance(revision,str) and revision,"计算不属于本源方案或缺少输入凭证。",code=purpose+"_context_stale",location="/file",actual=str(source))
+    bx.require(bx.digest(path.read_bytes())==raw_hash,"读取期间计算凭证变化，请重读。",location=location)
+    return outcome,{"file":str(path),"input_revision":revision,"receipt_sha256":raw_hash}
+
+
+def proposal_request(args, root, source):
+    """Read a saved native proposal through the shared calculation receipts."""
+    bx.require(isinstance(getattr(args,"proposal_id",None),str) and args.proposal_id,"采用提案需提供 next_actions 的 proposal_id。",location="/proposal_id")
+    outcome,context=calculation_receipt(args.kind,args.proposal_file,root,source,purpose="proposal")
     candidates=[row[key] for row in outcome.get("diagnostics",[]) for key in ("connection_proposal","change_proposal") if isinstance(row.get(key),dict) and row[key].get("proposal_id")==getattr(args,"proposal_id",None)]
     bx.require(len(candidates)==1,"proposal_id 必须对应当前计算中唯一的程序提案。",location="/proposal_id",expected="one current saved proposal",actual=getattr(args,"proposal_id",None))
     proposal=candidates[0]
     body={k:v for k,v in proposal.items() if k!="proposal_id"}
     bx.require(bx.digest(json.dumps(body,sort_keys=True,ensure_ascii=False,allow_nan=False))==proposal["proposal_id"],"提案内容被修改，请重新计算。",location="/proposal_id")
-    bx.require(input_file is not None and Path(input_file).resolve()==source and proposal.get("input_file")==str(source) and proposal.get("input_revision")==revision and proposal.get("details_file")==str(path) and proposal.get("kind")==args.kind,
+    bx.require(proposal.get("input_file")==str(source) and proposal.get("input_revision")==context["input_revision"] and proposal.get("details_file")==context["file"] and proposal.get("kind")==args.kind,
                "提案不属于本源方案和本次计算。",code="proposal_context_stale",location="/file",actual=str(source))
     bx.require(proposal.get("adoptable") is True,"提案存在已知冲突；先修订所列目标、点数或操作后重算。",location="/proposal_id",actual=proposal.get("blockers"))
-    bx.require(bx.digest(path.read_bytes())==raw_hash,"读取期间计算凭证变化，请重读。",location="/proposal_file")
-    return copy.deepcopy(proposal["changes"]), {"file":str(path),"proposal_id":proposal["proposal_id"],"input_revision":revision,"receipt_sha256":raw_hash,"proposal_type":proposal["proposal_type"]}
+    return copy.deepcopy(proposal["changes"]), {**context,"proposal_id":proposal["proposal_id"],"proposal_type":proposal["proposal_type"]}
 
 
 def edit_document(args):
@@ -268,8 +278,10 @@ def edit_document(args):
     bx.require(args.invoked,"用户明确调用后才能创建/修改方案。",location="/invoked",expected=True,actual=args.invoked)
     path=Path(args.file).resolve()
     reference=getattr(args,"proposal_file",None)
+    review_from=getattr(args,"review_from",None)
     changes=getattr(args,"changes",None)
     bx.require(bool(reference)!=bool(changes),"使用 changes 文件或程序 proposal_file 二者之一。",location="/changes")
+    bx.require(not review_from or not reference,"review_from 配合模型编写的 changes 文件。",location="/review_from")
     changes_path=Path(reference or changes).resolve()
     bx.require(path.suffix.lower()==".json" and path!=changes_path,"方案与修改请求使用两个独立 JSON 文件。",location="/file",actual=str(path))
     root=engine.resolve_root(args.pob); engine.check_output_path(path)
@@ -277,12 +289,24 @@ def edit_document(args):
     request,adoption=proposal_request(args,root,path) if reference else (read_json(changes_path,role="input"),None)
     bx.require_keys(request,{"set","replace","remove","review_claims"},"/","修改请求使用 set/replace/remove/review_claims。")
     bx.require(isinstance(request.get("set",{}),dict),"set 应为对象。",location="/set",expected="object",actual=type(request.get("set")).__name__)
+    review_context=None; reviewed_packet=None
+    if review_from:
+        current,review_context=calculation_receipt(args.kind,review_from,root,path,purpose="review")
+        reviewed_packet=current.get("review_packet" if args.kind=="plan" else "final_review",{})
+        token=reviewed_packet.get("token")
+        bx.require(isinstance(token,str) and token,"计算缺少复核标识，请重算。",location="/review_from")
+        assessment=request.get("set",{}).get("assessment")
+        bx.require(isinstance(assessment,dict),"changes 的 set.assessment.review 写本次真实复核。",location="/set/assessment")
+        authored=assessment.get("review")
+        bx.require(isinstance(authored,dict),"changes 的 set.assessment.review 写本次真实复核。",location="/set/assessment/review")
+        bx.require(authored.get("token",token)==token,"复核标识与所选计算不一致；核对计算和判断后省略手抄token。",code="review_context_stale",location="/assessment/review/token",expected=token,actual=authored.get("token"))
+        authored["token"]=token
     existing=path.read_bytes() if path.is_file() else None
     stamp=bx.digest(existing) if existing is not None else None
     receipt=path.with_suffix(".edit.json")
-    check_path_roles([("change_request",changes_path)],[("editable_input",path),("edit_receipt",receipt)])
+    check_path_roles([("change_request",changes_path)]+([("reviewed_calculation",review_from)] if review_from else []),[("editable_input",path),("edit_receipt",receipt)])
     bx.require(receipt!=changes_path,"修改请求不能使用程序的 .edit.json 凭证文件名。",location="/changes",actual=str(changes_path))
-    request_hash=bx.digest(json.dumps({"kind":args.kind,"request":request,**({"adoption":adoption} if adoption else {})},sort_keys=True,ensure_ascii=False,allow_nan=False))
+    request_hash=bx.digest(json.dumps({"kind":args.kind,"request":request,**({"adoption":adoption} if adoption else {}),**({"reviewed_calculation":review_context} if review_context else {})},sort_keys=True,ensure_ascii=False,allow_nan=False))
     if receipt.is_file() and existing is not None:
         try: old=read_json(receipt)
         except (ValueError,OSError): old={}
@@ -290,9 +314,13 @@ def edit_document(args):
             if old.get("entrypoint")!=execution_entrypoint() or old.get("input_contract")!=input_contract(args.kind):
                 old.update(entrypoint=execution_entrypoint(),input_contract=input_contract(args.kind));write_json(receipt,old)
             return {**old,"replayed":True,"file":str(path),"status":"saved_draft"}
-    bx.require(existing is None or getattr(args,"if_sha256",None)==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",code="input_revision_stale",location="/if_sha256",expected=stamp,actual=getattr(args,"if_sha256",None))
+    requested_revision=getattr(args,"if_sha256",None)
+    if review_context and requested_revision is None: requested_revision=review_context["input_revision"]
+    bx.require(existing is None or requested_revision==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",code="input_revision_stale",location="/if_sha256",expected=stamp,actual=requested_revision)
     if adoption:
         bx.require(existing is not None and adoption["input_revision"]==stamp,"源方案变化，请重算新的提案。",code="proposal_context_stale",location="/if_sha256",expected=stamp,actual=adoption["input_revision"])
+    if review_context:
+        bx.require(existing is not None and review_context["input_revision"]==stamp,"源方案变化，请重算后复核当前结果。",code="review_context_stale",location="/review_from",expected=stamp,actual=review_context["input_revision"])
     document=read_json(path,role="input") if existing is not None else {"schema_version":SCHEMA_VERSION}
     result=merge_edit(document,request.get("set",{}))
     replacements=request.get("replace",{})
@@ -356,9 +384,10 @@ def edit_document(args):
         copied=copy.deepcopy(value);copied.get("assessment",{}).pop("review",None)
         return copied
     changed_inputs=document_changes(without_review(document),without_review(result))
-    if new_review is not None and document_changes(old_review,new_review):
+    if review_context or new_review is not None and document_changes(old_review,new_review):
         bx.require(not changed_inputs,"先保存方案修改并重算，再单独提交当前复核。",code="review_transaction_mixed",location="/assessment/review",expected="review-only transaction")
-        facts.review_shape(new_review,complete=False,claim_ids=claims)
+        facts.review_shape(new_review,complete=bool(review_context),claim_ids=claims,
+                           objective_ids=reviewed_packet.get("coverage",{}).get("required_objective_ids",[]) if review_context else None)
     # Validate local structure before touching the only source. Semantic choices
     # and current native legality remain evaluate/route responsibilities.
     bx.require((path.read_bytes() if path.is_file() else None)==existing,"保存前方案已变化，请重新读取 revision。",location="/file",actual=str(path))
@@ -388,6 +417,7 @@ def edit_document(args):
                                          'instruction':'先计算当前方案，按新结果核对这些失效判断的正文与依据，修正源文字后重新评审。计算结果会给出可读取的 observations；程序不会自动刷新旧结论。'})
     if args.kind=="route": response["stage_instances"]=[{"stage_id":s["stage_id"],"instances":[{k:g.get(k) for k in ("instance_id","skill_id","level")} for group in s.get("skill_groups",[]) for g in group.get("gems",[])]} for s in result.get("stages",[])]
     if adoption: response["adopted_proposal"]=adoption
+    if review_context: response["reviewed_calculation"]=review_context
     response["facts_summary"]=f"已保存草案；实际修改 {len(response['actual_changes'])} 处，阶段 {response['counts']['stages']} 个、技能组 {response['counts']['skill_groups']} 组、宝石 {response['counts']['gems']} 颗、判断 {response['counts']['claims']} 条。待重新评审判断 {len(invalidated)} 条。持久状态凭证保留在 {receipt}；程序临时文件已自动处理。此操作没有计算或证明配装达标。"
     if response.get('prior_review',{}).get('status')=='requires_recalculation': response['facts_summary']+=' 输入或判断绑定已变化，旧整份复核需重算并按当前证据重新提交；没有自动刷新旧结论。'
     json_text(response)  # Check both encoded documents before committing either.
@@ -1443,7 +1473,8 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     if any(value.startswith("final_review:") for value in outcome["pending"]) or scoped and outcome["pending"]:
         actions.append({**shared,"action":"review_current_result","review_file":str(review_file),
                         "user_basis_pointer":"/facts/user_goal_sources","objective_pointer":"/facts/objective_coverage","dependencies_pointer":"/facts/pending","method_pointer":"/check","template_pointer":"/review_template",
-                        "instruction":"将会改变当前对象、数值或判断的修订落实并重算；读取当次包的原话声明、目标拆分、全部依赖及 check 复核方法，先审方法再逐项目标判断，填写源 assessment.review。保存复核后必须按 calculation 再次 evaluate/route，再 export 配装；不能直接沿用旧候选。诊断所保留的原对象错误和未测项仍明确记录。判断列表完整不代表用户目标完成；不得自动回填 token。"})
+                        "edit_arguments":{"kind":"route" if details_pointer else "plan","file":str(input_file),"review_from":str(details_file)},
+                        "instruction":"修订落实并重算后，读原话、实际对象及 check，按 review_template 写完整逐项判断与依据，用 edit --changes 配合 edit_arguments 提交；程序只绑定本次计算标识，不代写判断。unresolved 留本轮未完成复核，unimplemented 留必要设计缺口，未来取得/训练/执行写 conditions 及 condition_reviews。随后按 calculation 重算，再 export 配装。完整字段不证明目标已实现。"})
     if read_only and not report_exported and task_deliverable(outcome.get("task_completion",{})):
         actions.append({**shared,"action":"export","purpose":"read_only_report","delivery_status":outcome["status"],"xml_exported":False,
                         "instruction":"沿当前 export 最终复算，交付只读 HTML 和证据；scoped_result 仅表示所列评审完成，原角色状态继续保留。"})
@@ -2936,6 +2967,7 @@ def parser():
             change.add_argument("--changes",help="set 增量记录、replace 精确字段/数组、remove 路径、review_claims 重新评审标识")
             change.add_argument("--proposal-file",help="evaluate/route 返回的完整计算凭证；程序读取其中的提案修改")
             cmd.add_argument("--proposal-id",help="本次 next_actions 返回的原生候选标识；无需抄写修改内容")
+            cmd.add_argument("--review-from",help="配合 changes 中已编写的 assessment.review，核对本次计算 details_file 并由程序关联标识；仍须重算")
             cmd.add_argument("--if-sha256",help="已有文件需使用上次返回的 revision；同一请求重试自动去重")
         if name=="view":
             cmd.add_argument("--file",required=True,help="获准任务工作区中已保存的JSON")

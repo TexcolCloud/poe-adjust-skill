@@ -1,16 +1,16 @@
 # 角色配装与复核（schema_version 2）
 
-已有XML或完整纯PoB分享码用本协议。[资料](data.md)查当前事实，[证据](evidence.md)记录判断/资源/物资，[命令](commands.md)保存与恢复；字段从当前input_contract取。
+已有角色用本协议；[资料](data.md)、[证据](evidence.md)、[命令](commands.md)按需查，字段沿input_contract。
 
 ## 只读解释
 
 快照数值及已返回投影直接用inspect/probe事实页。另证机制因果或只讨论配装取舍用start/intent/evaluate/export，intent.task_kind为read_only_review，plan用refine及空operations，保留被审对象；实验另用probe。intent含实际goal/objectives、user_statement及constraint_sources，本机范围可留league/version未知。
 
-先读实际对象、原生命题及相应明细/原文，再判断支持、反证与未知。完整否定/未知可以完成审查，原角色问题留character_readiness；export只交HTML和核验，不生成新XML。复核作者另见[复核已有交付](#复核已有交付)。
+先核实际对象与当次规则的关键前提，再判断支持、反证与未知。禁用判断若与实际计算冲突，查该字段用途及当前规则来源。完整否定/未知可完成审查，原角色问题留character_readiness；export仅报告和核验。作者复核见[复核已有交付](#复核已有交付)。
 
 ## 规划交付
 
-条件方案用build_plan，要求当前角色就绪用build。原目标保持；先物化最低整套，再比较与设计切换。未来物资未拥有可列条件，但最低规格、来源、使用方式及条件失败时的退路在本次设计完成；缺设计记录为unimplemented，见[最终复核](evidence.md#最终复核与交付)。
+未来物资未拥有可列条件；最低规格、来源、使用和失败退路须本次设计完成，缺项记unimplemented，见[最终复核](evidence.md#最终复核与交付)。
 
 默认delivery_scope为execution_plan。仅用户明确要局部原生快照比较、无需重做整套操作时可用snapshot_comparison：constraint_sources关联真实原话，delivery_scope判断同时引用用户依据与native:materialization#/actual_changes。程序仅排除完全未改非主组的usage，改动组、真实错误、目标及原角色状态照常核验。
 
@@ -37,7 +37,7 @@ plan最小结构为{"schema_version":2,"mode":"refine","summary":"本次目的",
 
 ## 测量与实际变化
 
-按目标选择共同scenario/measurement，并先核实际config/effect_state。measurement可设flasks_enabled:false及effects:[{skill_id,enabled:false}]，在两侧改造后应用；效果设置所有该ID实例的原生全局开关，不改宝石enabled，药剂关闭不删除实物。measurement判断可合并configuration:candidate。
+先将玩家要求的场景与操作落实到scenario/measurement，核实际config/effect_state及改变关键结论的当前来源；原件开启不代表所需时段有效。measurement可设flasks_enabled:false及effects:[{skill_id,enabled:false}]，在两侧改造后应用；效果设置所有该ID实例的原生全局开关，不改宝石enabled，药剂关闭不删除实物。measurement判断可合并configuration:candidate。
 
 同条件收益比较baseline/result；保留范围比较original与materialization.actual_changes的object_before/object_after。交付XML包含共同测量改动，不能用“仅比较”隐去对用户角色的变化。主动技能、短效增益与药剂的执行频率/窗口也须与实际开关一致。
 
