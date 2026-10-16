@@ -4,7 +4,7 @@
 
 已发布2.8.17相对精简前基线，六指令减少68.94%，程序、测试和打包未改。相对仓库2.8.16，程序保留已验证的当前事实/引用、只读任务范围、普通目标生成依据等改进。task_completion按请求范围评价，character_readiness和角色错误/待办继续保留；合法值、引用、自审或文件存在不认证自由文字因果、实际取得或动态覆盖。
 
-单入口poe.py，六Python/两Lua、标准库、schema2、15产品文件。原始文本、有效持有、特殊来源、probe投影和legality仍有实际职责，没有第二生成器或游戏答案分支。TeleAgent ta001–ta004、ta006实机未整体通过，ta005离线回归失败；2.8.22实际十项均分81.8，仅复核类连续两次通过。2.8.23/ta007完整368项回归全部通过、零跳过，源/Git/资源/ZIP/安装相同，源码和安装doctor四项通过，实机待验；inspect事实页复用共享资源审计，沿同一JSON引用读取，数值投影和独立机制评审按范围分流。配置统一用configuration判断及实际原生引用；完成反馈的status/errors/pending来自同一task_completion，character_readiness和完整核验保留真实角色缺口。export/route只有任务scoped_result且errors/pending为空才列最终文件；失败保留内部诊断和阶段恢复。质量范围见[验证报告](TEST-REPORT.md)，使用步骤见[使用说明](使用说明.md)。
+单入口poe.py，六Python/两Lua、标准库、schema2、15产品文件。原始文本、有效持有、特殊来源、probe投影和legality仍有实际职责，没有第二生成器或游戏答案分支。TeleAgent ta001–ta004、ta006实机未整体通过，ta005离线回归失败；2.8.22实际十项均分81.8，仅复核类连续两次通过。2.8.23/ta007完整368项回归全部通过、零跳过，源/Git/资源/ZIP/安装相同，源码和安装doctor四项通过；实际十项原分均分75.7、3/10通过，无一类连续两次，仍未放行；inspect事实页复用共享资源审计，沿同一JSON引用读取，数值投影和独立机制评审按范围分流。配置统一用configuration判断及实际原生引用；完成反馈的status/errors/pending来自同一task_completion，character_readiness和完整核验保留真实角色缺口。export/route只有任务scoped_result且errors/pending为空才列最终文件；失败保留内部诊断和阶段恢复。质量范围见[验证报告](TEST-REPORT.md)，使用步骤见[使用说明](使用说明.md)。
 
 ## 职责
 
