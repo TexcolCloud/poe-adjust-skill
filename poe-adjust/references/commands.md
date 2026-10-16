@@ -34,7 +34,7 @@ python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --cha
 
 同次edit指针按同一源revision解释，stage_id/claim_id/instance_id保持真实身份。变更后读invalidated_claims，修文字和条件再登记。
 
-对象稳定后，changes只写set.assessment.review，按本次review_template填写除token外的判断/依据/条件。沿next_actions.review_current_result的edit_arguments提交：
+对象稳定后，changes只写set.assessment.review，按本次review_template填写除token外的完整判断/依据/条件；首次与重审均整体替换本次复核。沿next_actions.review_current_result的edit_arguments提交：
 
 ```powershell
 python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/review-changes.json' --review-from '<本次details_file>'

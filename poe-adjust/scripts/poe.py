@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.28"
+VERSION = "2.8.29"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -322,7 +322,10 @@ def edit_document(args):
     if review_context:
         bx.require(existing is not None and review_context["input_revision"]==stamp,"源方案变化，请重算后复核当前结果。",code="review_context_stale",location="/review_from",expected=stamp,actual=review_context["input_revision"])
     document=read_json(path,role="input") if existing is not None else {"schema_version":SCHEMA_VERSION}
-    result=merge_edit(document,request.get("set",{}))
+    updates=copy.deepcopy(request.get("set",{}))
+    if review_context: updates["assessment"].pop("review")
+    result=merge_edit(document,updates)
+    if review_context: result["assessment"]["review"]=copy.deepcopy(authored)
     replacements=request.get("replace",{})
     bx.require(isinstance(replacements,dict),"replace 为现有 JSON pointer 到新值的映射。",location="/replace",expected="object",actual=type(replacements).__name__)
     for locator,value in replacements.items():
@@ -382,12 +385,15 @@ def edit_document(args):
     new_review=result.get("assessment",{}).get("review")
     def without_review(value):
         copied=copy.deepcopy(value);copied.get("assessment",{}).pop("review",None)
+        if copied.get("assessment")=={}:copied.pop("assessment")
         return copied
     changed_inputs=document_changes(without_review(document),without_review(result))
     if review_context or new_review is not None and document_changes(old_review,new_review):
         bx.require(not changed_inputs,"先保存方案修改并重算，再单独提交当前复核。",code="review_transaction_mixed",location="/assessment/review",expected="review-only transaction")
         facts.review_shape(new_review,complete=bool(review_context),claim_ids=claims,
                            objective_ids=reviewed_packet.get("coverage",{}).get("required_objective_ids",[]) if review_context else None)
+        if review_context:
+            bx.require(new_review.get("token")==reviewed_packet["token"],"复核标识不能被后续修改覆盖。",code="review_context_stale",location="/assessment/review/token",expected=reviewed_packet["token"],actual=new_review.get("token"))
     # Validate local structure before touching the only source. Semantic choices
     # and current native legality remain evaluate/route responsibilities.
     bx.require((path.read_bytes() if path.is_file() else None)==existing,"保存前方案已变化，请重新读取 revision。",location="/file",actual=str(path))

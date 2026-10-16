@@ -847,7 +847,9 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
         {**evidence[ref],"evidence_id":ref} for ref in user_refs if evidence.get(ref,{}).get("kind")=="user_statement"]}
     def stable(value):
         if isinstance(value, dict):
-            return {k: stable(v) for k, v in value.items() if k not in {"recorded_at", "review", "runtime"}}
+            current={k: stable(v) for k, v in value.items() if k not in {"recorded_at", "review", "runtime"}}
+            if current.get("assessment")=={}:current.pop("assessment")
+            return current
         if isinstance(value, list): return [stable(v) for v in value]
         return value
     review = assessment.get("review")

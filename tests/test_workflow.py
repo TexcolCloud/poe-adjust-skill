@@ -70,6 +70,19 @@ def resource_fixture():
 
 
 class DocumentTests(unittest.TestCase):
+    def test_empty_plan_preserves_level_mode_and_all_xml(self):
+        for mode in (None,'true','false'):
+            with self.subTest(mode=mode):
+                original=bx.parse(SAMPLE)
+                if mode is not None:original.find('Build').set('characterLevelAutoMode',mode)
+                before=bx.serialise(original)
+                result=bx.apply_plan(original,{'mode':'refine','summary':'Observe the original role','operations':{}})
+                self.assertEqual(bx.serialise(result),before)
+                changed=bx.apply_plan(original,{'mode':'refine','summary':'Explicit level change','operations':{'level':87}})
+                self.assertEqual(changed.find('Build').get('level'),'87')
+                self.assertEqual(changed.find('Build').get('characterLevelAutoMode'),'false')
+                self.assertEqual(bx.serialise(original),before)
+
     def test_native_explicit_gem_state_rejects_ignored_or_changed_requests(self):
         current={'group':1,'index':1,'id':'ShieldCrush','source':'Item:fixture','level':20,'quality':0,
                  'enabled':True,'count':1,'enable_global1':True,'enable_global2':False}
@@ -1467,6 +1480,20 @@ class ReadOnlyDataTests(unittest.TestCase):
 
 
 class FinalReviewTests(unittest.TestCase):
+    def test_empty_assessment_container_preserves_review_identity_but_scope_change_invalidates(self):
+        for nested in (False,True):
+            with self.subTest(nested=nested):
+                specification={'plan':{'schema_version':2}} if nested else {'schema_version':2}
+                first,_=facts.final_review(specification,{},[],{}, {})
+                reviewed=copy.deepcopy(specification);target=reviewed['plan'] if nested else reviewed
+                review={**first['review_template'],'findings':'Actual current review'}
+                target['assessment']={'review':review}
+                packet,pending=facts.final_review(reviewed,{},[],{},target['assessment'])
+                self.assertEqual(packet['token'],first['token']);self.assertNotIn('final_review:stale',pending)
+                target['assessment']['scope']='A different actual assessment scope'
+                changed,pending=facts.final_review(reviewed,{},[],{},target['assessment'])
+                self.assertNotEqual(changed['token'],first['token']);self.assertIn('final_review:stale',pending)
+
     def test_compact_review_matches_explicit_empty_lists_without_mutating_source(self):
         native={'candidate':{'stats':{'Life':123}}}
         reference='native:candidate#/stats/Life'
@@ -3464,6 +3491,39 @@ class TimelineTests(unittest.TestCase):
 
 
 class EditAndRecoveryTests(unittest.TestCase):
+    def test_review_from_replaces_complete_authored_review_without_container_prerequisite(self):
+        for kind in ('route','plan'):
+            for previous in (None,{'findings':'Prior incomplete review','unresolved':['Old outstanding work'],
+                                   'conclusions':[],'objectives':[]}):
+                with self.subTest(kind=kind,previous=previous):
+                    self.source=self.folder/(kind+str(previous is None)+'.json')
+                    prior,state_path=self.saved_proposal(kind)
+                    source=poe.read_json(self.source)
+                    if previous is None:source.pop('assessment')
+                    else:source['assessment']={'review':previous}
+                    poe.write_json(self.source,source)
+                    file=Path(prior.proposal_file);saved=poe.read_json(file);state=poe.read_json(state_path)
+                    packet={'token':'current-review','coverage':{'required_objective_ids':[]}}
+                    if kind=='route':
+                        saved['checked_route']['final_review']=packet
+                        state['input_sha256']=bx.digest(self.source.read_bytes())
+                    else:
+                        saved['review_packet']=packet;saved['source_plan_sha256']=bx.digest(self.source.read_bytes())
+                    poe.write_json(file,saved)
+                    if kind=='route':state['files'][str(file)]=bx.digest(file.read_bytes())
+                    else:state['candidates']['native']['evaluation_sha256']=bx.digest(file.read_bytes())
+                    poe.write_json(state_path,state)
+                    review={'findings':'Current authored review','unresolved':[],'conclusions':[],'objectives':[]}
+                    poe.write_json(self.request,{'set':{'assessment':{'review':review}}})
+                    request=args(invoked=True,kind=kind,file=str(self.source),changes=str(self.request),review_from=str(file))
+                    before={k:v for k,v in source.items() if k!='assessment'}
+                    result=poe.edit_document(request)
+                    current=poe.read_json(self.source)
+                    self.assertEqual(current['assessment']['review'],{**review,'token':'current-review'})
+                    self.assertEqual({k:v for k,v in current.items() if k!='assessment'},before)
+                    self.assertEqual(result['status'],'saved_draft')
+                    self.assertTrue(poe.edit_document(request)['replayed'])
+
     def test_review_from_binds_authored_review_to_current_calculation_without_transcription(self):
         for case in ('route','plan','export'):
             with self.subTest(case=case):
@@ -3501,7 +3561,7 @@ class EditAndRecoveryTests(unittest.TestCase):
         poe.write_json(file,saved);state=poe.read_json(state_path);state['files'][str(file)]=bx.digest(file.read_bytes());poe.write_json(state_path,state)
         review={'findings':'Authored assessment','unresolved':[],'conclusions':[],'objectives':[]}
         request=args(invoked=True,kind='route',file=str(self.source),changes=str(self.request),review_from=str(file),if_sha256=prior.if_sha256)
-        for change in ('mixed','receipt','source','missing_findings','shape'):
+        for change in ('mixed','receipt','source','missing_findings','shape','token_override'):
             with self.subTest(change=change):
                 before=self.source.read_bytes();receipt=self.source.with_suffix('.edit.json');old_receipt=receipt.read_bytes()
                 payload={'set':{'assessment':{'review':copy.deepcopy(review)}}}
@@ -3512,7 +3572,8 @@ class EditAndRecoveryTests(unittest.TestCase):
                     value=poe.read_json(self.source);value['name']='Later source';poe.write_json(self.source,value)
                     request.if_sha256=bx.digest(self.source.read_bytes());before=self.source.read_bytes()
                 elif change=='missing_findings':payload['set']['assessment']['review'].pop('findings')
-                else:payload['set']['assessment']=[]
+                elif change=='shape':payload['set']['assessment']=[]
+                else:payload['replace']={'/assessment/review/token':'wrong-context'}
                 poe.write_json(self.request,payload)
                 with self.assertRaises(bx.ContractError):poe.edit_document(request)
                 self.assertEqual(self.source.read_bytes(),before);self.assertEqual(receipt.read_bytes(),old_receipt)
@@ -4836,6 +4897,52 @@ class TaskCompletionTests(unittest.TestCase):
 
 
 class NativeSelectionIntegrityTests(unittest.TestCase):
+    def test_native_read_only_auto_level_review_repeats_and_exports(self):
+        root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
+        seed=bx.parse(engine.calculate(root,'')['xml'])
+        seed.find('Build').set('characterLevelAutoMode','true')
+        with tempfile.TemporaryDirectory() as folder:
+            work=Path(folder);original=work/'original.xml';poe.write_text(original,bx.serialise(seed))
+            input_hash=bx.digest(original.read_bytes());run=work/'run'
+            poe.begin(args(invoked=True,input=str(original),run=str(run)))
+            canonical_hash=bx.digest((run/'original.xml').read_bytes())
+            goal='Report current native Life; combat coverage is outside this snapshot.'
+            intent={'schema_version':2,'confirmed':True,'task_kind':'read_only_review','goal':goal,
+                    'objectives':[{'objective_id':'life','text':goal,'evidence_refs':['user']}],
+                    'constraint_sources':{'/goal':'user'},
+                    'evidence':[{'evidence_id':'user','kind':'user_statement','subject':'intent','text':goal}]}
+            intent_path=work/'intent.json';poe.write_json(intent_path,intent)
+            poe.set_intent(args(run=str(run),file=str(intent_path)))
+            source=work/'plan.json';change=work/'changes.json'
+            poe.write_json(change,{'set':{'schema_version':2,'mode':'refine','summary':goal,'operations':{},
+                'claims':[{'claim_id':'life','text':'Current Life is {{fact:native:candidate#/stats/Life}}; combat coverage is unknown.',
+                           'subjects':['goal','objective:life'],'evidence_refs':['native:candidate#/stats/Life']}]}})
+            poe.edit_document(args(invoked=True,kind='plan',file=str(source),changes=str(change)))
+            current=poe.evaluate(args(run=str(run),name='readonly',plan=str(source)))
+            self.assertEqual(current['task_completion']['errors'],[])
+            for review_number in (1,2):
+                details=poe.read_json(current.get('evaluation_file') or current['details_file'])
+                review=copy.deepcopy(details['review_packet']['review_template']);review.pop('token')
+                review['findings']=f'Authored snapshot review {review_number}; no combat inference.'
+                for field in ('objectives','conclusions'):
+                    for row in review[field]:
+                        row.update(verdict='supported',scope='Current Life snapshot only',
+                                   findings=f'Review {review_number}: native Life is present.',
+                                   evidence_refs=['native:candidate#/stats/Life'])
+                poe.write_json(change,{'set':{'assessment':{'review':review}}})
+                poe.edit_document(args(invoked=True,kind='plan',file=str(source),changes=str(change),
+                                       review_from=current.get('evaluation_file') or current['details_file']))
+                poe.evaluate(args(run=str(run),name='readonly',plan=str(source)))
+                current=poe.export(args(run=str(run),name='readonly'))
+                self.assertEqual(current['status'],'scoped_result',json.dumps(current['task_completion'],ensure_ascii=False));self.assertTrue(current['file_exported'])
+                self.assertFalse(current['xml_exported']);self.assertEqual(current['task_completion']['pending'],[])
+                self.assertEqual(current['task_completion']['errors'],[])
+                self.assertTrue(all(Path(name).is_file() for name in current['files']))
+                requested=bx.read_document(run/'candidates/readonly/requested.xml')
+                self.assertEqual(requested.find('Build').get('characterLevelAutoMode'),'true')
+                self.assertEqual(bx.digest(original.read_bytes()),input_hash)
+                self.assertEqual(bx.digest((run/'original.xml').read_bytes()),canonical_hash)
+
     def test_saved_and_effective_gem_specs_follow_native_effects_without_enabling_disabled_gems(self):
         root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
         base=engine.calculate(root,'')
