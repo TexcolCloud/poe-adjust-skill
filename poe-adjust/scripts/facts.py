@@ -437,9 +437,15 @@ def render_text(text, evidence):
 
 
 def stage_claim_ids(stage):
+    """Project typed references from a draft; field validators retain malformed input."""
     snapshot=stage.get("snapshot",{})
-    rows=stage.get("entry_checks",[])+snapshot.get("usage",[])
-    return set(stage.get("entry_conditions",[]))|set(snapshot.get("assumptions",[]))|{row["claim_id"] for row in rows if row.get("claim_id")}
+    result=set()
+    for values in (stage.get("entry_conditions",[]),snapshot.get("assumptions",[])):
+        if isinstance(values,list): result.update(value for value in values if isinstance(value,str))
+    for rows in (stage.get("entry_checks",[]),snapshot.get("usage",[])):
+        if isinstance(rows,list):
+            result.update(row["claim_id"] for row in rows if isinstance(row,dict) and isinstance(row.get("claim_id"),str))
+    return result
 
 
 def claim_bindings(document, claim, engine_fingerprint):

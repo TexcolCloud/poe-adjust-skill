@@ -4101,6 +4101,14 @@ class EditAndRecoveryTests(unittest.TestCase):
             self.edit({"set":{"usage":[{"skill_ref":"observed","casts_per_second":True}]}},first["revision"],kind="plan")
         self.assertEqual(error.exception.diagnostic["location"],"/usage/0/casts_per_second")
         self.assertEqual(self.source.read_bytes(),before);self.assertEqual(self.source.with_suffix(".edit.json").read_bytes(),receipt)
+        for index,malformed in enumerate(("current",None,{"claim_id":["current"]})):
+            with self.subTest(partial_entry_check=malformed):
+                self.source=self.folder/f"partial-route-{index}.json"
+                saved=self.edit({"set":{"stages":[{"stage_id":"a","entry_checks":[malformed]}],
+                                        "claims":[{"claim_id":"current","text":"Draft interpretation","subjects":["stage:a"]}]}},kind="route")
+                self.assertEqual(saved["status"],"saved_draft")
+                with self.assertRaises(bx.ContractError):
+                    facts.entry_checks([malformed],{},[],"stage:a")
 
 
 class DeliveryIntegrityTests(unittest.TestCase):
