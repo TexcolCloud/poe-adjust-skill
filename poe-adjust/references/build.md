@@ -4,7 +4,7 @@
 
 ## 只读解释
 
-快照数值及已返回投影直接用inspect/probe事实页。另证机制因果才用start/intent/evaluate/export，intent.task_kind为read_only_review，plan用refine及空operations，保留被审对象；实验另用probe。intent含实际goal/objectives、user_statement及constraint_sources，本机范围可留league/version未知。
+快照数值及已返回投影直接用inspect/probe事实页。另证机制因果或只讨论配装取舍用start/intent/evaluate/export，intent.task_kind为read_only_review，plan用refine及空operations，保留被审对象；实验另用probe。intent含实际goal/objectives、user_statement及constraint_sources，本机范围可留league/version未知。
 
 先读实际对象、原生命题及相应明细/原文，再判断支持、反证与未知。完整否定/未知可以完成审查，原角色问题留character_readiness；export只交HTML和核验，不生成新XML。复核作者另见[复核已有交付](#复核已有交付)。
 
@@ -22,7 +22,7 @@ plan最小结构为{"schema_version":2,"mode":"refine","summary":"本次目的",
 
 - gems/groups用1起组序号与宝石index；replace_skills写最终组，撤下组清空，存放组空slot且停用。停用但仍插着的宝石占孔且需物资。
 - main_active_skill是物化后主动选项序号，不是宝石位置；取当前skill_selections。granted_effects的实际ID/operation_field/global_enabled决定开关，effect序号或列表存在不证明持续。
-- items/equip写实物与槽位；tree改节点/专精/职业升华；config按当前控件类型、选项与原文选值，null删除覆盖、false/0/默认分开。
+- items写[{id,text}]或下节craft，id为正整数；equip写[{slot,item_id}]，item_id:0移除，珠宝槽为Jewel <节点ID>。tree改节点/专精/职业升华；config按当前控件类型、选项与原文选值，null删除覆盖、false/0/默认分开。
 - 移动实例先移原位置再放新位置，核实际装备孔数/连线、属性和生效槽。孔色、品质与特殊规则按当次资料解释，不套旧版本常识。
 
 ## 普通目标生成

@@ -20,7 +20,7 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 | 请求 | 协议与入口 |
 |---|---|
 | 查名称、状态、规格、费用、频率及已算数值的含义 | [资料](references/data.md#只读查询与完成)：`inspect/probe --out --report` |
-| 另证机制因果 | [只读解释](references/build.md#只读解释)：`read_only_review` |
+| 另证机制因果或只讨论配装取舍 | [只读解释](references/build.md#只读解释)：`read_only_review` |
 | 复核真实作者交付 | [复核已有交付](references/build.md#复核已有交付)：原目标、原件、作者文件与原话一起审 |
 | 微调、整套配装或换流派 | [配装](references/build.md)：`start/intent/evaluate/export` |
 | 无完整角色的开荒/成长 | [路线](references/leveling.md)：`route` |
