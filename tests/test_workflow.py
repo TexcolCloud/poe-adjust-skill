@@ -653,6 +653,23 @@ class RouteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"不相符"):self.check()
         self.equipment.clear();checked,_=self.check();self.assertIn("native:equipment:stage-0:Gloves",checked["pending"])
 
+    def test_snapshot_uses_actual_socket_capacity_without_duplicate_base_declaration(self):
+        stage=self.route['stages'][0]
+        stage.pop('bases');stage['snapshot']={}
+        layout=self.equipment['stage-0']
+        layout['context']={'basis':'snapshot_xml','xml_sha256':'current-snapshot'}
+        layout['checks']['Gloves']['socket_capacity']=1
+        before=copy.deepcopy(self.route)
+        checked,_=self.check()
+        self.assertNotIn('native:socket_capacity:stage-0:Gloves',checked['pending'])
+        self.assertEqual(checked['stages'][0]['socket_evidence']['Gloves']['capacity'],1)
+        self.assertEqual(self.route,before)
+        stage['skill_groups'][0]['gems'].append(dict(stage['skill_groups'][0]['gems'][0],instance_id='second'))
+        with self.assertRaisesRegex(ValueError,'孔位|占孔'):self.check()
+        stage['skill_groups'][0]['gems'].pop()
+        layout['context']['basis']='declared_base_layout'
+        self.assertIn('native:socket_capacity:stage-0:Gloves',self.check()[0]['pending'])
+
     def test_slot_check_from_other_layout_is_unknown_and_does_not_certify(self):
         self.equipment["stage-0"]["bases"]={"Gloves":"Different Base"}
         self.equipment["stage-0"]["checks"]["Gloves"]["valid_for_slot"]=False
@@ -1277,6 +1294,14 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(diagnostic["expected"]["source_base"],str(nested.resolve()))
             self.assertEqual(diagnostic["actual"],str((folder/"source.txt").resolve()))
             self.assertNotIn('maximum_bytes',diagnostic['expected'])
+            source=folder/'source.txt';original=source.read_bytes();stamp=source.stat().st_mtime_ns
+            absolute=facts.load_evidence([dict(declaration,path=str(source.resolve()))],nested,{})['price']
+            self.assertEqual(absolute['status'],'artifact_observed')
+            self.assertEqual(absolute['path'],str(source.resolve()))
+            self.assertEqual(absolute['content_sha256'],bx.digest(original))
+            self.assertEqual(source.read_bytes(),original);self.assertEqual(source.stat().st_mtime_ns,stamp)
+            self.assertEqual(list(nested.iterdir()),[])
+            self.assertEqual(facts.load_evidence([dict(declaration,path=str(source.resolve()),excerpt='invented')],nested,{})['price']['status'],'unresolved')
             missing=facts.load_evidence([dict(declaration,path='missing/source.txt')],folder,{})['price']
             self.assertEqual(missing['status'],'unresolved')
             self.assertEqual(missing['diagnostic']['expected'],{'source_base':str(folder.resolve()),'type':'existing text file'})
@@ -1298,6 +1323,10 @@ class EvidenceTests(unittest.TestCase):
             folder=Path(temp);source=folder/'observations.json'
             poe.write_json(source,{'rows':[{'future/value':False,'zero':0,'missing':None}]})
             declaration={'evidence_id':'observed','kind':'artifact','subject':'fixture','path':source.name,'pointer':'/rows/0/future~1value'}
+            nested=folder/'review';nested.mkdir()
+            template=poe.view_json(args(file=str(source),pointer=declaration['pointer'],fields='',keys=False,query='',offset=0,limit=20))['evidence_template']
+            absolute=facts.load_evidence([{**declaration,**template}],nested,{})['observed']
+            self.assertEqual(absolute['status'],'artifact_observed');self.assertIs(absolute['value'],False)
             record=facts.load_evidence([declaration],folder,{})['observed']
             self.assertEqual(record['status'],'artifact_observed');self.assertIs(record['value'],False)
             self.assertEqual(record['locator'],declaration['pointer']);self.assertEqual(record['content_sha256'],bx.digest(source.read_bytes()))
@@ -3054,6 +3083,26 @@ class WorkflowInterfaceTests(unittest.TestCase):
 
 
 class ResourceRegressionTests(unittest.TestCase):
+    def test_declared_points_cannot_override_observed_native_global_limits(self):
+        result=resource_fixture()
+        for maximum in (5,12):
+            with self.subTest(maximum=maximum):
+                result.update(ascendancy_points=maximum+1,point_limits={'status':'observed',
+                    'source':'build.controls.pointDisplay.str','pools':{'ascendancy':{'used':maximum+1,'maximum':maximum}}})
+                audit=resources.assess(result,{'ascendancy_points':maximum+1},{})
+                self.assertTrue(audit['errors'])
+                budget=next(row for row in audit['point_budgets'] if row['pool']=='ascendancy')
+                self.assertEqual(budget['native_global_maximum'],maximum)
+                self.assertEqual(budget['status'],'exceeded_native_maximum')
+                result['ascendancy_points']=maximum
+                result['point_limits']['pools']['ascendancy']['used']=maximum
+                self.assertTrue(resources.assess(result,{'ascendancy_points':maximum+1},{})['errors'])
+                valid=resources.assess(result,{}, {})
+                self.assertFalse(valid['errors'])
+                self.assertIn('progress:ascendancy',valid['pending'])
+                result['point_limits']={'status':'unsupported'}
+                self.assertNotIn('native_global_maximum',resources.assess(result,{}, {})['point_budgets'][1])
+
     def test_declared_point_budget_cannot_override_current_native_progress_bounds(self):
         result=resource_fixture()
         result.update(level=20,points=24,progress_limits={'status':'observed','chapters':[
@@ -4899,7 +4948,16 @@ class TaskCompletionTests(unittest.TestCase):
 class NativeSelectionIntegrityTests(unittest.TestCase):
     def test_native_read_only_auto_level_review_repeats_and_exports(self):
         root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
-        seed=bx.parse(engine.calculate(root,'')['xml'])
+        native=engine.calculate(root,'')
+        self.assertEqual(native['point_limits']['status'],'observed')
+        self.assertTrue(native['capabilities']['native_point_limits'])
+        for pool,key in (('normal','points'),('ascendancy','ascendancy_points')):
+            self.assertEqual(native['point_limits']['pools'][pool]['used'],native[key])
+            self.assertGreaterEqual(native['point_limits']['pools'][pool]['maximum'],0)
+        stale=copy.deepcopy(native);stale['point_limits']['pools']['ascendancy']['used']+=1
+        with self.assertRaises(engine.EngineError) as mismatch:engine.validate_contract(stale)
+        self.assertEqual(mismatch.exception.diagnostic['location'],'/point_limits')
+        seed=bx.parse(native['xml'])
         seed.find('Build').set('characterLevelAutoMode','true')
         with tempfile.TemporaryDirectory() as folder:
             work=Path(folder);original=work/'original.xml';poe.write_text(original,bx.serialise(seed))
@@ -6378,12 +6436,15 @@ class RealEngineTests(unittest.TestCase):
                "skill_groups":[{"name":"Fireball","slot":"Gloves","use":"fixture","gems":[{"instance_id":"fire","skill_id":"Fireball","level":1,"quality":0}]}],
                "required_items":[held_gem,held_item],"gear":["Actual fixture gloves"],"transition":["Keep the preceding configuration until the next prerequisite is met"],"snapshot":{"assumptions":["stage"],"operations":{"items":[{"id":201,"text":text}],"equip":[{"slot":"Gloves","item_id":201}],"main_group":1},"metrics":["Life","ManaCost"]}}
         route["stages"]=[stage,{**copy.deepcopy(stage),"stage_id":"b","level":None,"required_items":[]}]
+        stage.pop('bases')
         path=Path(self.temp.name)/"route.json";output=Path(self.temp.name)/"route.html";poe.write_json(path,route)
         poe.write_text(output,'Previous generated route')
         with patch.object(facts,"gem_facts",return_value={"Fireball":{"status":"unverified"}}):
             response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         first,second=checked["stages"]
+        self.assertNotIn('native:socket_capacity:a:Gloves',checked['pending'])
+        self.assertEqual(first['socket_evidence']['Gloves']['capacity'],1)
         review_stages=poe.read_json(output.with_suffix(".review.json"))["facts"]["stages"]
         self.assertIsNone(review_stages[0]["previous_stage_id"])
         self.assertEqual(review_stages[1]["previous_stage_id"],"a")

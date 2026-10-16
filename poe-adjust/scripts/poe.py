@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.29"
+VERSION = "2.8.30"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -518,7 +518,7 @@ def view_json(args):
                                           'instruction':'沿原 inspect/probe 请求重新生成报告与完整凭证；不能仅改摘要继承旧结果。'})
     if not contract and path.stat().st_size<=2_000_000:
         result['evidence_template']={'kind':'artifact','path':str(path),'pointer':args.pointer}
-        result['scope']+=' evidence_template 指向分页/投影前的完整源节点，补 evidence_id/subject 后由声明所在目录校验读取范围；可追溯不证明语义。'
+        result['scope']+=' evidence_template 以准确绝对路径指向分页/投影前的完整源节点，补 evidence_id/subject 后只读核原文件；可追溯不证明语义或扩展授权。'
     fits=lambda value: len(json.dumps(value,ensure_ascii=False,allow_nan=False))<=9500
     bx.require(len(json.dumps(result,ensure_ascii=False))<=6000,"读取参数过长，请缩小 fields/query。",location="/pagination",expected="bounded reader parameters",actual={"fields_count":len(fields),"query_characters":len(args.query or "")})
     if isinstance(selected,str):
@@ -2640,7 +2640,8 @@ def calculate_route(args):
     for stage in checked["stages"]:
         value=snapshots.get(stage["stage_id"],{}).get("result")
         if value:
-            checks={item["slot"]:{"base":item["base"],"valid_for_slot":item.get("valid_for_slot")} for item in value["equipped"]}
+            checks={item["slot"]:{"base":item["base"],"valid_for_slot":item.get("valid_for_slot"),
+                                  "socket_capacity":len(item['sockets']) if isinstance(item.get('sockets'),list) else None} for item in value["equipped"]}
             for slot,base in stage.get("bases",{}).items():
                 if base is None: checks[slot]={"base":None,"valid_for_slot":slot not in checks,"status":"observed_empty" if slot not in checks else "occupied"}
             equipment[stage["stage_id"]]={"bases":stage.get("bases",{}),"checks":checks,

@@ -477,6 +477,26 @@ for _, skill in ipairs(result.active_skills) do
   table.sort(skill.config_control_ids)
 end
 result.points, result.ascendancy_points, result.secondary_ascendancy_points = build.spec:CountAllocNodes()
+local pointDisplay = build.controls.pointDisplay and build.controls.pointDisplay.str
+result.point_limits = {status = "unsupported", source = "build.controls.pointDisplay.str", display = pointDisplay,
+  reason = "Native allocation display is unavailable or does not match this allocation"}
+if type(pointDisplay) == "string" and type(StripEscapes) == "function" then
+  local normalUsed, normalMaximum, ascUsed, ascMaximum = StripEscapes(pointDisplay):match("^%s*(%d+)%s*/%s*(%d+)%s+(%d+)%s*/%s*(%d+)%s*$")
+  if tonumber(normalUsed) == result.points and tonumber(ascUsed) == result.ascendancy_points then
+    result.point_limits = {status = "observed", source = "build.controls.pointDisplay.str", display = pointDisplay,
+      function_source = nativeFunctionSource(build.EstimatePlayerProgress),
+      pools = {normal = {used = result.points, maximum = tonumber(normalMaximum)},
+        ascendancy = {used = result.ascendancy_points, maximum = tonumber(ascMaximum)}},
+      scope = "Current native global allocation caps, matched to CountAllocNodes; not completed quests/trials, available points or a secondary-ascendancy cap"}
+  end
+end
+result.capabilities.native_point_limits = result.point_limits.status == "observed"
+for _, rule in ipairs(result.rules) do
+  if rule.id == "ascendancy_points" and result.capabilities.native_point_limits then
+    rule.status, rule.meaning, rule.value, rule.reason = "observed", "engine_constraint", result.point_limits.pools.ascendancy, nil
+    rule.source, rule.scope = result.point_limits.source, result.point_limits.scope
+  end
+end
 result.mastery_selections = setmetatable({}, {__jsontype = "object"})
 for id, effect in pairs(build.spec.masterySelections) do result.mastery_selections[tostring(id)] = effect end
 for _, line in ipairs(build.controls.warnings.lines or {}) do table.insert(result.warnings, line) end

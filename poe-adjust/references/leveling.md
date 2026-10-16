@@ -16,7 +16,7 @@
 
 字段取当前input_contract。顶层登记原goal/objectives、职业/升华、真实约束与evidence/claims/assessment；未知赛季留明示未知，不猜game_version。每段stage_id稳定，name/level/act/completed_act与实际角色状态对应，前往章节不代替任务已完成。
 
-skill_groups落实际slot、enabled和各宝石instance_id/skill_id/level/quality；同组同物理连线，停用仍占孔，存放组空slot且停用。bases对应装备布局（null为空、省略未知）；gear/passives/transition/resources说明当前设计、顺序、费用与缺物资退路。ascendancy_nodes/points为真实累计目标与可用点，连接也占点；progress_limits上界不由自填点数扩大。
+skill_groups落实际slot、enabled和各宝石instance_id/skill_id/level/quality；同组同物理连线，停用仍占孔，存放组空slot且停用。无快照用bases声明布局（null为空、省略未知）；有快照沿实际装备核孔位，显式bases仍须一致。gear/passives/transition/resources说明设计、顺序、费用与退路。升华节点/点数含连接，沿本次原生上限与真实进度，不由自填可用点扩大。
 
 同颗宝石跨段沿用instance_id，另颗另实例，换skill_id新实例。level:auto仅明确请求时选本机自然可训练且角色可用最大值；实际经验/取得另作条件。自然升级用training:<stage>:<instance>判断，其他规格变化用transformation与成本。同一理由可关联多个真实subject。
 

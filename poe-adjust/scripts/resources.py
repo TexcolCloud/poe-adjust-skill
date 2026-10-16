@@ -303,6 +303,15 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
         used, limit = result.get(used_key), intent.get(limit_key)
         unused[label] = limit - used if type(limit) is int and type(used) is int else None
         point_budgets.append({"pool":label,"used":used,"available":limit,"status":"unknown" if unused[label] is None else "exceeded" if unused[label]<0 else "within_declared_limit","limit_basis":"declared_input" if limit is not None else "not_declared"})
+        point_limits=result.get('point_limits') or {}
+        native_pool=point_limits.get('pools',{}).get(label,{}) if point_limits.get('status')=='observed' else {}
+        maximum=native_pool.get('maximum')
+        if type(maximum) is int and maximum>=0 and type(used) is int and native_pool.get('used')==used:
+            point_budgets[-1].update(native_global_maximum=maximum,native_limit_source=point_limits.get('source'),
+                native_limit_scope='本次原生全局分配上限，不证明任务/试炼完成或实际可用点。')
+            if used>maximum or type(limit) is int and limit>maximum:
+                point_budgets[-1]['status']='exceeded_native_maximum'
+                errors.append(f'{label} 分配/声明 {used}/{limit} 点超过本次原生全局上限 {maximum}；修正分配或声明，条件不能提高上限。')
         if label=='normal' and result.get('progress_limits',{}).get('status')=='observed':
             chapters=result['progress_limits'].get('chapters',[])
             level=result.get('level');act=intent.get('act')

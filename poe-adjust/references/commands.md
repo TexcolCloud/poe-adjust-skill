@@ -8,22 +8,13 @@ PowerShell路径分别加引号，JSON用UTF-8序列化或here-string保存，�
 
 ```powershell
 python '<entry>' doctor --pob '<安装>'
-python '<entry>' start --invoked --input '<原件.xml>' --run '<工作区>/run' --pob '<安装>'
-python '<entry>' intent --run '<run>' --file '<工作区>/intent.json'
-python '<entry>' evaluate --run '<run>' --name candidate-a --plan '<工作区>/plan.json'
-python '<entry>' export --run '<run>' --name candidate-a
-python '<entry>' route --invoked --file '<工作区>/route.json' --out '<工作区>/路线.html' --pob '<安装>'
 ```
 
-start新run为空并保留原件；只读直接inspect/probe。路径缺失沿doctor诊断定位，不扩用户工作区或写原生安装。
+只读数值用inspect/probe。配装与只读解释沿下节完整调用；start的新run为空并保留原件。路径缺失沿doctor定位，不扩工作区或写原生安装。
 
 ## 增量保存方案
 
-edit.set可一次保存完整方案/claims，新增或改文自动写当前绑定；依赖改变使旧判断失效时，核正文后用review_claims重登。直接计算未登记JSON会得到缺绑定草案。intent字段留intent，已有源修订加--if-sha256 '<当前revision>'。
-
-```powershell
-python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/changes.json'
-```
+changes.set可一次保存完整方案/claims，新增或改文自动绑定；依赖变化后核正文再用review_claims重登。直接计算未登记JSON会缺绑定。intent字段留intent，已有源修订加--if-sha256 '<当前revision>'。
 
 | changes字段 | 语义 |
 |---|---|
@@ -34,13 +25,19 @@ python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --cha
 
 同次edit指针按同一源revision解释，stage_id/claim_id/instance_id保持真实身份。变更后读invalidated_claims，修文字和条件再登记。
 
-对象稳定后，changes只写set.assessment.review，按本次review_template填写除token外的完整判断/依据/条件；首次与重审均整体替换本次复核。沿next_actions.review_current_result的edit_arguments提交：
+完整角色调用顺序如下。plan-changes保存实际方案和判断；修订并evaluate到对象稳定后，review-changes只写set.assessment.review，按本次review_template填判断/依据/条件，token由review-from关联。最后重算并export：
 
 ```powershell
+python '<entry>' start --invoked --input '<原件.xml>' --run '<run>' --pob '<安装>'
+python '<entry>' intent --run '<run>' --file '<工作区>/intent.json'
+python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/plan-changes.json'
+python '<entry>' evaluate --run '<run>' --name candidate-a --plan '<工作区>/plan.json'
 python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/review-changes.json' --review-from '<本次details_file>'
+python '<entry>' evaluate --run '<run>' --name candidate-a --plan '<工作区>/plan.json'
+python '<entry>' export --run '<run>' --name candidate-a
 ```
 
-路线用kind route。程序核计算凭证、源revision与引擎并关联token，省去手抄标识；只保存模型写出的复核，不决定通过。保存后重算再export/route。
+路线从route.json开始，两次edit用kind route；计算与最终发布用route --invoked --file '<工作区>/route.json' --out '<工作区>/路线.html' --pob '<安装>'。提交复核后重跑同一route。首次和重审均整体替换复核；沿next_actions.review_current_result的edit_arguments核本次凭证/源revision。程序不代写判断或决定通过。
 
 ## 按需读取与修复
 

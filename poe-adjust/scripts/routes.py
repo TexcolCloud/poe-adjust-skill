@@ -271,8 +271,14 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             bx.require(slot not in stage.get("bases",{}) or stage["bases"][slot] is not None,"明确空槽不能承载技能组。",location=stage_path+f"/skill_groups/{group_index}/slot",expected="occupied or unspecified slot",actual=slot)
             base=(bases or {}).get(stage.get("bases",{}).get(slot),{})
             capacity=base.get("sockets")
+            observed=layout.get('checks',{}).get(slot,{})
+            snapshot_capacity=('snapshot' in stage and layout.get('context',{}).get('basis')=='snapshot_xml'
+                and bool(layout.get('context',{}).get('xml_sha256')) and observed.get('valid_for_slot') is True
+                and type(observed.get('socket_capacity')) is int and observed['socket_capacity']>=0)
+            if snapshot_capacity: capacity=observed['socket_capacity']
             if slot and type(capacity) is not int: pending.append("native:socket_capacity:"+sid+":"+slot)
-            stage["socket_evidence"][slot]={"base":stage.get("bases",{}).get(slot),"capacity":capacity,"scope":"基底最大容量；实际孔色/连线/特殊装备效果需阶段 XML 实算。"}
+            stage["socket_evidence"][slot]={"base":observed.get('base') if snapshot_capacity else stage.get("bases",{}).get(slot),"capacity":capacity,
+                "scope":"本次原生阶段快照的实际孔数；连线与特殊孔仍核实际 XML。" if snapshot_capacity else "基底最大容量；实际孔色/连线/特殊装备效果需阶段 XML 实算。"}
             group_path=stage_path+f"/skill_groups/{group_index}"
             validate_group(group,stage,gems,library,compatibility,capacity,warnings,pending,group_path)
             usage[slot]=usage.get(slot,0)+len(group["gems"])

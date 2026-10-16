@@ -226,10 +226,11 @@ def load_evidence(declarations, folder, context, *, root=None):
                 text = receipt["text"]
                 record.update({k: v for k, v in receipt.items() if k != "evidence_template"}, status="local_data_observed", origin="program_local_read")
             else:
-                path = (base / entry.get("path", "")).resolve()
+                declared = Path(entry.get("path", ""))
+                path = (base / declared).resolve()
                 record["source_base"]=str(base)
-                bx.require(path.is_relative_to(base),
-                           "资料须在声明源 JSON 所在目录及子目录内；按 source_base 保存所需记录。",
+                bx.require(declared.is_absolute() or path.is_relative_to(base),
+                           "相对资料路径须在声明目录内；获准原文件可填准确绝对路径，只读引用。",
                            location="/path",expected={"source_base":str(base)},actual=str(path))
                 bx.require(path.is_file(),"artifact.path 未找到文本文件；按 source_base 核对相对路径。",
                            location="/path",expected={"source_base":str(base),"type":"existing text file"},actual=str(path))
@@ -259,7 +260,7 @@ def load_evidence(declarations, folder, context, *, root=None):
             if kind == "artifact":
                 record["repair"]={"source_base":str(base),"maximum_bytes":2_000_000,
                                   "declaration":{k:entry[k] for k in ("evidence_id","kind","subject","path","excerpt","pointer") if k in entry},
-                                  "message":"保留证据 ID；在 source_base 内保存本次实际工具结果。JSON 用 view 返回的 evidence_template 选实际 pointer，文本填写真实 excerpt；原生计算优先沿用 native 引用。不要扩大目录权限或复制旧结果冒充新测量。"}
+                                  "message":"保留证据 ID；相对路径沿 source_base，获准原文件用准确绝对路径。JSON 沿 view 的 evidence_template 选实际 pointer，文本填真实 excerpt；原生计算沿 native 引用。不扩大授权范围或复制旧结果冒充新测量。"}
                 if artifact_source is not None and artifact_source[0].suffix.lower()=='.json':
                     path,raw,text=artifact_source
                     try: source=json_value(text)

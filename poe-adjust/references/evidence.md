@@ -10,7 +10,7 @@
 |---|---|
 | user_statement | 真实原话，只证明用户的方向/物资声明 |
 | web | 已读官方或PoEDB正文的url/excerpt；其他网站存artifact |
-| artifact | 相对声明JSON目录的目录内文件，JSON用view模板的pointer，文本用实际excerpt；记录URL/查阅时间 |
+| artifact | 获准文件的绝对路径，或声明JSON目录内的相对路径；JSON用view模板pointer，文本用实际excerpt，保留URL/查阅时间 |
 | local_data | data read返回source/line/count/content_sha256模板，补ID/subject，程序重读 |
 
 原生事实直接复制当前native_references，核XML/引擎/配置/source_revision与真实指针；阶段根属于各段evaluation。失效先读实际父对象/合法引用再修，不猜根名。来源真实可追踪后，再确认它的内容确实支持本句，取得表不替代装备/机制证据。

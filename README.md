@@ -4,6 +4,8 @@ Windows 上的 PoE1 配装 skill。用户明确调用后，一个 agent 复用�
 
 **交付目标为 TeleAgent 极速、单 agent；目前尚未放行。** 当前安装2.8.29完整375项回归、安装检查及三份成对首评通过，但十项实际任务仅2/10达标，没有任何类别连续两次通过。原件、原分和完整性核对已保全，不拼前轮成绩。已发布2.8.17普通单agent成绩仅作历史参考；新版未发布。仍为15文件、六Python/两Lua、schema2，heartbeat未恢复。[验证报告](TEST-REPORT.md)是状态依据。
 
+2.8.30候选接入当次原生点数上限、复用阶段快照实际孔数，并允许只读引用获准原文件的准确绝对路径，减少重复复制。完整命令示例补齐编辑、自审、重算与导出；完整回归、独立成对复核及新一轮实机尚待完成，当前安装仍为2.8.29。
+
 ## 使用
 
 从[2.8.17精简实验版发布页](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.17)取得原样包 `poe-adjust-2.8.17-lean003.zip`；验收范围见[验证报告](TEST-REPORT.md)。仓库保持私有，需要有访问权限的GitHub账号。该发布版通过普通单agent离线样本验收；TeleAgent极速当前尚未通过。旧[2.8.16发布](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16)保留。在TeleAgent的“技能·专家·应用连接 → 我的 → 导入技能”中选择ZIP的步骤已实际使用。
