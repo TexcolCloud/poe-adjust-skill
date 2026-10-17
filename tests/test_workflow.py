@@ -717,6 +717,14 @@ class RouteTests(unittest.TestCase):
                 for text in claim["conditions"]+claim["uncertainties"]:
                     self.assertEqual(rendered.count(text),0 if invalidation else 3)
                 self.assertEqual(current["claims"][0]["text"],claim["text"])
+                entry_diagnostics=[row for row in checked["diagnostics"] if row["code"]=="entry_condition_claim_unresolved"]
+                self.assertEqual(entry_diagnostics,[])
+        self.route["stages"][0]["entry_conditions"]=["absent"]
+        checked,_=self.check()
+        self.assertIn("entry_condition:stage-0:absent",checked["pending"])
+        self.assertTrue(any(row["code"]=="entry_condition_claim_unresolved" and row["actual"]=="absent"
+                            and row["location"]=="/stages/0/entry_conditions/0"
+                            for row in checked["diagnostics"]))
 
     def test_instance_cannot_change_gem_id_silently(self):
         self.gems["Other"]={**self.gems["ShieldCrush"],"skill_id":"Other","name":"Other"};self.route["gems"]["Other"]={}
@@ -4668,10 +4676,10 @@ class TaskCompletionTests(unittest.TestCase):
         claims=facts.assess_claims(raw,{},native,specification=specification,engine_fingerprint='fixture')
         checks,check_pending=facts.entry_checks([{'check_id':'measured','locator':'/stats/Life','op':'ge','value':50,'claim_id':'entry'}],native['stage:s'],claims,'stage:s')
         self.assertEqual(checks[0]['status'],'met');self.assertEqual(checks[0]['basis_status'],'unresolved')
-        pending=['stage:s:'+value for value in check_pending]+['snapshot_assumptions:s']
+        pending=['stage:s:'+value for value in check_pending]+['snapshot_assumptions:s','entry_condition:s:entry']
         coverage=[{'objective_id':'goal','basis_status':'user_declared','claim_ids':['entry','snapshot'],'evidence_refs':[]}]
         observations={'pending':pending,'errors':[],'objective_coverage':coverage,
-                      'stages':[{'stage_id':'s','snapshot_assumptions':['snapshot'],
+                      'stages':[{'stage_id':'s','snapshot_assumptions':['snapshot'],'entry_conditions':['entry'],
                                  'calculation':{'native_calculated':True,'errors':[],'entry_checks':checks}}]}
         packet,_=facts.final_review(specification,{},claims,observations,{},native=native)
         review=copy.deepcopy(packet['review_template']);review['findings']='Conditional plan reviewed against this current snapshot.'
@@ -4686,11 +4694,12 @@ class TaskCompletionTests(unittest.TestCase):
         result=poe.plan_completion('leveling_plan',[],pending,[],coverage,claims,packet)
         self.assertEqual(result['status'],'scoped_result',result);self.assertEqual(result['pending'],[])
         self.assertEqual(observations['pending'],pending);self.assertEqual(claims[0]['status'],'unresolved')
-        for failure in ('unmet','unknown','uncomputed','missing_claim','bad_reference','incomplete_condition'):
+        for failure in ('unmet','unknown','uncomputed','missing_claim','missing_entry_claim','bad_reference','incomplete_condition'):
             current=copy.deepcopy(packet);current_claims=copy.deepcopy(claims)
             if failure in ('unmet','unknown'): current['facts']['stages'][0]['calculation']['entry_checks'][0]['status']=failure
             elif failure=='uncomputed': current['facts']['stages'][0]['calculation']['native_calculated']=False
             elif failure=='missing_claim': current['facts']['stages'][0]['snapshot_assumptions'].append('absent')
+            elif failure=='missing_entry_claim': current['facts']['stages'][0]['entry_conditions']=['absent']
             elif failure=='bad_reference': current_claims[1]['missing_evidence']=['missing actual source']
             else: current['condition_reviews'][0]['claim_ids']=['entry']
             with self.subTest(failure=failure):
@@ -4704,7 +4713,9 @@ class TaskCompletionTests(unittest.TestCase):
         qualified['facts']['stages'][0]['stage_id']='s:branch'
         for missing in ('stage:s:branch:native:socket_capacity:group',
                         'native:item_generation:ordinary-spec',
-                        'stage:s:branch:native:item_generation:ordinary-spec'):
+                        'stage:s:branch:native:item_generation:ordinary-spec',
+                        'entry_condition:s:branch:absent',
+                        'stage:s:branch:entry_condition:s:branch:absent'):
             qualified['condition_reviews'][0]['subjects']=[missing]
             with self.subTest(current_work=missing):
                 result=poe.plan_completion('leveling_plan',[],[missing],[],coverage,claims,qualified)

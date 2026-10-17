@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.31"
+VERSION = "2.8.32"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -1708,7 +1708,7 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
         if conclusions.get(claim["claim_id"],{}).get("unimplemented"):
             task_pending.append("plan_claim:"+claim["claim_id"]+":unimplemented")
     # These describe missing current work, rather than future execution facts.
-    hard=("permission:","metric:","claim_check:","claim_revision:","final_review:","entry_check:",
+    hard=("permission:","metric:","claim_check:","claim_revision:","final_review:","entry_check:","entry_condition:",
           "snapshot:","snapshot_assumptions:","native:snapshot:","native:equipment:","native:socket_capacity:",
           "native:gem_level:","native:links:","native:item_generation:","level_requirement:","level:","usage:","condition:measurement","config:scenario","goal_assessment")
     blockers=set()
@@ -1717,8 +1717,8 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
         prefix=next((value for value in stage_prefixes if subject.startswith(value)),None)
         local=subject[len(prefix):] if prefix is not None else subject
         if local.startswith(hard): blockers.add(subject)
-    # Only native-met local dependencies can be reviewed as future conditions.
-    # Keep entry_checks/has_claim and the original character pending unchanged.
+    # Real current claim references may retain reviewed future conditions.
+    # Numeric checks and snapshot assumptions still require native-met stages.
     conditional_candidates={}
     def current_claim(identifier,subject=None):
         claim=indexed.get(identifier)
@@ -1727,6 +1727,10 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
                 and claim["check_status"] not in {"refuted","unknown"})
     for stage in review.get("facts",{}).get("stages",[]):
         sid=stage["stage_id"];calculation=stage.get("calculation",{})
+        for identifier in stage.get("entry_conditions",[]):
+            subject="entry_condition:"+sid+":"+identifier
+            if subject in blockers and current_claim(identifier,"stage:"+sid):
+                conditional_candidates[subject]={identifier}
         if calculation.get("native_calculated") is not True or calculation.get("errors")!=[]: continue
         for check in calculation.get("entry_checks",[]):
             subject="stage:"+sid+":entry_check:stage:"+sid+":"+check["check_id"]

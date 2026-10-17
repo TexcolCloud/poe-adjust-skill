@@ -1,6 +1,6 @@
 # 角色配装与复核（schema_version 2）
 
-已有角色用本协议；[资料](data.md)、[证据](evidence.md)、[命令](commands.md)按需查，字段沿input_contract。
+角色解释、复核与改装用本协议，字段取input_contract；跨阶段成长见[路线](leveling.md)。
 
 ## 只读解释
 
@@ -10,13 +10,13 @@
 
 ## 规划交付
 
-未来物资未拥有可列条件；最低规格、来源、使用和失败退路须本次设计完成，缺项记unimplemented，见[最终复核](evidence.md#最终复核与交付)。
+规划条件与设计缺口按[最终复核](evidence.md#最终复核与交付)区分。
 
 默认delivery_scope为execution_plan。仅用户明确要局部原生快照比较、无需重做整套操作时可用snapshot_comparison：constraint_sources关联真实原话，delivery_scope判断同时引用用户依据与native:materialization#/actual_changes。程序仅排除完全未改非主组的usage，改动组、真实错误、目标及原角色状态照常核验。
 
 ## 意图与方案
 
-intent保存原话决定的目标、场景、许可、预算与保留范围，constraint_sources关联真实user_statement；confirmed仅流程记录。未知省略/null。目标为{objective_id,text,evidence_refs}，目标等级/可用点数按实际进度，progress_limits只是当次保守上界。
+intent登记原目标、场景、许可、预算和保留项，constraint_sources对应真实user_statement；confirmed仅流程记录，未知留空。等级与可用点取实际进度，progress_limits仅当次保守上界。
 
 plan最小结构为{"schema_version":2,"mode":"refine","summary":"本次目的","operations":{}}；rebuild同接口，可选相对plan目录的template_xml，说明来源与迁移。操作字段及类型沿input_contract：
 
@@ -45,7 +45,7 @@ inspect --metrics用当前skill_ref/actor；Calcs明细的context与MAIN不同�
 
 ## 复核已有交付
 
-先收到真实原目标、原角色、作者最终XML/说明和原答；按实际最后交付锁定对象。把作者原句、原要求和原文件登记为可追踪artifact，原文是待核主张。作者XML作只读start输入、原角色inspect；plan空operations，作者安排仅带入确实读到的内容，缺失留未知。所有新文件写审查工作区。
+先收原目标、原角色、作者最终XML/说明和原答，锁定实际最后交付，登记可追踪artifact。作者XML作只读start输入、原角色inspect；plan空operations，作者安排仅带入确实读到的内容。此会话native:original是作者XML，用户原角色的before值取真实inspect artifact；按各自身份引用。
 
 先比较原角色与作者的真实规格、状态、场景和保留许可，再核原句范围及其支持/反例。审查自身materialization无差分只说明没再改作者；角色身份用character，字节身份用input_bytes/saved_bytes，XML保存重排与角色变化分开。
 

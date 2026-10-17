@@ -11,7 +11,7 @@ python '<entry>' inspect --input '<原件.xml>' --metrics 'Life,ManaCost' --skil
 
 ## 按需目录
 
-catalog查当前classes/rules/gems/skills/links/bases/affixes/nodes/config/metrics/uniques/translations。已知的相关独立查询可用--batch一次提交queries，各项kind/query/limit/offset；结果保存--out后用view定向读取。未知先小查再沿真实ID/分页扩查，不从记忆猜ID或逐项倾倒全目录。
+catalog目录取当前--help；相关独立查询可用--batch提交queries，各项kind/query/limit/offset，保存--out后用view定向读取。未知先小查再沿真实ID/分页扩查，不从记忆猜ID或倾倒全目录。
 
 节点用--input或class_id提供职业起点，升华连接也计点；links检查技能类型关系，物理孔连/属性/取得另核。bases.valid_slots属于当次布局，缺上下文留未知。doctor的data_version/树版本只是本机资料，旧角色树、目标国服/赛季另说明适用范围。
 

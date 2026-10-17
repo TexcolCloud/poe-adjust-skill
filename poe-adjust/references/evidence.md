@@ -1,10 +1,8 @@
 # 判断、操作与自审（schema_version 2）
 
-用于配装、解释/复核与路线；字段沿input_contract，原生引用沿本次reference_contract。
+字段取input_contract，原生引用取本次reference_contract。
 
 ## 来源与判断
-
-每份evidence有唯一evidence_id、kind、subject，用户ID不以native:开头，status/digest/origin由程序生成。
 
 | kind | 实际内容 |
 |---|---|
@@ -15,7 +13,7 @@
 
 原生事实直接复制当前native_references，核XML/引擎/配置/source_revision与真实指针；阶段根属于各段evaluation。失效先读实际父对象/合法引用再修，不猜根名。来源真实可追踪后，再确认它的内容确实支持本句，取得表不替代装备/机制证据。
 
-claims用当前claim_id、text、subjects、evidence_refs及实际conditions/uncertainties/checks。一份判断可关联多个适用对象，不为同一理由重复造文。目标关联objective:<id>，总体判断由assessment.goal_claim_ids选定，其他subject取当次pending/required_subject（如configuration、skill、stage、snapshot、acquisition、training、progress、legality）。
+对象稳定后集中写claims：claim_id、text、subjects、evidence_refs及实际conditions/uncertainties/checks。同一证据与理由合并适用对象，不逐条待办另造结论。目标关联objective:<id>、总体判断由assessment.goal_claim_ids选定，其他subject取当前pending/required_subject。
 
 claim_type默认为judgment；comparison需checks，用当前reference及eq/ge/le比较实际阈值。缺值/null/异类型为unknown，不填0；检查仅证明所列命题。assessment的scope写真实范围、unresolved保留未完成工作。
 
@@ -25,7 +23,7 @@ claim_type默认为judgment；comparison需checks，用当前reference及eq/ge/l
 
 持久文字用返回模板：{{fact:当前引用}}是含对象/比例/单位的完整事实句，{{value:当前引用}}仅原始值，换算自行核公式。名称、技能状态与所在槽也从当前对象取，避免抄早期候选。
 
-edit写bindings，invalidated_claims后先改源正文/条件/关系再review_claims；刷新绑定或换复核token不更新手写旧数字。最终说明从当前源和实际计算生成，返修后核全文一致。
+绑定与复核token只关联当前材料，不更新旧正文；返修后沿当前源与计算核全文一致。
 
 配置以一份configuration:candidate（路线configuration:stage:<id>）判断覆盖实际config_values/controls、目标与进度，无需逐控件重复声明。需要某控制时用checks比较实际value；装备存在、默认值或开关开启不证明效果持续，细节见[资料](data.md)。
 
@@ -51,9 +49,9 @@ requirements/material_specs取实际差异，含仍插着的停用/备用宝石�
 
 ## 最终复核与交付
 
-先读本次review包的facts.user_goal_sources与实际对象：每项目标由哪些已经设计/计算的装备、技能、场景、进度和完整时段承担？比较源claims、当前实际变化、数值和最终操作；有矛盾先修源重算，再做复核。
+先读本次review包的facts.user_goal_sources，对照最终实际对象：每项目标由哪些已设计/计算的装备、技能、场景、进度与完整时段承担？用当前变化、费用/频率、启用槽位和效果状态核全文；数值/名称沿当前模板，矛盾先修源重算。
 
-沿next_actions.review_current_result、review_template/check审全部objectives/conclusions。scope限实际对象/状态/窗口，findings简写当前支持、反例与未知，不另抄整段旧计划。引用支持与反证分别放evidence_refs/counter_evidence_refs；supported须有支持，refuted须有反证，未知不反推不成立。用户要求是方向证据，不是结果证据。
+沿review_template/check审全部objectives/conclusions。scope限实际对象/状态/窗口，findings简写支持、反例与未知。evidence_refs/counter_evidence_refs分别放实际支持与反证：用户声明只证明方向/持有，结果从本次观测或规则取得；supported/refuted需相应依据。
 
 | 实际状态 | 写入位置 | 处理 |
 |---|---|---|
@@ -65,4 +63,4 @@ requirements/material_specs取实际差异，含仍插着的停用/备用宝石�
 
 condition_reviews用{subjects,claim_ids,conditions,fallback,evidence_refs}，subjects取当前facts.pending，关联当前supported/partial判断；退路在条件真的失败时仍能执行，或保留已可用前段等条件满足才切换。来源/计算缺失、已知非法、矛盾或许可缺口回源修，不能仅改评审结论清待办。
 
-对象稳定后用[复核提交](commands.md#增量保存方案)关联当前计算，程序传递标识，模型写完整objectives/conclusions及依据；随后重算。按[入口完成步骤](../SKILL.md#工作与完成)取成功files：build/build_plan交XML与HTML、readonly仅报告、route交路线文件。短答沿publication/facts_summary/HTML的当前结果、代价与限制，恢复见[命令](commands.md#恢复与交付完整性)。
+沿[复核提交](commands.md#增量保存方案)关联当前计算并重算，按[入口完成步骤](../SKILL.md#工作与完成)取files：build/build_plan交XML与HTML、readonly仅报告、route交路线文件。短答沿publication/facts_summary/HTML的当前结果与取舍，恢复见[命令](commands.md#恢复与交付完整性)。

@@ -222,8 +222,14 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             prior_level=stage["level"]
         else: pending.append("level:"+sid)
         conditions=strings(stage.get("entry_conditions",[]),sid+" entry_conditions",required=False)
-        for key in conditions:
-            if not any(c["claim_id"]==key and c["status"]=="model_assessed" and "stage:"+sid in c["subjects"] for c in claims): pending.append("entry_condition:"+sid+":"+key)
+        stage_claims={c["claim_id"]:c for c in claims if "stage:"+sid in c["subjects"]}
+        for condition_index,key in enumerate(conditions):
+            if key not in stage_claims or stage_claims[key]["status"]!="model_assessed":
+                pending.append("entry_condition:"+sid+":"+key)
+            if key not in stage_claims:
+                diagnostics.append({"code":"entry_condition_claim_unresolved","action":"edit_input","location":stage_path+f"/entry_conditions/{condition_index}",
+                    "expected":{"claim_ids":sorted(stage_claims)},"actual":key,
+                    "message":"进入条件引用本阶段实际 claim_id；修正引用或阶段关联并复核后重算，引用缺口不是玩家未来执行条件。"})
         if stage.get("entry_checks") and not stage.get("snapshot"):
             _, gaps = facts.entry_checks(stage["entry_checks"], {}, claims, "stage:"+sid)
             pending += gaps

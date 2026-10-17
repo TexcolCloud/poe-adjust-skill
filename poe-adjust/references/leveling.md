@@ -1,20 +1,22 @@
 # 开荒与成长路线（schema_version 2）
 
-无完整角色用route，已有角色用[配装](build.md)。字段沿input_contract；[资料](data.md)、[证据](evidence.md)、[命令](commands.md)按需查。stages顺序执行，不同方向独立候选。
+从零或跨阶段成长用route，已有角色的单一改装用[配装](build.md)。stages按执行顺序，不同方向独立候选；字段取input_contract。
 
 ## 先算最低终点，再连接起点
 
-先在同一route只做终点完整snapshot和按原目标选定的entry_checks。装备、天赋、技能、场景与实际节奏满足最低目标后，再连接原起点、取得前状态和训练。最低规格本次落实到实物；更高提升态另列。
+先在同一route只做终点完整snapshot与自选entry_checks。可复用查明来源的完整XML/分享码：用snapshot.template_xml保留结构，按本任务替换装备、技能、天赋、场景和进度，再实算。携入物品仍核[生成与取得](build.md#普通目标生成)，参考不代表玩家拥有；无合适模板可用原生空职业。已有模板也仍是从零路线，原起点与成长目标保留。
+
+终点是能承担原目标的最低整套对象；技能演示、空装备骨架或以后再设计属性/补给仍未完成。先完成实物、实际节奏与必要退路，再连接起点、取得前状态和训练；更高提升态另列。目录按所选机制定向查，复用已有原生路径/候选，不手工搬全目录。
 
 沿用户实际起终点、交易/SSF、物资、预算、偏好和操作选择，不把未知补成禁令。阶段按目标与切换决定，不套固定章节/数量/统一生存门槛。关键切换应从当时实际状态能进入下一状态；尚未取得的已设计实物是条件，泛称“以后补属性/生存/装备”仍是设计缺口。
 
 取得先读research --gems同一宝石的真实行，核职业、任务前提、NPC、奖励选择数量与费用。Quest Reward占位不是具体领奖人；不清楚就核可用商店、解锁和通货。核前段能到达该来源，缺关键物资有能实际使用的前段/低规格退路。国际费用和国服未知分开，小号/交易沿用户许可。trials位置不证明通关或点数。
 
-普通装备沿[生成协议](build.md#普通目标生成)从可达物等与最低规格生成，取得、打孔/连接、宝石训练各核实际手段；给定实物未拥有可以等条件，不能让玩家再替你设计必要规格。用户“不玩召唤”按原意判断，不机械禁止所有minion标签。
+普通装备从可达物等和最低规格生成，取得、打孔/连接、训练核实际手段。用户“不玩召唤”按原意判断，不机械禁止所有minion标签。
 
 ## 阶段与物理实例
 
-字段取当前input_contract。顶层登记原goal/objectives、职业/升华、真实约束与evidence/claims/assessment；未知赛季留明示未知，不猜game_version。每段stage_id稳定，name/level/act/completed_act与实际角色状态对应，前往章节不代替任务已完成。
+顶层登记原目标、职业/升华与真实约束，未知赛季不猜game_version。stage_id稳定，level/act/completed_act对应实际角色状态，前往章节不代替任务已完成。
 
 skill_groups落实际slot、enabled和各宝石instance_id/skill_id/level/quality；同组同物理连线，停用仍占孔，存放组空slot且停用。无快照用bases声明布局（null为空、省略未知）；有快照沿实际装备核孔位，显式bases仍须一致。gear/passives/transition/resources说明设计、顺序、费用与退路。升华节点/点数含连接，沿本次原生上限与真实进度，不由自填可用点扩大。
 
@@ -26,7 +28,7 @@ entry_conditions关联含stage:<id>的claim；entry_checks用{check_id,locator,o
 
 ## 关键切换的原生快照
 
-承担推进或关键退路的状态标key_transition并提供完整snapshot。不固定每章都算；选择受进度、技能、预留、属性、防御或资源变化影响的关键状态。无快照只说明已有类型/路径/来源，不编DPS/生命/抗性/续航。关键对象仅技能演示不能承担整阶段可用结论。
+承担推进或关键退路的状态标key_transition并提供完整snapshot；按进度、技能、预留、属性、防御或资源变化选择，不固定每章都算。无快照只说明类型/路径/来源，不编精确数值。
 
 snapshot省略template_xml则由原生空职业生成；operations复用配装items/equip/tree/config/main_group/weapon_set。等级与基础技能组由stage拥有，gems/groups只补count/part等状态或主主动选项，不暗换阶段规格/位置。合法选择取物化skill_selections，实际装备与bases及截至本段required_items一致，模板携入也核生成依据。
 
@@ -40,4 +42,4 @@ route --invoked --file '<工作区>/route.json' --out '<工作区>/路线.html'�
 
 先对照原终点和实际阶段对象，从起点沿previous_stage_id走到终点，核required_items/instance_transitions、装备、技能、升华、配置、费用与条件失败退路。目标/阶段/取得/训练等用当前required_subject关联同一判断；实际没装入的对象不解释为已生效。
 
-对象稳定后按[最终复核](evidence.md#最终复核与交付)提交并重跑同一route，交本次成功files；原全程目标由实际阶段共同承担。
+原全程目标由实际阶段共同承担；稳定后沿[最终复核](evidence.md#最终复核与交付)提交、重跑并取成功files。
