@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.32"
+VERSION = "2.8.33"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -1693,10 +1693,25 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
         return (row is not None and row.get("reference_status")=="resolved" and not row["unimplemented"]
                 and row["verdict"] in {"supported","partial"} and (row["verdict"]!="partial" or bool(row["conditions"])))
     handled=set()
+    goal_diagnostics=[]
+    if kind=="leveling_plan" and not any(stage.get("calculation",{}).get("native_calculated") is True
+                                        and stage["calculation"].get("errors")==[]
+                                        for stage in review.get("facts",{}).get("stages",[])):
+        task_pending.append("native:snapshot:missing")
+        goal_diagnostics.append({"code":"route_snapshot_missing","action":"edit_input","location":"/stages",
+            "expected":"至少一个实际原生计算通过的完整阶段",
+            "message":"选择承担最低终点或关键推进的阶段，完成其 snapshot 装备、技能、天赋与场景并重算；key_transition=false 不代替实际对象。"})
     if not coverage: task_pending.append("plan_objective:missing")
     for row in coverage:
         key=row["objective_id"]
-        valid=(row["basis_status"]=="user_declared" and row["claim_ids"] and assessed(objectives.get(key))
+        objective=objectives.get(key)
+        user_only=bool(objective and objective.get("evidence_scope",{}).get("user_declarations_only"))
+        if assessed(objective) and user_only:
+            goal_diagnostics.append({"code":"objective_observation_missing","action":"revise_conclusion",
+                "location":"/assessment/review/objectives","required_subject":"objective:"+key,
+                "actual":{"objective_id":key,"evidence_refs":objective.get("evidence_refs",[])},
+                "message":"原话只证明目标或偏好；用本次具体对象、观测或适用规则评审目标是否达成，缺少必要设计则继续完成。来源类型不认证因果。"})
+        valid=(row["basis_status"]=="user_declared" and row["claim_ids"] and assessed(objective) and not user_only
                and any(assessed(conclusions.get(identifier)) for identifier in row["claim_ids"]))
         if valid:
             handled.add("objective:"+key)
@@ -1758,7 +1773,7 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
             exclusions=[subject for subject in scope["unchanged_group_usage"] if subject in pending]
             blockers.difference_update(exclusions)
             handled.update(exclusions)
-    task_diagnostics=list(scope_diagnostics)
+    task_diagnostics=goal_diagnostics+scope_diagnostics
     resolved_inputs=set()
     unresolved_inputs=set()
     for row in diagnostics:
@@ -1879,7 +1894,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     pending += ["claim_revision:"+claim["claim_id"] for claim in claims if any(d["code"] in {"claim_binding_stale","claim_binding_missing"} for d in claim["diagnostics"])]
     pending += ["claim_check:"+claim["claim_id"] for claim in claims if claim["check_status"] in {"refuted","unknown"}]
     pending += ["material:"+value for value in budget["unresolved"]]
-    if budget["status"] in {"unknown", "uncertain_range"}: pending.append("budget")
+    if intent.get("budget") is not None and budget["status"] in {"unknown", "uncertain_range"}: pending.append("budget")
     if intent.get("budget") and budget["high"] > intent["budget"]["amount"]: pending.append("budget:upper_bound")
     for item in plan.get("operations", {}).get("items", []):
         if not facts.has_claim(claims, "legality:item:"+str(item["id"])): pending.append("legality:item:"+str(item["id"]))

@@ -45,13 +45,13 @@ requirements/material_specs取实际差异，含仍插着的停用/备用宝石�
 
 库存用真实user_statement对应requirement_id、规格及context.quantity。报价low/high为整条quantity总价，来源context对应realm:cn、league、currency、quantity、low/high、规格与checked_at，quote:<引用>判断关联同条来源。国际价无汇率/国服依据不充当已核国服价。
 
-预算true需完整来源及总上界在限额内，已知必要下界超限false，其他null；totals_complete:false只有部分金额。未知、估算、条件交易与已核实分开，链接存在不证明成交/拥有。
+预算true需完整来源及总上界在限额内，已知必要下界超限false，其他null；totals_complete:false仅部分金额。未设预算时价格未知保留说明，物资取得仍需设计；有预算按限额核验。
 
 ## 最终复核与交付
 
 先读本次review包的facts.user_goal_sources，对照最终实际对象：每项目标由哪些已设计/计算的装备、技能、场景、进度与完整时段承担？用当前变化、费用/频率、启用槽位和效果状态核全文；数值/名称沿当前模板，矛盾先修源重算。
 
-沿review_template/check审全部objectives/conclusions。scope限实际对象/状态/窗口，findings简写支持、反例与未知。evidence_refs/counter_evidence_refs分别放实际支持与反证：用户声明只证明方向/持有，结果从本次观测或规则取得；supported/refuted需相应依据。
+沿review_template/check审全部objectives/conclusions。scope限实际对象/窗口，findings简写支持、反例与未知。evidence_refs/counter_evidence_refs放实际支持/反证；目标达成从本次对象、观测或适用规则取得，原话仅证明要求/持有。
 
 | 实际状态 | 写入位置 | 处理 |
 |---|---|---|
@@ -63,4 +63,4 @@ requirements/material_specs取实际差异，含仍插着的停用/备用宝石�
 
 condition_reviews用{subjects,claim_ids,conditions,fallback,evidence_refs}，subjects取当前facts.pending，关联当前supported/partial判断；退路在条件真的失败时仍能执行，或保留已可用前段等条件满足才切换。来源/计算缺失、已知非法、矛盾或许可缺口回源修，不能仅改评审结论清待办。
 
-沿[复核提交](commands.md#增量保存方案)关联当前计算并重算，按[入口完成步骤](../SKILL.md#工作与完成)取files：build/build_plan交XML与HTML、readonly仅报告、route交路线文件。短答沿publication/facts_summary/HTML的当前结果与取舍，恢复见[命令](commands.md#恢复与交付完整性)。
+沿[复核提交](commands.md#增量保存方案)关联当前计算并重算，按[入口完成步骤](../SKILL.md#工作与完成)取files：build/build_plan交XML与HTML、readonly仅报告、route交路线及实际关键XML。短答沿publication/facts_summary/HTML的当前结果与取舍，恢复见[命令](commands.md#恢复与交付完整性)。

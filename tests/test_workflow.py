@@ -4694,6 +4694,12 @@ class TaskCompletionTests(unittest.TestCase):
         result=poe.plan_completion('leveling_plan',[],pending,[],coverage,claims,packet)
         self.assertEqual(result['status'],'scoped_result',result);self.assertEqual(result['pending'],[])
         self.assertEqual(observations['pending'],pending);self.assertEqual(claims[0]['status'],'unresolved')
+        uncalculated=copy.deepcopy(packet)
+        uncalculated['facts']['stages'][0]['calculation']['native_calculated']=False
+        result=poe.plan_completion('leveling_plan',[],[],[],coverage,claims,uncalculated)
+        self.assertEqual(result['status'],'draft')
+        self.assertIn('native:snapshot:missing',result['pending'])
+        self.assertTrue(any(row['code']=='route_snapshot_missing' for row in result['diagnostics']))
         for failure in ('unmet','unknown','uncomputed','missing_claim','missing_entry_claim','bad_reference','incomplete_condition'):
             current=copy.deepcopy(packet);current_claims=copy.deepcopy(claims)
             if failure in ('unmet','unknown'): current['facts']['stages'][0]['calculation']['entry_checks'][0]['status']=failure
@@ -4734,6 +4740,15 @@ class TaskCompletionTests(unittest.TestCase):
                 with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(list(errors),[],[])),patch.object(resources,'assess',return_value=copy.deepcopy(audit)):
                     return poe.assess_candidate(document,document,copy.deepcopy(native),copy.deepcopy(native),intent,current,run,root=run)
             first=assess()
+            unpriced={**first['budget'],'status':'unknown','within_limit':None,'limit':None,
+                      'unresolved':['fixture-future-material']}
+            with patch.object(poe,'budget_summary',return_value=unpriced):
+                no_limit=assess()
+            self.assertIn('material:fixture-future-material',no_limit['pending'])
+            self.assertNotIn('budget',no_limit['pending'])
+            with patch.dict(intent,{'budget':{'amount':10,'currency':'fixture'}}),patch.object(poe,'budget_summary',return_value={**unpriced,'limit':10}):
+                priced=assess()
+            self.assertIn('budget',priced['pending'])
             review=copy.deepcopy(first['review_packet']['review_template'])
             review['findings']='Current file and conditional plan reviewed; execution prerequisites remain unmet.'
             for field in ('conclusions','objectives'):
@@ -4755,6 +4770,13 @@ class TaskCompletionTests(unittest.TestCase):
                 self.assertIn(subject,current['character_readiness']['pending'])
             self.assertEqual(current['review_packet']['objectives'][0]['verdict'],'partial')
             self.assertTrue(current['task_completion']['conditions'])
+            user_only=copy.deepcopy(plan)
+            user_only['assessment']['review']['objectives'][0]['evidence_refs']=['user']
+            insufficient=assess(user_only)
+            self.assertEqual(insufficient['status'],'draft')
+            self.assertIn('plan_objective:requested',insufficient['task_completion']['pending'])
+            self.assertTrue(any(row['code']=='objective_observation_missing'
+                                for row in insufficient['task_completion']['diagnostics']))
             incomplete=copy.deepcopy(plan)
             incomplete['assessment']['review']['objectives'][0]['unimplemented']=['Necessary equipment specifications and acquisition steps remain undesigned.']
             unfinished=assess(incomplete)

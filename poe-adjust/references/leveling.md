@@ -28,7 +28,7 @@ entry_conditions关联含stage:<id>的claim；entry_checks用{check_id,locator,o
 
 ## 关键切换的原生快照
 
-承担推进或关键退路的状态标key_transition并提供完整snapshot；按进度、技能、预留、属性、防御或资源变化选择，不固定每章都算。无快照只说明类型/路径/来源，不编精确数值。
+最低终点提供完整snapshot，其他关键推进/退路标key_transition并实算；按实际进度、技能、预留、防御或资源变化选择，不固定每章都算。无快照仅说明路径/来源。
 
 snapshot省略template_xml则由原生空职业生成；operations复用配装items/equip/tree/config/main_group/weapon_set。等级与基础技能组由stage拥有，gems/groups只补count/part等状态或主主动选项，不暗换阶段规格/位置。合法选择取物化skill_selections，实际装备与bases及截至本段required_items一致，模板携入也核生成依据。
 
