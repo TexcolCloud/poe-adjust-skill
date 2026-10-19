@@ -21,14 +21,15 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 |---|---|
 | 查名称、状态、规格、费用、频率及已算数值的含义 | [资料](references/data.md#只读查询与完成)：`inspect/probe --out --report` |
 | 另证机制因果或只讨论配装取舍 | [只读解释](references/build.md#只读解释)：`read_only_review` |
-| 复核真实作者交付 | [复核已有交付](references/build.md#复核已有交付)：原目标、原件、作者文件与原话一起审 |
-| 微调、整套配装或换流派 | [配装](references/build.md)：`start/intent/evaluate/export` |
+| 复核真实作者交付 | [复核已有交付](references/build.md#复核已有交付)：`read_only_review`，连原目标、原件与作者原话审 |
+| 只做局部收益比较，明确不重做其余操作 | [局部比较](references/build.md#规划交付)：`build_plan` + `snapshot_comparison` |
+| 微调、整套配装或换流派 | [配装](references/build.md)：条件方案 `build_plan`，核当前就绪 `build`；均用 `execution_plan` |
 | 从零或分阶段成长 | [路线](references/leveling.md)：`route` |
 | 写判断、资源安排、物资或自审 | [证据](references/evidence.md) |
 
 ## 工作与完成
 
-1. 保存原话，登记目标、限制和待确认项，只问影响方向或授权的缺项。解释/复核用 `read_only_review`；条件规划用 `build_plan`，当前角色就绪用 `build`。
+1. 保存原话，按上表登记任务范围、目标和限制，只问影响方向或授权的缺项。预算只记用户给出的金额/币种，未知留 null；购买和保留要求分别登记。
 2. **先设计和实算。** 从实际角色或有据的完整参考落实能承担原目标的最低对象；按对应协议核场景、取得、支付与退路。必要能力不足就改装备、天赋、技能或节奏再算，可选提升后置。研究/初算保留必要判断，完整结论在对象稳定后集中写。
 3. 用 `edit` 保存改动，沿 `task_completion/next_actions` 修源；`view` 定向读取当前字段和续页。判断按同一理由合并对象，数字与名称取当前事实模板；`invalidated_claims` 先改正文再用 `review_claims` 更新。待办用于定位工作，完成以原目标的实际对象和证据为准。
 4. **再核结论和交付。** 对照原话、最终实物与操作写[最终复核](references/evidence.md#最终复核与交付)，用 `edit --review-from` 关联当前计算并重算。授权内自行返修；真实事实、权限或能力缺口如实说明。配装冷算 export、路线重跑 route，只交本次 `scoped_result`、errors/pending为空、`file_exported:true` 的 `files`。

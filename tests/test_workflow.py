@@ -2842,8 +2842,12 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual((bounded['status'],bounded['file_exported'],bounded['files']),('draft',False,[]))
 
     def test_calculation_facts_exposes_current_keys_without_inventing_values(self):
-        result={'stats':{'SeasonSpecificObservation':0,'SeasonSpecificFlag':False,'Life':1}}
+        result={'stats':{'SeasonSpecificObservation':0,'SeasonSpecificFlag':False,'Life':1},
+                'rules':[{'id':'current-native-rule','applied':False,'value':0,'scope':'native wording'}]}
+        before=copy.deepcopy(result)
         observed=poe.calculation_facts(result)
+        self.assertEqual(observed['rules'],result['rules'])
+        self.assertEqual(result,before)
         self.assertEqual(observed['available_stat_keys'],sorted(result['stats']))
         self.assertNotIn('SeasonSpecificObservation',observed['stats'])
         referenced=poe.calculation_facts(result,[{'evidence_refs':['native:candidate#/stats/SeasonSpecificObservation','native:candidate#/stats/SeasonSpecificFlag']}])

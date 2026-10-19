@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.34"
+VERSION = "2.8.35"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -1300,7 +1300,7 @@ def calculation_facts(result, claims=()):
             "available_stat_keys":sorted(result.get("stats",{})),
             "stat_metadata":{k:v for k,v in result.get("stat_metadata",{}).items() if k in selected},
             "active_skills": result.get("active_skills", []), "damage_sources": result.get("damage_sources", []),
-            "gems":result.get("gems",[]),"equipped":result.get("equipped",[]),"resource_rules":result.get("resource_rules",{}),
+            "gems":result.get("gems",[]),"equipped":result.get("equipped",[]),"resource_rules":result.get("resource_rules",{}),"rules":result.get("rules",[]),
             "scope": "当前配置与所列主体的原生快照；参考技能必须用其 skill_ref，主技能面板不能代替副技能或阶段。"+(' 配置控件共同范围：'+common_scope if common_scope else '')}
 
 

@@ -12,7 +12,7 @@
 
 规划条件与设计缺口按[最终复核](evidence.md#最终复核与交付)区分。
 
-默认delivery_scope为execution_plan。仅用户明确要局部原生快照比较、无需重做整套操作时可用snapshot_comparison：constraint_sources关联真实原话，delivery_scope判断同时引用用户依据与native:materialization#/actual_changes。程序仅排除完全未改非主组的usage，改动组、真实错误、目标及原角色状态照常核验。
+task_kind和delivery_scope按[入口](../SKILL.md#入口和范围)分流。snapshot_comparison以constraint_sources关联原话，delivery_scope判断引用用户依据与native:materialization#/actual_changes；仅未改非主组的usage不纳入本次比较，其余变动、错误、目标和原角色状态照常核验。
 
 ## 意图与方案
 
