@@ -378,6 +378,15 @@ class DocumentTests(unittest.TestCase):
         intent["confirmed"] = True
         intent["budget"]["amount"] = float("inf")
         with self.assertRaises(ValueError): poe.validate_intent(intent, self.root)
+        preserved=intent_for(self.root)
+        preserved['keep_skill_groups']=[1]
+        preserved['constraint_sources']['/keep_skill_groups']='user'
+        self.assertEqual(poe.validate_intent(preserved,self.root)['keep_skill_groups'],[1])
+        missing=copy.deepcopy(preserved);missing['constraint_sources'].pop('/keep_skill_groups')
+        with self.assertRaisesRegex(ValueError,'/keep_skill_groups'):poe.validate_intent(missing,self.root)
+        for value in (None,[True],[0],[2],[1,1],{'group':1}):
+            with self.subTest(keep_skill_groups=value),self.assertRaises(ValueError):
+                poe.validate_intent({**preserved,'keep_skill_groups':value},self.root)
 
     def test_budget_keeps_unknown_and_foreign_prices_unverified(self):
         intent={"budget":{"amount":20,"currency":"divine"},"league":"CN"}
@@ -2565,6 +2574,24 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertIn('permission:allow_main_skill_change',pending)
         errors,pending=poe.check_constraints(original,original,before,after,{'allow_main_skill_change':True},plan)
         self.assertFalse(errors);self.assertNotIn('permission:allow_main_skill_change',pending)
+        groups=bx.active_set(original,'Skills','SkillSet','activeSkillSet')
+        groups.append(ET.fromstring('<Skill slot="Gloves" enabled="true"><Gem skillId="FutureBackup" level="7" quality="3" enabled="true" enableGlobal2="true"/></Skill>'))
+        locked={'allow_main_skill_change':True,'keep_skill_groups':[2]}
+        def violations(document):return poe.check_constraints(original,document,before,after,locked,plan)[0]
+        formatting=copy.deepcopy(original);group=bx.groups(formatting)[1]
+        group.attrib=dict(reversed(list(group.attrib.items())));group.text='\n  ';group.find('Gem').tail='\n'
+        self.assertFalse(violations(formatting))
+        permitted=copy.deepcopy(original);bx.groups(permitted)[0].find('Gem').set('level','19')
+        self.assertFalse(violations(permitted))
+        for field,value in (('skillId','FutureOther'),('enabled','false'),('level','8'),('quality','4'),('enableGlobal2','false')):
+            changed=copy.deepcopy(original);bx.groups(changed)[1].find('Gem').set(field,value)
+            with self.subTest(preserved_gem_field=field):
+                self.assertTrue(any('技能组 2' in error for error in violations(changed)))
+        changed=copy.deepcopy(original);bx.groups(changed)[1].set('enabled','false')
+        self.assertTrue(any('技能组 2' in error for error in violations(changed)))
+        removed=copy.deepcopy(original)
+        bx.active_set(removed,'Skills','SkillSet','activeSkillSet').remove(bx.groups(removed)[1])
+        self.assertTrue(any('技能组 2' in error for error in violations(removed)))
 
     def test_measurement_resolves_native_effect_order_and_keeps_physical_assignment(self):
         document=bx.parse(SAMPLE)
@@ -4708,6 +4735,12 @@ class TaskCompletionTests(unittest.TestCase):
                     else: result=assess(altered,snapshot,request)
                     self.assertEqual(result['status'],'draft');self.assertTrue(result['task_completion']['pending'])
             self.assertEqual(assess(errors=['Known invalid current item'])['status'],'blocked')
+            kept=copy.deepcopy(intent);kept['keep_skill_groups']=[1]
+            changed=copy.deepcopy(document);bx.groups(changed)[0].find('Gem').set('level','19')
+            with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(resources,'assess',return_value=copy.deepcopy(audit)):
+                violation=poe.assess_candidate(document,changed,native,native,kept,plan,run,root=run)
+            self.assertEqual(violation['task_completion']['status'],'blocked')
+            self.assertTrue(any('技能组 1' in error for error in violation['task_completion']['errors']))
 
     def test_comparison_intent_requires_explicit_user_scope_and_keeps_default_execution(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -5285,6 +5318,9 @@ class RealEngineTests(unittest.TestCase):
         plan={'mode':'refine','summary':'Native requested state validation','operations':{'gems':[operation]}}
         document=bx.apply_plan(self.original,plan,native=current)
         observed=engine.calculate(self.pob,bx.serialise(document),cache=False)
+        preservation_errors,_=poe.check_constraints(self.original,document,current,observed,
+            {'allow_main_skill_change':True,'keep_skill_groups':[selected['group']]},plan)
+        self.assertTrue(any('技能组 '+str(selected['group']) in error for error in preservation_errors))
         actual=next(gem for gem in observed['gems'] if gem['group']==selected['group'] and gem['index']==selected['index'])
         if actual['enabled'] is False:
             bx.verify_selections(document,observed,plan['operations'])

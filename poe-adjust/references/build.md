@@ -16,7 +16,7 @@ task_kind和delivery_scope按[入口](../SKILL.md#入口和范围)分流。snaps
 
 ## 意图与方案
 
-intent登记原目标、场景、许可、预算和保留项，constraint_sources对应真实user_statement；confirmed仅流程记录，未知留空。等级与可用点取实际进度，progress_limits仅当次保守上界。
+intent登记原目标、场景、许可、预算和保留项，constraint_sources对应真实user_statement。整组原样保留用keep_skill_groups的原文件1起序号；组的派生效果另审。confirmed仅流程记录，未知留空；等级/点数取实际进度，progress_limits仅当次保守上界。
 
 plan最小结构为{"schema_version":2,"mode":"refine","summary":"本次目的","operations":{}}；rebuild同接口，可选相对plan目录的template_xml，说明来源与迁移。操作字段及类型沿input_contract：
 

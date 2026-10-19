@@ -25,11 +25,11 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.36"
+VERSION = "2.8.38"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
-INTENT_FIELDS={"schema_version", "confirmed", "task_kind", "delivery_scope", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
+INTENT_FIELDS={"schema_version", "confirmed", "task_kind", "delivery_scope", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "keep_skill_groups", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -63,6 +63,8 @@ def input_contract(kind):
     nested={"objectives":{"type":"array","entry_fields":["objective_id","text","evidence_refs"],"evidence_refs":"string array"},
             "evidence":{"type":"array","identity":"evidence_id","required":["evidence_id","kind","subject"],"source_fields":"沿实际工具 evidence_template；不填程序生成的 status/digest/origin。"},
             "constraint_sources":{"type":"object","values":"single evidence_id string"}}
+    if kind=="intent":
+        nested["keep_skill_groups"]={"type":"array","values":"原文件中1起的技能组序号，整组XML声明（槽位、宝石规格/顺序及开关等）保留；派生效果另审。","source":"constraint_sources /keep_skill_groups 对应真实用户保留要求"}
     if kind in {"plan","route"}:
         nested.update(claims={"type":"array","identity":"claim_id","required":["claim_id","text","subjects"],
                               "entry_fields":["claim_id","claim_type","text","subjects","evidence_refs","conditions","uncertainties","checks","bindings"],
@@ -683,7 +685,7 @@ def validate_intent(value, original, native=None, folder=None):
     bx.require(delivery_scope in {"execution_plan","snapshot_comparison"},"delivery_scope 使用 execution_plan/snapshot_comparison。",location="/delivery_scope")
     bx.require(delivery_scope=="execution_plan" or task_kind=="build_plan","snapshot_comparison 只用于用户要求的规划比较，不代替当前就绪或只读任务。",location="/delivery_scope")
     defaults = {"delivery_scope":"execution_plan", "task_kind":"build", "league":None,"allow_class_change": None, "allow_ascendancy_change": None, "allow_main_skill_change": None,
-                "keep_slots": [], "keep_skill_ids": [], "scenario": {}, "minimum_stats": {}, "notes": "", "budget": None,
+                "keep_slots": [], "keep_skill_ids": [], "keep_skill_groups": [], "scenario": {}, "minimum_stats": {}, "notes": "", "budget": None,
                 "mode": None, "target_level": None, "quest_passive_points": None, "normal_points_available": None,
                 "ascendancy_points": None, "secondary_ascendancy_points": None}
     result = {**defaults, **value}
@@ -700,6 +702,9 @@ def validate_intent(value, original, native=None, folder=None):
         bx.require(isinstance(entry, dict) and set(entry) == {"slot", "preserve"} and entry["preserve"] in {"item_identity", "exact_spec"}, "keep_slots 每项为 {slot,preserve}；preserve=item_identity 或 exact_spec。")
         bx.require(entry["slot"] in known_slots, "当前已读数据未识别保留槽位：" + entry["slot"])
     bx.require(isinstance(result["keep_skill_ids"], list) and all(isinstance(v, str) and v for v in result["keep_skill_ids"]), "keep_skill_ids 应为 ID 数组。")
+    preserved=result["keep_skill_groups"]
+    bx.require(isinstance(preserved,list) and all(type(index) is int for index in preserved) and len(preserved)==len(set(preserved)),"keep_skill_groups 应为不重复的原技能组序号数组。",location="/keep_skill_groups")
+    for index in preserved:bx.index_one(bx.groups(original),index,"保留技能组",location="/keep_skill_groups")
     bx.require(isinstance(result["minimum_stats"], dict), "minimum_stats 应为对象。")
     for key, val in result["minimum_stats"].items():
         bx.require(isinstance(key, str) and key and bx.finite_number(val), "约定最低指标必须是本机指标名和有限数值。",location="/minimum_stats/"+str(key),expected="finite representable number",actual=val)
@@ -715,7 +720,7 @@ def validate_intent(value, original, native=None, folder=None):
     bx.require(isinstance(sources, dict), "constraint_sources 是约束字段到用户声明 evidence_id 的映射。")
     required = ["goal"] + [key for key in ("mode", "budget", "target_level", "quest_passive_points", "normal_points_available", "ascendancy_points", "secondary_ascendancy_points", "max_changed_equipment", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "baseline_main_group") if result.get(key) is not None]
     if delivery_scope=="snapshot_comparison": required.append("delivery_scope")
-    required += [key for key in ("keep_slots", "keep_skill_ids", "scenario", "minimum_stats") if result[key]]
+    required += [key for key in ("keep_slots", "keep_skill_ids", "keep_skill_groups", "scenario", "minimum_stats") if result[key]]
     for key in required:
         ref = sources.get("/" + key)
         bx.require(ref in records and records[ref]["kind"] == "user_statement" and records[ref]["status"] == "user_declared", "明确限制 /" + key + " 需要 constraint_sources 中对应的用户表达；模型假设请放 plan。")
@@ -1004,6 +1009,13 @@ def check_constraints(original, document, before, after, intent, plan, equipment
     enabled_ids={gem.get("id") for gem in active_gems(after)}
     for skill in intent.get("keep_skill_ids",[]):
         if skill not in enabled_ids: errors.append("必须保留的技能未启用："+skill)
+    if intent.get("keep_skill_groups"):
+        original_groups,current_groups=bx.groups(original),bx.groups(document)
+        for index in intent["keep_skill_groups"]:
+            source=bx.index_one(original_groups,index,"保留技能组")
+            current=current_groups[index-1] if index<=len(current_groups) else None
+            if current is None or ET.canonicalize(bx.serialise(source),strip_text=True)!=ET.canonicalize(bx.serialise(current),strip_text=True):
+                errors.append(f"必须原样保留的技能组 {index} 已改动或移除；核对原组声明与实际操作。")
     for key,threshold in intent.get("minimum_stats",{}).items():
         value=after["stats"].get(key)
         if type(value) not in (float,int): pending.append("metric:"+key)
