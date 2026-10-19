@@ -49,6 +49,6 @@ python '<entry>' export --run '<run>' --name candidate-a
 
 ## 恢复与交付完整性
 
-status --run '<run>'或status --route-state '<路线.state.json>'读当前源、候选、last_operation并沿返回动作恢复。路线仅复用身份/文件完整的已完成阶段，失败重跑同一route；重算取消旧导出身份。
+status --run '<run>'或status --route-state '<路线.state.json>'只读核当前源、候选和last_operation；大返回加--out '<工作区新JSON>'再view，已有run的start指向status。路线仅复用身份/文件完整的已完成阶段，失败重跑同一route；重算取消旧导出身份。
 
 只有task_completion.status为scoped_result、errors/pending为空，file_exported才true且列最终files。失败files为空，内部JSON/阶段快照留恢复；export返回ok:false/退出2，route.ok只表示计算命令完成，交付另看file_exported。输出受完整性核对，改动后修源重新生成，不手改页面或用旧成功凭证覆盖新失败。

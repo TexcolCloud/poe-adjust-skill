@@ -2533,6 +2533,16 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(len(rows),1);self.assertIs(rows[0]['values']['config_switches']['future-condition'],False)
         self.assertIn('future-guard',result['facts_summary']);self.assertIn('future-condition=false',result['facts_summary'])
         self.assertIs(poe.calculation_facts(native)['config_controls']['future-condition']['value'],False)
+        note='Shared current-native control scope'
+        native['config_controls']['future-condition']['scope']=note
+        native['config_controls']['future-counter']={'type':'integer','value':0,'scope':note}
+        before=copy.deepcopy(native);projected=poe.calculation_facts(native)
+        self.assertIs(projected['config_controls']['future-condition']['value'],False)
+        self.assertEqual(projected['config_controls']['future-counter']['value'],0)
+        self.assertEqual(json.dumps(projected,ensure_ascii=False).count(note),1)
+        self.assertEqual(native,before)
+        native['config_controls']['future-counter']['scope']='Different source scope'
+        self.assertEqual(poe.calculation_facts(native)['config_controls'],native['config_controls'])
 
     def test_common_measurement_cannot_hide_a_locked_main_skill_change(self):
         before={'level':86,'tree_version':'future','class':'fixture','ascendancy':'fixture','main_skill':'changed-by-control','gems':[],'equipped':[],
@@ -3081,6 +3091,38 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 self.assertFalse(poe.workflow_status(args(run=str(run)))['candidate_records'][0]['valid'])
                 with self.assertRaisesRegex(ValueError,'计划'):
                     poe.read_candidate(args(run=str(run),name='test'))
+                # Multiple real recovery records must remain readable without
+                # recalculation; output snapshots cannot overwrite run state.
+                state=poe.read_json(run/'run.json')
+                state['input_sha256']=bx.digest((run/'original.xml').read_bytes())
+                state['candidates'].update({f'missing-{i}':{} for i in range(30)})
+                poe.write_json(run/'run.json',state)
+                stdout,stderr=io.StringIO(),io.StringIO()
+                with redirect_stdout(stdout),redirect_stderr(stderr):
+                    code=poe.main(['status','--run',str(run)])
+                self.assertEqual(code,2)
+                self.assertEqual(json.loads(stderr.getvalue())['diagnostic']['code'],'response_too_large')
+                saved=run/'status-snapshot.json';stdout=io.StringIO()
+                with redirect_stdout(stdout):
+                    code=poe.main(['status','--run',str(run),'--out',str(saved)])
+                self.assertEqual(code,0);self.assertLessEqual(len(stdout.getvalue()),12000)
+                complete=poe.read_json(saved)
+                self.assertEqual(len(complete['candidate_records']),31)
+                response=json.loads(stdout.getvalue());self.assertTrue(response['continuations'])
+                for continuation in response['continuations']:
+                    self.assertEqual(Path(continuation['file']),saved)
+                    facts.pointer(complete,continuation['pointer'])
+                self.assertEqual(response['runtime']['requests'],0)
+                before=(run/'run.json').read_bytes();stderr=io.StringIO()
+                with redirect_stderr(stderr):
+                    self.assertEqual(poe.main(['status','--run',str(run),'--out',str(run/'run.json')]),2)
+                self.assertEqual((run/'run.json').read_bytes(),before)
+                stdout=io.StringIO()
+                with redirect_stdout(stdout):
+                    code=poe.main(['start','--invoked','--input',str(run/'original.xml'),'--run',str(run)])
+                self.assertEqual(code,0);self.assertLess(len(stdout.getvalue()),2000)
+                self.assertEqual(json.loads(stdout.getvalue())['next_actions'][0]['command'],'status')
+                self.assertEqual((run/'run.json').read_bytes(),before)
 
     def test_route_status_requires_current_input_output_and_engine(self):
         with tempfile.TemporaryDirectory() as folder:

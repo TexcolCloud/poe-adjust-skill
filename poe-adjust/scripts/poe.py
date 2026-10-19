@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.33"
+VERSION = "2.8.34"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -626,7 +626,9 @@ def begin(args):
     if (run / "run.json").exists():
         _, state = read_run(run)
         bx.require(state["input_sha256"] == bx.digest(source.read_bytes()), "此会话已有其他角色，请使用新目录。")
-        return {**workflow_status(argparse.Namespace(run=str(run),pob=str(root))),"already_exists":True,"input_contract":input_contract('intent')}
+        return {"run":str(run),"phase":state["phase"],"already_exists":True,
+                "next_actions":[{"action":"status","command":"status","arguments":{"run":str(run)},"reference":"references/commands.md"}],
+                "next":"会话已存在；沿 status 核对当前候选和恢复动作，不重复创建或原生计算。"}
     bx.require(not run.exists() or not any(run.iterdir()), "请选择空的会话目录，以免覆盖已有文件。")
     info=engine.health(root)
     run.mkdir(parents=True, exist_ok=True)
@@ -1274,6 +1276,11 @@ def resource_observations(result):
 
 
 def calculation_facts(result, claims=()):
+    controls=result.get('config_controls',{})
+    scopes=[row.get('scope') if isinstance(row,dict) else None for row in controls.values()] if isinstance(controls,dict) else []
+    common_scope=scopes[0] if scopes and isinstance(scopes[0],str) and all(value==scopes[0] for value in scopes) else ''
+    if common_scope:
+        controls={key:{field:value for field,value in row.items() if field!='scope'} for key,row in controls.items()}
     referenced = set()
     for claim in claims:
         for ref in claim.get("evidence_refs", []):
@@ -1288,13 +1295,13 @@ def calculation_facts(result, claims=()):
             "config_values": result.get("config_values", {}), "config_labels": result.get("config_labels", {}),
             "config_placeholders":result.get("config_placeholders",{}),"config_loader_source":result.get("config_loader_source"),
             "config_input_origin":result.get("config_input_origin"),
-            "config_controls":result.get("config_controls",{}),"effect_state":engine.effect_state(result),
+            "config_controls":controls,"effect_state":engine.effect_state(result),
             "stats": {k: v for k, v in result.get("stats", {}).items() if k in selected},
             "available_stat_keys":sorted(result.get("stats",{})),
             "stat_metadata":{k:v for k,v in result.get("stat_metadata",{}).items() if k in selected},
             "active_skills": result.get("active_skills", []), "damage_sources": result.get("damage_sources", []),
             "gems":result.get("gems",[]),"equipped":result.get("equipped",[]),"resource_rules":result.get("resource_rules",{}),
-            "scope": "当前配置与所列主体的原生快照；参考技能必须用其 skill_ref，主技能面板不能代替副技能或阶段。"}
+            "scope": "当前配置与所列主体的原生快照；参考技能必须用其 skill_ref，主技能面板不能代替副技能或阶段。"+(' 配置控件共同范围：'+common_scope if common_scope else '')}
 
 
 def publication(status, errors, pending, budget, calculations, *, readiness=None, resource_audits=None, keys=None, claims=None, review=None,
@@ -2983,6 +2990,7 @@ def parser():
             context=cmd.add_mutually_exclusive_group(required=True)
             context.add_argument("--run")
             context.add_argument("--route-state",help="route 输出的 .state.json；只读核对交付和可恢复阶段")
+            cmd.add_argument("--out",help="可选完整状态 JSON，使用工作区新文件，再用 view 分页")
         if name == "start": cmd.add_argument("--invoked", action="store_true")
         if name == "intent": cmd.add_argument("--file", required=True)
         if name=="edit":
@@ -3064,6 +3072,7 @@ def bound_reply(value, args):
     prefix="/response"
     if args.command=="edit": details=Path(value["receipt_file"]);prefix=""
     elif args.command=="start": details=Path(value['inspection'])
+    elif args.command=="status" and getattr(args,"out",None): details=Path(args.out).resolve();prefix=""
     elif args.command in {'inspect','probe'} and args.out: details=Path(args.out).resolve();prefix=''
     elif args.command=="route": details=Path(args.out).resolve().with_suffix(".evidence.json")
     elif args.command in {"evaluate","export"}:
@@ -3278,7 +3287,13 @@ def main(argv=None):
                 bx.require(len(json.dumps(result, ensure_ascii=False)) <= 12000, "查询结果较大；请加 --out '<工作区>/查询结果.json' 保存完整结果，再按相关字段读取，避免 TeleAgent 截断或转存至额外授权目录。")
         elif args.command == "route": result = route_command(args)
         elif args.command == "view": result=view_json(args)
-        else: result=workflow_status(args)
+        else:
+            result=workflow_status(args)
+            if args.out:
+                output=Path(args.out).resolve()
+                bx.require(output.suffix.lower()==".json" and not output.exists(),
+                           "status --out 使用工作区新的独立 JSON，不能覆盖现有文件。",location="/out")
+                write_json(output,result)
         result["entrypoint"]=execution_entrypoint()
         result["runtime"]={**engine.PERFORMANCE,"elapsed_seconds":round(time.perf_counter()-started,4)}
         result=bound_reply(result,args)
