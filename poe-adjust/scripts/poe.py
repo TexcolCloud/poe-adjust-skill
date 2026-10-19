@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.38"
+VERSION = "2.8.41"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -1144,6 +1144,7 @@ def roundtrip(root, result, document, plan=None):
     # Subsequent evidence describes the saved file's native representation.
     for key in ("config_values", "config_placeholders", "config_loader_source", "config_defaults", "config_saved_values", "config_labels", "config_controls", "config_input_origin", "effect_state"):
         if key in reloaded: result[key] = reloaded[key]
+    result["xml"] = xml  # Evidence binds the saved candidate, not a worker reserialization.
     return xml
 
 
@@ -2135,7 +2136,7 @@ def report_html(state, outcome):
     result=outcome['result']
     def bullets(values): return "<ul>"+"".join("<li>"+esc(v)+"</li>" for v in values)+"</ul>"
     links=bullets([s['text'] for s in outcome['publication']['statements'] if s['kind']=='native_skill_group'])
-    current_facts=bullets([s['text'] for s in outcome['publication']['statements'] if s['kind'] not in {'native_skill_group','experiment'}]+[m['text'] for m in outcome['publication']['measurements']])
+    current_facts=bullets([s['text'] for s in outcome['publication']['statements'] if s['kind'] not in {'native_skill_group','experiment','materialization_change'}]+[m['text'] for m in outcome['publication']['measurements']])
     if outcome.get('kind')=='inspection':
         comparisons=[]
         for variant in (s for s in outcome['publication']['statements'] if s['kind']=='experiment'):
@@ -2381,7 +2382,7 @@ def export(args):
     write_json(run/"run.json",state)
     write_json(output/"delivery.json",{"file_exported":False,"status":"preparing","candidate":args.name})
     verification=engine.calculate(root,xml,cache=False)
-    verification["xml_sha256"]=bx.digest(xml)
+    verification.update(xml=xml,xml_sha256=bx.digest(xml))
     bx.require(verification["engine_fingerprint"]==outcome["engine_fingerprint"],"最终复算期间引擎变化。")
     bx.require(engine.character_state(verification)==engine.character_state(outcome["result"]),"最终复算角色状态与候选记录不同，请重算。")
     if "measurement_audit" in outcome["result"]: verification["measurement_audit"]=outcome["result"]["measurement_audit"]

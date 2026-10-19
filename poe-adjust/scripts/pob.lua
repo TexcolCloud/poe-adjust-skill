@@ -957,6 +957,40 @@ end
 if request.breakdowns then
   result.breakdowns = {}
   local environments = {}
+  local detailDefinitions
+  local function relatedDetails(metric, breakdown)
+    detailDefinitions = detailDefinitions or LoadModule("Modules/CalcSections")
+    local seen, aliases, sources = {}, {}, {}
+    local function visit(value, path)
+      if type(value) ~= "table" or seen[value] then return end
+      seen[value] = true
+      if type(value.format) == "string" then
+        local outputs, count = {}, 0
+        for key in value.format:gmatch("output:([%a_][%w_%.]*)") do
+          if not outputs[key] then outputs[key], count = true, count + 1 end
+        end
+        if count == 1 and outputs[metric] then
+          for index, entry in ipairs(value) do
+            local key = type(entry) == "table" and entry.breakdown
+            if type(key) == "string" and type(breakdown[key]) == "table" then
+              aliases[key] = true
+              table.insert(sources, {module="Modules/CalcSections",path=path.."/"..index,
+                output=metric,breakdown=key,format=value.format})
+            end
+          end
+        end
+      end
+      for key, child in pairs(value) do
+        if type(key) == "string" or type(key) == "number" then visit(child,path.."/"..tostring(key)) end
+      end
+    end
+    visit(detailDefinitions, "")
+    local keys = {}
+    for key in pairs(aliases) do table.insert(keys,key) end
+    table.sort(keys)
+    table.sort(sources,function(a,b) return a.path < b.path end)
+    return keys, sources
+  end
   for _, query in ipairs(request.breakdowns) do
     local target, skill
     for index, row in ipairs(result.active_skills) do
@@ -1004,6 +1038,14 @@ if request.breakdowns then
         for key,value in pairs(actor.breakdown or {}) do if type(key)=="string" and type(value)=="table" then table.insert(row.available_metrics,key) end end
         table.sort(row.available_metrics)
         local detail = actor.breakdown and actor.breakdown[query.metric]
+        if type(detail) ~= "table" then
+          local keys, sources = relatedDetails(query.metric,actor.breakdown or {})
+          if #keys > 0 then row.detail_candidates, row.detail_sources = keys, sources end
+          if #keys == 1 then
+            row.detail_metric = keys[1]
+            detail = actor.breakdown[keys[1]]
+          end
+        end
         if type(detail)=="table" then
           row.detail,row.omissions = evidenceTable(detail)
           row.status = #row.omissions == 0 and "observed" or "partial"

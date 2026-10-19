@@ -6452,14 +6452,19 @@ class RealEngineTests(unittest.TestCase):
         xml=bx.serialise(self.original)
         baseline=engine.calculate(self.pob,xml)
         minion=next(s for s in baseline["active_skills"] if s["minion"])
-        result=engine.calculate(self.pob,xml,breakdowns=[{"metric":"Life"},{"metric":"UnavailableMetric"},{"metric":"Life","skill_ref":minion["skill_ref"],"actor":"minion"}])
-        life,missing,summon=result["breakdowns"]
+        result=engine.calculate(self.pob,xml,breakdowns=[{"metric":"Life"},{"metric":"UnavailableMetric"},{"metric":"Life","skill_ref":minion["skill_ref"],"actor":"minion"},{"metric":"LifeLeechRate"},{"metric":"LifeLeech"}])
+        life,missing,summon,rate,detail=result["breakdowns"]
         self.assertEqual(life["status"],"observed");self.assertEqual(life["value"],baseline["stats"]["Life"])
         self.assertTrue(life["matches_main_value"]);self.assertEqual(life["context"]["xml_sha256"],bx.digest(xml))
         self.assertEqual(missing["status"],"unsupported");self.assertNotIn("value",missing)
         self.assertEqual(summon["selected_skill_id"],minion["id"]);self.assertEqual(summon["actor"],"minion")
         self.assertGreater(summon["value"],0)
         if "detail" not in summon: self.assertEqual(summon["status"],"unsupported");self.assertIn("No native breakdown",summon["reason"])
+        self.assertEqual(rate["status"],"observed");self.assertEqual(rate["value"],baseline["stats"]["LifeLeechRate"])
+        self.assertTrue(rate["matches_main_value"]);self.assertEqual(rate["detail_metric"],detail["metric"])
+        self.assertEqual(rate["detail"],detail["detail"])
+        self.assertTrue(rate["detail_sources"])
+        self.assertTrue(all(row["module"]=="Modules/CalcSections" and row["output"]=="LifeLeechRate" for row in rate["detail_sources"]))
         self.assertEqual(engine.character_state(result),engine.character_state(baseline));self.assertEqual(result["stats"],baseline["stats"])
         before,after=bx.summary(bx.parse(baseline["xml"])),bx.summary(bx.parse(result["xml"]))
         for value in (before,after):
@@ -6857,7 +6862,7 @@ class RealEngineTests(unittest.TestCase):
         plan=copy.deepcopy(self.refine)
         source=Path(self.temp.name)/"local-evidence.txt";source.write_text("Offline local record",encoding="utf-8")
         plan["evidence"]=[{"evidence_id":"artifact","kind":"artifact","subject":"fixture","path":source.name,"excerpt":"Offline local record"}]
-        plan["claims"]=[{"claim_id":"review","text":"Fixture conclusion; remaining gaps are retained.","subjects":["goal"],"evidence_refs":["artifact","native:candidate#/stats/Life"]}]
+        plan["claims"]=[{"claim_id":"review","text":"Fixture conclusion; remaining gaps are retained.","subjects":["goal"],"evidence_refs":["artifact","native:candidate#/stats/Life","native:candidate#/xml"]}]
         plan["assessment"]={"goal_claim_ids":["review"],"scope":"Fixture, not a player build"}
         first=self.evaluate_plan(plan,"reviewed")
         template=poe.read_json(self.run_dir/"candidates/reviewed/review.json")["review_template"]
