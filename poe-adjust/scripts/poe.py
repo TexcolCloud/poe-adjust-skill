@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.35"
+VERSION = "2.8.36"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -470,6 +470,15 @@ def view_json(args):
             file=artifact.get('file')
             if not isinstance(base,str) or not base.startswith('/') or file is not None and (not isinstance(file,str) or Path(file).resolve()!=path): continue
             if pointer==base or pointer.startswith(base+'/'): matches.append((len(base),entry['prefix']+pointer[len(base):]))
+            projected='/review_packet/facts/'+name
+            if pointer==projected or pointer.startswith(projected+'/'):
+                canonical=base+pointer[len(projected):]
+                try:
+                    actual=facts.pointer(document,canonical)
+                    observed=facts.pointer(document,pointer)
+                except bx.ContractError: continue
+                if json.dumps(actual,ensure_ascii=False,sort_keys=True,allow_nan=False)==json.dumps(observed,ensure_ascii=False,sort_keys=True,allow_nan=False):
+                    matches.append((len(projected),entry['prefix']+pointer[len(projected):]))
         return max(matches)[1] if matches else None
     def references(value):
         located={}

@@ -2378,6 +2378,17 @@ class WorkflowInterfaceTests(unittest.TestCase):
             keys=poe.view_json(args(file=str(source),pointer='/readiness/timeline/resources/1',fields='',keys=True,query='future',offset=0,limit=1))
             self.assertEqual(keys['native_references']['/readiness/timeline/resources/1/future~1value'],ref)
             self.assertEqual(source.read_bytes(),source_before)
+            document={'readiness':native,'reference_contract':contract,
+                      'review_packet':{'facts':{'resources':copy.deepcopy(native)}}}
+            poe.write_json(source,document)
+            projected='/review_packet/facts/resources/timeline/resources/1'
+            page=poe.view_json(args(file=str(source),pointer=projected,fields='resource_id,status,future/value',keys=False,query='',offset=0,limit=10))
+            self.assertEqual(page['native_references'][projected+'/future~1value'],ref)
+            document['review_packet']['facts']['resources']['timeline']['resources'][1]['future/value']=0
+            poe.write_json(source,document)
+            page=poe.view_json(args(file=str(source),pointer=projected,fields='resource_id,status,future/value',keys=False,query='',offset=0,limit=10))
+            self.assertNotIn(projected+'/future~1value',page['native_references'])
+            self.assertEqual(page['native_references'][projected+'/status'],'native:resources#/timeline/resources/1/status')
 
     def test_report_distinguishes_inactive_slot_and_disabled_gems_from_enabled_group(self):
         native={'config_values':{},'config_labels':{},'gems':[
