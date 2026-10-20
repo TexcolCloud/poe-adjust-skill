@@ -2721,6 +2721,15 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(actions[1]['categories'],{'material':1,'objective':1})
         self.assertEqual(actions[1]['pointer'],'/checked_route/pending')
         self.assertEqual(poe.delivery_actions({'status':'scoped_result','errors':[],'pending':[]},'a','b','c'),[])
+        for pointer in ('', '/checked_route'):
+            current={'status':'draft','errors':[], 'pending':['assessment:Actual unresolved work']}
+            action=next(row for row in poe.delivery_actions(current,'source.json','result.json','review.json',pointer)
+                        if row['action']=='assess_dependencies')
+            self.assertEqual(action.get('input_pointer'),'/assessment/unresolved')
+            self.assertEqual(action['pointer'],pointer+'/pending')
+            self.assertEqual(current['pending'],['assessment:Actual unresolved work'])
+        self.assertNotIn('input_pointer',actions[1])
+
 
     def test_route_snapshot_keeps_contextual_tree_path_and_source_repair(self):
         stage={'stage_id':'dynamic','level':12,'ascendancy_allocated_nodes':[],

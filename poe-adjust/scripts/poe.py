@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.43"
+VERSION = "2.8.44"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -1514,7 +1514,9 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     if dependencies:
         brief=facts.delivery_brief(outcome["status"],[],dependencies)
         actions.append({**shared,"action":"assess_dependencies","pointer":completion_pointer+"/pending","total":len(dependencies),"categories":brief["unresolved_categories"],
-                        "instruction":("只处理 task_completion 中本次评审的输入、引用、绑定与覆盖缺口；原对象的完整错误和未知状态继续在 character_readiness 保留。反驳或证据不足可以完成评审，不要求修改原角色。" if read_only else "按 task_completion 读取本次未完成工作，保留 character_readiness 全部执行缺口。修复真实矛盾与缺失输入；未来条件逐项关联当前复核的 condition_reviews，记录真实取得/执行条件及退路，不能删 pending、改小用户目标或用条件盖过已知错误。" if scoped else "按类别读取完整缺口，核对最终对象与每项用户目标，补具体来源、物资和使用条件。目标未达到就继续设计；确无法验证的写明未解决，不生成肯定结论。")})
+                        **({"input_pointer":"/assessment/unresolved"} if any(value.startswith("assessment:") for value in dependencies) else {}),
+                        "instruction":("只处理 task_completion 中本次评审的输入、引用、绑定与覆盖缺口；原对象的完整错误和未知状态继续在 character_readiness 保留。反驳或证据不足可以完成评审，不要求修改原角色。" if read_only else "按 task_completion 读取本次未完成工作，保留 character_readiness 全部执行缺口。修复真实矛盾与缺失输入；未来条件逐项关联当前复核的 condition_reviews，记录真实取得/执行条件及退路，不能删 pending、改小用户目标或用条件盖过已知错误。" if scoped else "按类别读取完整缺口，核对最终对象与每项用户目标，补具体来源、物资和使用条件。目标未达到就继续设计；确无法验证的写明未解决，不生成肯定结论。")+
+                        (" assessment:来自 input_file 的 input_pointer；逐项复核该源数组，已完成设计的未来条件迁入 conditions/condition_reviews，未完成工作保留。修源后重算，结果 pending 不可直接编辑。" if any(value.startswith("assessment:") for value in dependencies) else "")})
     if unsupported:
         actions.append({**shared,"action":"inspect_capability","subjects":unsupported,"capabilities":resources.capabilities(),
                         "instruction":"先按当前接口能力核对缺口。未支持的机制不能靠补输入变成已测量；模型决定调整方案、取得其他可核实证据或保留明确条件。"})

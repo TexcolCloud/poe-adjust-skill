@@ -53,7 +53,7 @@ requirements/material_specs取实际差异，含停用/备用宝石、加工和�
 |---|---|
 | 对象已完整设计，未来待取得、训练或执行 | conditions及condition_reviews，写具体条件及退路，可完成规划 |
 | 必要规格、操作或退路尚未设计 | unimplemented，继续设计实算 |
-| 本轮所需评审未完成 | review.unresolved，继续复核 |
+| 本轮工作或评审未完成 | assessment.unresolved及assessment.review.unresolved；逐项完成，已审未来条件移至conditions/condition_reviews |
 
 已审未测范围留scope/conditions；完整否定/未知可完成readonly，规划目标未知或被反驳仍未完成。
 
