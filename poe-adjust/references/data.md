@@ -2,7 +2,7 @@
 
 ## 只读查询与完成
 
-名称、状态、规格、费用、频率及已算数值的含义用inspect/probe，--out保存JSON、--report交中文事实页。独立单次支付、固定收支与平均耗尽投影也属此路径，无需intent/plan。保留禁用状态，按实际返回范围解释；另证因果、只讨论配装取舍或裁决作者时转[配装协议](build.md)。
+名称、状态、规格、费用、频率及已有数值含义用inspect/probe，--out保存JSON、--report交事实页，无需intent/plan。独立单次支付、固定收支和平均耗尽投影也属此路径；保留禁用/未知范围。另证机制、取舍或裁决作者转[配装](build.md)。
 
 ```powershell
 python '<entry>' inspect --input '<原件.xml>' --calculate --out '<工作区>/facts.json' --report '<工作区>/事实.html'
@@ -11,28 +11,26 @@ python '<entry>' inspect --input '<原件.xml>' --metrics 'Life,ManaCost' --skil
 
 ## 按需目录
 
-catalog目录取当前--help；相关独立查询可用--batch提交queries，各项kind/query/limit/offset，保存--out后用view定向读取。未知先小查再沿真实ID/分页扩查，不从记忆猜ID或倾倒全目录。
-
-节点用--input或class_id提供职业起点，升华连接也计点；links检查技能类型关系，物理孔连/属性/取得另核。bases.valid_slots属于当次布局，缺上下文留未知。doctor的data_version/树版本只是本机资料，旧角色树、目标国服/赛季另说明适用范围。
+catalog种类取当前--help。独立查询可--batch提交queries的kind/query/limit/offset，--out保存再view；先小查，沿真实ID分页。节点用--input或class_id取职业起点，升华连接计点；links核技能类型关系，物理孔连/属性/取得另核。bases.valid_slots属当次布局，缺上下文留未知。
 
 ## 技能、配置与明细
 
-以当前物化对象为准：保存level/quality与effective_specifications分开；active_skills的skill_ref/actor、cost/rate、native_timing限定技能、主体、频率、时长及冷却。原组设置、授予效果和实际辅助也属于对象，不能只数可见普通宝石后称全部已排除。
+保存level/quality与effective_specifications分开。active_skills沿skill_ref/actor读cost/rate/native_timing；组设置、授予效果和实际辅助均属于对象。
 
-config_controls区分value/default/value_basis及Input/Placeholder、runtime/applied。null不作false；删除覆盖可能恢复默认。选择当前options[].val并读visibility/apply_source原文，再核实际resolved值；一个控件未生效不推出所有开关关闭。
+config_controls读value/default/value_basis、Input/Placeholder与runtime/applied，选当前options[].val并核visibility/apply_source及resolved值。null非false，删覆盖可能恢复默认，一个控件未生效不代表全部关闭。
 
-inspect --metrics自动计算，breakdowns给value/detail/context、available_metrics与MAIN对照。解释派生值先读实际明细：输入、中间因子、上限与输出分别是什么，哪些因素已经计入；涉及机制时沿来源读原文。公式/主体/场景不同就分开，缺字段留未知。排他判断核相关真实对象与反例；有限probe不能证明机制不存在。
+`inspect --metrics`自动计算，breakdowns给value/detail/context、available_metrics及MAIN对照。解释因果先核输入、中间因子、上限、输出和已计入的因素，沿来源读适用原文；需要时用probe检验单一变量。派生值、主体、场景或上下文不同就分开，缺字段留未知。排他结论核相关实际对象与反例，有限实验不证明机制不存在。
 
-flask_base为基础、flask_local为单件处理后参数，不重复叠加。角色修正、当前充能、补充与覆盖另核；granted_effects、药剂开启或瞬时数值不证明持续。游戏合法性用当前规则依据，计算接受不单独认证，旧常识也不覆盖本次来源。
+flask_base是基础，flask_local是单件处理后参数，二者不重复叠加。角色修正、当前充能和实际覆盖另核；开启快照不证明持续。合法性据当前适用规则，计算接受与模型旧常识都不单独认证。
 
 ## 读原文和引用
 
-view按pointer/fields/keys/query及offset/limit读JSON，续页沿page_unit、continuations/deferred_values。复制当前native_references/evidence_template，核身份与source_revision；逻辑根/索引不跨评估搬用，零、false、null分开。
+view定向读pointer/fields/keys/query，按page_unit、continuations/deferred_values续页；复制当前native_references/evidence_template并核身份/source_revision，逻辑根和索引不跨评估搬用。
 
-data用list/search/read定位公开只读source，再按真实路径/行号读完整上下文；截断片段不充当完整机制。local_data使用source/line/count/content_sha256模板，由程序重读，引用真实含义仍由你判断。不读平台内部目录、私有过程或无关资料。
+data的list/search/read定位公开只读source，沿实际路径/行号读上下文；local_data复制source/line/count/content_sha256模板，程序重读，含义由你核对。平台内部目录、私有过程和无关资料不读。
 
 ## 联网取得与版本
 
-research --gems '<当前ID列表>'给原生逐级要求与网页choices。取得核宝石/职业/任务/前提/真正NPC/奖励选择和费用，字段取同一行；Quest Reward只是渠道标签，同任务多奖励不等于全可领取。前期无某职业奖励不推出后期商店也无，按用户许可核小号/交易，模板在choices[].evidence_templates。
+research --gems给当前ID的逐级要求与网页choices。沿同一行核职业、任务/前提、NPC、奖励选择数量及费用；Quest Reward只是渠道标签，多奖励不等于全能领。前期无奖励不推出后期无商店，小号/交易按用户许可，模板在choices[].evidence_templates。
 
-research --trials的位置/区域等级不证明通关或可用点数；research --version读真实官方正文，不由赛季编号猜规则。其他网页保存URL、实际正文与查阅时间到工作区，沿[证据](evidence.md)引用。本机数据、公开规则、用户声明与模型推断分别说明；未知国服差异保留条件。
+research --trials位置/区域等级不证明已通关或可用点。doctor的数据/树版本只证明本机资料，research --version读真实官方正文；旧树、目标国服/赛季另核适用。其它网页保存URL、正文与查阅时间到工作区，沿[证据](evidence.md)引用；本机规则、公开规则和未知国服差异分别说明。
