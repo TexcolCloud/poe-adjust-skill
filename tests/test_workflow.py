@@ -1335,6 +1335,35 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(assessed["diagnostics"][0]["source_diagnostic"],diagnostic)
             with self.assertRaises(ValueError):facts.load_evidence([dict(declaration,status="verified")],folder,{})
             declaration["excerpt"]="invented price";self.assertEqual(facts.load_evidence([declaration],folder,{})["price"]["status"],"unresolved")
+            # Text source pages must be reusable without model transcription or newline conversion.
+            source.write_bytes(('第一行\r\n原文包含 \"引号\" 与 literal\\path。\r\n'+'长文字'*4000).encode('utf-8-sig'))
+            original=source.read_bytes();stamp=source.stat().st_mtime_ns
+            failed=facts.load_evidence([dict(declaration,path=str(source.resolve()),excerpt='paraphrased claim')],nested,{})['price']
+            self.assertEqual(failed['status'],'unresolved')
+            stdout=io.StringIO()
+            with patch.object(engine,'calculate',side_effect=AssertionError('text view must not calculate')),redirect_stdout(stdout):
+                code=poe.main(['view','--file',str(source),'--limit','12000'])
+            self.assertEqual(code,0)
+            page=json.loads(stdout.getvalue());text=original.decode('utf-8-sig')
+            self.assertLessEqual(len(stdout.getvalue()),10000)
+            self.assertEqual(page['value'],text[:page['next_offset']])
+            self.assertEqual(page['page_unit'],'characters');self.assertEqual(page['revision'],bx.digest(original))
+            template=page['evidence_template']
+            self.assertEqual(template,{'kind':'artifact','path':str(source.resolve()),'excerpt':page['value']})
+            actual=facts.load_evidence([{**template,'evidence_id':'actual','subject':'source'}],nested,{})['actual']
+            self.assertEqual(actual['status'],'artifact_observed');self.assertEqual(actual['text'],page['value'])
+            self.assertEqual(actual['content_sha256'],page['revision'])
+            self.assertEqual(failed['repair']['source_revision'],page['revision'])
+            action=failed['repair']['next_actions'][0]
+            self.assertEqual(action,{'action':'view','file':str(source.resolve()),'pointer':'','offset':0,'limit':2000})
+            next_page=poe.view_json(args(file=str(source),pointer='',fields='',keys=False,query='',offset=page['next_offset'],limit=2000))
+            self.assertEqual(next_page['value'],text[page['next_offset']:page['next_offset']+2000])
+            for options in ({'pointer':'/invented'},{'fields':'invented'},{'keys':True},{'query':'invented'}):
+                parameters=dict(file=str(source),pointer='',fields='',keys=False,query='',offset=0,limit=20);parameters.update(options)
+                with self.assertRaises(bx.ContractError):poe.view_json(args(**parameters))
+            self.assertEqual(source.read_bytes(),original);self.assertEqual(source.stat().st_mtime_ns,stamp)
+            self.assertEqual(list(nested.iterdir()),[])
+            with self.assertRaises(bx.ContractError):poe.view_json(args(file=str(oversized),pointer='',fields='',keys=False,query='',offset=0,limit=20))
     def test_json_artifact_pointer_preserves_values_and_reports_exact_repairs(self):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp);source=folder/'observations.json'

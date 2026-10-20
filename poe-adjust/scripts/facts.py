@@ -269,6 +269,10 @@ def load_evidence(declarations, folder, context, *, root=None):
                         record['repair']['source_revision']=bx.digest(raw)
                         record['repair']['next_actions']=[{'action':'view','file':str(path),'pointer':'',
                             'keys':isinstance(source,dict),'offset':0,'limit':20}]
+                elif artifact_source is not None:
+                    path,raw,text=artifact_source
+                    record['repair']['source_revision']=bx.digest(raw)
+                    record['repair']['next_actions']=[{'action':'view','file':str(path),'pointer':'','offset':0,'limit':2000}]
         result[key] = record
     return result
 

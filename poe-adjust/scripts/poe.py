@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.41"
+VERSION = "2.8.42"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -442,13 +442,20 @@ def edit_document(args):
 
 
 def view_json(args):
-    """Read ordinary task JSON by the existing pointer contract; never recalculate."""
+    """Read task JSON nodes or exact UTF-8 source text; never recalculate."""
     path=Path(args.file).resolve()
-    bx.require(path.suffix.lower()==".json","view 读取任务工作区已有 JSON，游戏原文使用 data。")
     bx.require(1<=args.limit<=12000 and args.offset>=0,"limit 为正整数，offset为非负整数。",location="/pagination",expected="limit 1..12000, offset >=0",actual={"limit":args.limit,"offset":args.offset})
-    revision=bx.digest(path.read_bytes())
-    document=read_json(path)
-    selected=facts.pointer(document,args.pointer)
+    is_json=path.suffix.lower()==".json"
+    if not is_json:
+        bx.require(path.stat().st_size<=2_000_000,"资料超过 artifact 读取上限。",location="/file",expected={"maximum_bytes":2_000_000},actual=path.stat().st_size)
+    raw=path.read_bytes();revision=bx.digest(raw)
+    if is_json:
+        document=read_json(path)
+        selected=facts.pointer(document,args.pointer)
+    else:
+        bx.require(not args.pointer,"文本用空 pointer 与 offset/limit 按字符读取。",location="/pointer",expected="",actual=args.pointer)
+        bx.require(len(raw)<=2_000_000,"资料超过 artifact 读取上限。",location="/file",expected={"maximum_bytes":2_000_000},actual=len(raw))
+        document={};selected=raw.decode("utf-8-sig")
     source_selected=selected
     bx.require(bx.digest(path.read_bytes())==revision,"读取期间文件变化；重读当前字段与 revision。",location="/file",actual=str(path))
     fields=args.fields.split(",") if args.fields else []
@@ -504,7 +511,7 @@ def view_json(args):
         return {key:value[key] for key in fields if key in value}
     result={"file":str(path),"revision":revision,"pointer":args.pointer,"fields":fields,"keys":args.keys,"query":args.query,"offset":args.offset,
             "missing_fields":missing,"read_only":True,"next_actions":[],"native_references":{},
-            "scope":"当前JSON分页；缺字段保持缺失。offset 对应 page_unit。deferred_values 按子 pointer 继续读取；next_offset 继续同一字段。未重算。"}
+            "scope":"当前文件分页；缺字段保持缺失。offset 对应 page_unit。deferred_values 按子 pointer 继续读取；next_offset 继续同一字段。未重算。"}
     if isinstance(document.get('report'),str) and 'report_sha256' in document:
         report=Path(document['report'])
         if not report.is_absolute(): report=path.parent/report
@@ -527,7 +534,7 @@ def view_json(args):
         if not integrity['valid']:
             result['next_actions'].append({'action':'regenerate_report','file':str(path),'report':str(report),
                                           'instruction':'沿原 inspect/probe 请求重新生成报告与完整凭证；不能仅改摘要继承旧结果。'})
-    if not contract and path.stat().st_size<=2_000_000:
+    if is_json and not contract and path.stat().st_size<=2_000_000:
         result['evidence_template']={'kind':'artifact','path':str(path),'pointer':args.pointer}
         result['scope']+=' evidence_template 以准确绝对路径指向分页/投影前的完整源节点，补 evidence_id/subject 后只读核原文件；可追溯不证明语义或扩展授权。'
     fits=lambda value: len(json.dumps(value,ensure_ascii=False,allow_nan=False))<=9500
@@ -535,10 +542,16 @@ def view_json(args):
     if isinstance(selected,str):
         bx.require(not fields,"字符串用 pointer/offset/limit 分页。",location="/fields")
         total=len(selected);end=min(total,args.offset+args.limit)
-        result.update(total=total,page_unit="characters",value=selected[args.offset:end],next_offset=end if end<total else None,native_references=references(None))
+        def string_page(stop):
+            value=selected[args.offset:stop]
+            result.update(total=total,page_unit="characters",value=value,next_offset=stop if stop<total else None,native_references=references(None))
+            if not is_json:
+                result.pop('evidence_template',None)
+                if value.strip(): result['evidence_template']={'kind':'artifact','path':str(path),'excerpt':value}
+        string_page(end)
         while not fits(result) and end>args.offset:
             end=args.offset+(end-args.offset)//2
-            result.update(value=selected[args.offset:end],next_offset=end if end<total else None)
+            string_page(end)
     elif isinstance(selected,(list,dict)):
         bx.require(args.limit<=100,"数组/对象 limit 为1–100；长字符串可用更大 limit。",location="/limit",expected="1..100",actual=args.limit)
         is_array=isinstance(selected,list)
@@ -3026,8 +3039,8 @@ def parser():
             cmd.add_argument("--review-from",help="配合 changes 中已编写的 assessment.review，核对本次计算 details_file 并由程序关联标识；仍须重算")
             cmd.add_argument("--if-sha256",help="已有文件需使用上次返回的 revision；同一请求重试自动去重")
         if name=="view":
-            cmd.add_argument("--file",required=True,help="获准任务工作区中已保存的JSON")
-            cmd.add_argument("--pointer",default="",help="JSON pointer，默认顶层对象")
+            cmd.add_argument("--file",required=True,help="获准任务文件的 JSON 或 UTF-8 原文；只读")
+            cmd.add_argument("--pointer",default="",help="JSON pointer，默认顶层对象；文本留空")
             cmd.add_argument("--fields",default="",help="所选对象的直接字段，逗号分隔；不写表达式")
             cmd.add_argument("--keys",action="store_true",help="列出当前对象字段名，支持分页")
             cmd.add_argument("--query",default="",help="筛选 keys 字段名或文本数组，忽略大小写")
