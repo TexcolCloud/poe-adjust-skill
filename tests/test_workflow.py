@@ -512,6 +512,12 @@ class DocumentTests(unittest.TestCase):
         result=poe.budget_summary({"inventory":[inventory]},intent_for(self.root),needs,evidence)
         self.assertEqual(result["materials"][0]["remaining"],1)
         self.assertEqual(result["status"],"unknown")
+        retained=copy.deepcopy(old)
+        retained['gems']+=copy.deepcopy(old['gems'])
+        retained['gems'][1].update(slot='Gloves',group_enabled=False)
+        duplicate=poe.material_requirements(self.root,self.root,old,retained)[0]
+        self.assertEqual((duplicate['original_quantity'],duplicate['final_quantity'],duplicate['quantity']),(1,2,1))
+        self.assertIn('需另备',duplicate['description'])
 
     def test_energy_shield_costs_recharge_conditions_and_self_degen(self):
         result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":True}
@@ -1960,8 +1966,22 @@ class WorkflowInterfaceTests(unittest.TestCase):
         review={'objectives':[{'objective_id':'goal','reference_status':'resolved','verdict':'supported',
                               'evidence_scope':{'counts':{}},'scope':'Declared scope','findings':'Model interpretation '*1000,
                               'evidence_refs':[],'counter_evidence_refs':[],'conditions':[],'unimplemented':[]}]}
-        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':current},review=review)
+        current['equipped']=[{'slot':'Flask 1','active':True}]
+        audit={'execution_coverage':{'status':'unknown','payment_schedule_status':'not_requested','scope':'Schedule not measured'}}
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':current},review=review,readiness=audit)
         self.assertEqual([row['metric'] for row in published['measurements']],['LifeOnFutureEvent','ManaFutureGain'])
+        self.assertIn(poe.effect_statement(current,'candidate',compact=True)['text'],published['facts_summary'][:1500])
+        self.assertIn('not_requested',published['facts_summary'][:1500])
+        materials=[{'requirement_id':'service:generic-material-'+str(index)+'-specification',
+                    'quantity':1,'declared_owned':1,'remaining':0} for index in range(120)]
+        acquisition={'status':'user_declared','materials':materials}
+        material_publication=poe.publication('draft',[],[],acquisition,{'candidate':current},readiness=audit)
+        self.assertIn(poe.effect_statement(current,'candidate',compact=True)['text'],material_publication['facts_summary'][:1500])
+        self.assertIn('not_requested',material_publication['facts_summary'][:1500])
+        material_text=next(row['text'] for row in material_publication['statements'] if row['kind']=='budget')
+        self.assertNotIn('原 XML',material_text)
+        self.assertNotIn('额外库存已声明',material_text)
+        self.assertEqual(acquisition['materials'],materials)
         long_current={**current,'stats':{**current['stats'],**{key:1 for key in poe.METRICS}}}
         short_review=copy.deepcopy(review);short_review['objectives'][0]['findings']='Requested outcome remains unimplemented'
         long_publication=poe.publication('draft',[],[],{'status':'unknown'},

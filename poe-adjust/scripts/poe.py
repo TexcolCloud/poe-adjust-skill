@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.45"
+VERSION = "2.8.46"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -616,11 +616,11 @@ def diagnosis_summary(result):
     observations=resource_observations(result)
     if observations:
         rows.append('当前原生资源相关字段：'+json.dumps(observations,ensure_ascii=False,sort_keys=True)+'。这些字段不是统一的每秒回复；按实际资源、触发和已分配来源核对含义，不据某列为零排除其他来源。')
-    rows.extend(row['text'] for row in skill_statements(result,'当前角色'))
     rows += [f"{METRICS[key]}：{stats[key]:g}" for key in (damage, hit, "Life", "EnergyShield", "ChaosResist", "ManaUnreserved") if key in stats]
     rows.append("DPS 已包含引擎的命中计算，不再乘命中率。其他技能是否计入总输出以 damage_sources 的实际分项为准，不能根据装备着召唤宝石推断。")
     rows.append(scenario_summary(result))
     rows.append(effect_statement(result,'当前角色',compact=True)['text'])
+    rows.extend(row['text'] for row in skill_statements(result,'当前角色'))
     rows.extend(row['text'] for row in flask_statements(result,'当前角色'))
     if stats.get("ManaUnreserved", 0) < 0:
         rows.append("原文件的保留配置超出可用魔力，需要调整同时开启的保留技能。各技能可能支付魔力、生命或能盾，不能据此断言所有技能都不能使用。")
@@ -955,7 +955,8 @@ def material_requirements(original, document, before, after):
         skill, level, quality = key
         prior = sorted({(g[1], g[2]) for g in stock if g[0] == skill})
         requirements.append({"kind": "gem", "skill_id": skill, "level": level, "quality": quality, "quantity": count,
-                             "description": f"{names[key]} {level} 级 / {quality} 品质 × {count}" + (f"（原 XML 记录等级/品质：{prior}，需练级、调品质或采购）" if prior else "（原 XML 未记录足量同规格宝石）")})
+                             "original_quantity":stock[key],"final_quantity":needed[key],
+                             "description": f"{names[key]} {level} 级 / {quality} 品质：原 XML 同规格 {stock[key]} 颗，候选实际 {needed[key]} 颗，差额 {count} 颗需另备。原位保留的实例不作为额外库存。"+(f" 原 XML 各规格：{prior}；取得或训练方式另核。" if prior else "")})
     old_texts = bx.item_texts(original)
     old_items = Counter(old_texts[item["id"]] for item in before["equipped"] if item["id"] in old_texts)
     item_texts = bx.item_texts(document)
@@ -1240,8 +1241,9 @@ def effect_statement(calculation, name, *, compact=False):
              f"（组 {row['group']}、宝石 {row['index']}）" for row in state['global_effects']]
     counts=Counter('unknown' if value is None else 'on' if value else 'off' for value in state['config_switches'].values())
     controls=(f"开启 {counts['on']}、关闭 {counts['off']}、未知 {counts['unknown']}；具体值见 config_controls" if compact else "、".join(sorted(switches)) or "见 config_controls")
+    effect_text=f"{len(effects)} 项，明细见 effect_state.global_effects" if compact else "、".join(effects) or "无原生条目"
     text=(name+" · 当前效果开关：护卫="+json.dumps(state['guard_active'])+"；药剂="+json.dumps(state['flasks'],ensure_ascii=False)+
-          "；全局效果="+("、".join(effects) or "无原生条目")+"；当前 check 控件集合="+controls+
+          "；全局效果="+effect_text+"；当前 check 控件集合="+controls+
           f"。另有 {len(state['config_values_not_in_controls'])} 项输入仅见 config_values_not_in_controls；省略不等于关闭。null 未知；输入、启用或可见不证明效果适用或持续。")
     return {"kind":"effect_state","subject":name,"status":"observed" if state['config_controls_available'] else "unknown","values":state,"text":text}
 
@@ -1356,6 +1358,8 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
             measurements.append({"reference":ref,"subject":name,"metric":key,"value":row["value"],"meaning":row["meaning"],"context":row["context"],"text":row["formatted_fact"],"text_templates":row["text_templates"]})
     within=budget.get("within_limit")
     budget_text=("已有对应来源的成本下界超过预算。" if within is False else "在所列报价或已声明库存条件下，已核对成本区间在预算内；购买前仍需复核。" if within is True else "预算是否满足尚未证实；现有估算或缺失报价不能作为预算内买齐的承诺。" if budget.get("limit") is not None else "尚未约定预算；物资与价格核验状态："+budget["status"]+"。")
+    if budget.get('materials'):
+        budget_text+=f" 已列出 {len(budget['materials'])} 条物资需求；各项需求数量、库存抵扣量与未覆盖数量见 budget.materials，取得条件仍按各项来源核对。"
     statements=[{"kind":"delivery","status":status,"text":brief["message"]},
                 {"kind":"budget","status":"supported" if within is True else "refuted" if within is False else "unknown","text":budget_text}]
     for index,variant in enumerate(experiments or []):
@@ -1407,7 +1411,7 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         execution=audit.get("execution_coverage")
         if execution:
             statements.append({"kind":"execution_coverage","subject":name,**execution,
-                               "text":name+" · 整套动作执行覆盖："+execution["scope"]})
+                               "text":name+" · 整套动作执行覆盖 "+execution.get('status','unknown')+"；逐次支付安排 "+execution.get('payment_schedule_status','unknown')+"："+execution["scope"]})
         payments=audit.get("single_payments",[])
         if payments:
             counts=Counter(row["status"] for row in payments)
@@ -1447,8 +1451,12 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                 statements.append({"kind":"resource","calculation":name,"phase":phase,"subject":resource["resource_id"],"status":state,
                                    "window":window,"text":name+" · "+{"preparation":"战前准备","combat":"战斗"}[phase]+" · "+resource["resource_id"]+"："+resource_messages[state]+values})
     primary={'delivery','budget','objective_review','declared_checks','native_identity','native_build','damage_subject','experiment'}
+    headline={'delivery','budget','execution_coverage','sustained_use','timeline_scope'}
+    current=[row['text'] for row in statements if row['kind'] in {'delivery','budget'}]
+    current += [effect_statement(calculation,name,compact=True)['text'] for name,calculation in calculations.items()]
+    current += [row['text'] for row in statements if row['kind'] in headline-{'delivery','budget'}]
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
-            "facts_summary":"\n\n".join([s['text'] for s in statements if s['kind'] in primary]+[m['text'] for m in measurements]+[s['text'] for s in statements if s['kind'] not in primary]),
+            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+[m['text'] for m in measurements]+[s['text'] for s in statements if s['kind'] not in primary|headline]),
             "scope":scope if scope is not None else "仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
 
 
