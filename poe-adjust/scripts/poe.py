@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.44"
+VERSION = "2.8.45"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
@@ -1461,6 +1461,8 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     shared={"input_file":str(input_file),"details_file":str(details_file)}
     if Path(input_file).is_file(): shared["input_revision"]=bx.digest(Path(input_file).read_bytes())
     if calculation: shared["calculation"]=calculation
+    edit_arguments={"kind":"route" if details_pointer else "plan","file":str(input_file),
+                    **({"if_sha256":shared["input_revision"]} if "input_revision" in shared else {})}
     read_only=outcome.get("task_completion",{}).get("kind")=="read_only_review"
     scoped=outcome.get("task_completion",{}).get("kind") in {"read_only_review","build_plan","leveling_plan"}
     completion_pointer=details_pointer+"/task_completion" if scoped else details_pointer
@@ -1486,10 +1488,11 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
              and not (row.get("code")=="goal_claim_unresolved" and isinstance(row.get("actual"),dict) and row["actual"].get("claim_id") in ids)]
     if outcome["errors"] or repairs:
         actions.append({**shared,"action":"repair_input","pointer":completion_pointer+("/diagnostics" if repairs else "/errors"),
+                        "edit_arguments":edit_arguments,
                         "total":len(outcome.get("diagnostics",[])) if repairs else len(outcome["errors"]),
                         "repair_count":len(repairs),"error_count":len(outcome["errors"]),
                         **({"errors_pointer":completion_pointer+"/errors"} if outcome["errors"] else {}),
-                        "instruction":"用 view 分页读取 pointer 的原诊断和 source_diagnostic，按实际字段、对象及来源修订原方案；errors_pointer 单列对象错误，不能代替引用返修。保留用户目标所需功能，不能靠删除有效组件消除错误。"})
+                        "instruction":"view 读取 pointer 原诊断及 source_diagnostic；核实际源字段，编写 changes，沿 edit_arguments 调 edit 保存，再按 calculation 重算。errors_pointer 单列对象错误。保留目标所需功能，真实引用和判断缺口逐项修复。"})
     if outcome.get("reference_contract"):
         actions.append({**shared,"action":"view","file":str(details_file),"pointer":details_pointer+"/reference_contract",
                         "instruction":"读取本次原生证据根和字段前缀；view 的输出文件路径与 native 引用根分别使用。"})
@@ -1507,7 +1510,7 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
         actions.append({**shared,'action':'review_evidence_scope','claims':declarations,'reference_contract_pointer':details_pointer+'/reference_contract',
                         'instruction':'这些判断目前仅引用用户声明。模型先区分意图记录与计算/机制解释；需要观测的内容沿当前原生或已读资料引用，数值和名称用返回的 text_templates。这是来源范围反馈，不自动否定偏好或裁定文字含义。'})
     if claim_reviews:
-        actions.append({**shared,"action":"review_claims","claim_ids":ids,"changes":{"review_claims":ids},"diagnostics":claim_reviews,
+        actions.append({**shared,"action":"review_claims","claim_ids":ids,"edit_arguments":edit_arguments,"changes":{"review_claims":ids},"diagnostics":claim_reviews,
                         "instruction":"先逐条核对这些判断与当前事实，修正源文字，再用 edit 提交 changes 并重算。绑定由程序生成；完整结果的最终复核在此后单独提交。"})
     unsupported=[value for value in outcome["pending"] if value.startswith(("capability:","native:"))]
     dependencies=[value for value in outcome["pending"] if not value.startswith(("final_review:","capability:","native:"))]

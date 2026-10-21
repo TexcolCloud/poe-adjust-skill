@@ -2841,6 +2841,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(action['repair_count'],3)
         self.assertEqual(action['total'],len(diagnostics))
         self.assertNotIn('diagnostics',action)
+        self.assertEqual(action['edit_arguments'],{'kind':'route','file':'source.json'})
         # A retained object error must not hide independent source-reference repairs.
         large=[{**diagnostics[0],'location':'/claims/'+str(i)+'/evidence_refs',
                 'source_diagnostic':{'expected':['native value '+str(j) for j in range(100)]}}
@@ -4282,7 +4283,14 @@ class EditAndRecoveryTests(unittest.TestCase):
         spec=poe.read_json(self.source)
         checked=facts.assess_claims(spec["claims"],{"u":{"status":"user_declared"}},specification=spec,engine_fingerprint="fixture")
         self.assertEqual(checked[0]["status"],"unresolved")
-        refreshed=self.edit({"review_claims":["c","combined","overall","selected","usage"]},third["revision"])
+        diagnostics=[d for row in checked for d in row.get('diagnostics',[])]
+        outcome={'status':'draft','errors':[],'pending':['claim_revision:'+row['claim_id'] for row in checked],
+                 'diagnostics':diagnostics}
+        action=next(row for row in poe.delivery_actions(outcome,self.source,'details.json','review.json','/checked_route')
+                    if row['action']=='review_claims')
+        self.assertEqual(action['edit_arguments']['if_sha256'],third['revision'])
+        poe.write_json(self.request,action['changes'])
+        refreshed=poe.edit_document(args(invoked=True,changes=str(self.request),**action['edit_arguments']))
         self.assertEqual(refreshed["invalidated_claims"],[])
 
     def test_review_submission_requires_current_claim_coverage_before_save(self):

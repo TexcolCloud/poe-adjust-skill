@@ -4,7 +4,7 @@
 
 ## 增量保存方案
 
-用独立 changes JSON 调 `edit --invoked --kind plan|route --file ... --changes ...`；已有源带 `--if-sha256 '<当前revision>'`。
+你编写独立 changes JSON，`edit --invoked --kind plan|route --file ... --changes ...` 创建或修改源文件；已有源带 `--if-sha256 '<当前revision>'`。返修直接取 next_actions.edit_arguments，输入变更后重算，最终复核单独提交。
 
 | changes | 用途 |
 |---|---|
@@ -15,7 +15,7 @@
 
 新增或改文由edit绑定。依赖变化先计算当前对象，再修正文并重登invalidated_claims；绑定不更新文字。intent字段在intent，plan/route字段沿各自契约。
 
-完整角色顺序如下。方案稳定后，review-changes只写set.assessment.review，沿当前review_template写判断、依据和条件；review-from关联计算标识。再次计算后导出：
+新方案先写 `{"set":{"mode":"refine","summary":"本次目的","operations":{}}}` 到 plan-changes.json，按需补实际方案字段，由首次 edit 创建 plan.json。沿以下顺序工作；review-changes仅写set.assessment.review，按当前review_template审原目标、对象和条件：
 
 ```powershell
 python '<entry>' start --invoked --input '<原件.xml>' --run '<run>' --pob '<安装>'
@@ -33,7 +33,7 @@ python '<entry>' export --run '<run>' --name candidate-a
 
 `--out`选声明源目录/子目录，避开程序管理的候选和交付文件。先读delivery_brief、errors、stage_summary、next_actions；`view`沿pointer/fields/keys/query定位，按page_unit、continuations/deferred_values续读，无须重算来翻页。purpose指出分页动作，changes/edit_arguments可按当前正文复用。
 
-诊断的location、expected/actual、source_diagnostic指向实际问题；先读源节点再修改，证据沿source_base和真实路径。revision过期重读；输入、证据或能力有新信息才重试，缺能力保留未知。
+location、expected/actual、source_diagnostic指向实际问题；先读源节点，证据沿source_base和真实路径。revision过期重读；有新输入、证据或能力才重试，缺能力保留未知。
 
 ## 采用原生候选
 
@@ -43,4 +43,4 @@ python '<entry>' export --run '<run>' --name candidate-a
 
 `status --run '<run>'` 或 `status --route-state '<路线.state.json>'`核源、候选与last_operation；大返回加新`--out`再view。已有run的start沿status恢复；路线仅复用身份/文件完整的已完成阶段。
 
-完成以task_completion为准：scoped_result、errors/pending为空，且file_exported:true列最终files。失败files为空，JSON/阶段快照留恢复；export失败返回ok:false/退出2，route.ok只说明命令完成。变更后修源重新生成，原成功凭证不能为新失败、改写页面或自制文件背书。
+交付门槛见[正式交付](../SKILL.md#工作与完成)。失败files为空，JSON/阶段快照供恢复；export失败返回ok:false/退出2，route.ok只说明命令完成。变更后修源重新生成，交付只取本次成功files。

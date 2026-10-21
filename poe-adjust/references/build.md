@@ -1,6 +1,6 @@
 # 角色配装与复核（schema_version 2）
 
-角色解释、作者复核与改装沿本协议；跨阶段成长见[路线](leveling.md)。字段取当次input_contract，保存与调用见[命令](commands.md)。
+角色解释、作者复核与改装沿本协议；成长见[路线](leveling.md)，字段取input_contract，保存见[命令](commands.md)。
 
 ## 只读解释
 
@@ -18,7 +18,7 @@
 
 intent登记原目标、场景、许可、预算、保留项及真实user_statement依据。整组声明保留用keep_skill_groups原文件1起序号，派生效果另审；confirmed仅流程记录。等级/点数取实际进度，progress_limits只是当次上界。
 
-plan起点：`{"schema_version":2,"mode":"refine","summary":"本次目的","operations":{}}`。rebuild同接口，可用相对plan目录的template_xml，说明来源及迁移。非显然语义：
+用[增量保存](commands.md#增量保存方案)创建plan。rebuild同接口，可用相对plan目录的template_xml，说明来源及迁移。非显然语义：
 
 - gems/groups用1起组/index；replace_skills是最终组。撤下组清空，存放组空slot且停用；停用但仍插着的宝石占孔、需物资。
 - main_active_skill取物化后skill_selections，区别宝石位置。granted_effects沿实际ID、operation_field和global_enabled；效果存在/开启不证明持续。

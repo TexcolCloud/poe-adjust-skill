@@ -1,6 +1,6 @@
 # 判断、操作与自审（schema_version 2）
 
-字段取input_contract，原生根取本次reference_contract，保存沿[命令](commands.md#增量保存方案)。先完成实际对象，稳定后集中写判断和最终复核。
+原生引用根取本次reference_contract，判断与复核沿[命令](commands.md#增量保存方案)保存。
 
 ## 来源与判断
 
@@ -11,7 +11,7 @@
 | artifact | 获准准确路径；JSON用view模板pointer，UTF-8文本用view模板excerpt，保留URL/查阅时间 |
 | local_data | data read模板source/line/count/content_sha256，加ID/subject，程序重读 |
 
-原生事实复制当前native_references，核XML/引擎/配置/source_revision及真实指针；各阶段根属于其evaluation。失效读实际父对象/合法引用再修。来源可追溯后，仍要核内容是否支持本句；取得表不证明装备或机制。
+原生引用核XML/引擎/配置/source_revision及真实指针；阶段根限其evaluation。失效先读实际父对象/合法引用。来源可追溯仍要核内容是否支持本句；取得表不证明装备或机制。
 
 claims按同一理由合并适用对象，含claim_id、text、subjects及实际evidence_refs/conditions/uncertainties/checks。目标用objective:<id>关联，总体由assessment.goal_claim_ids选；其它subject沿当前pending/required_subject。comparison需非空checks，以当次reference及eq/ge/le核所选阈值；普通解释用judgment。未知不填0。
 

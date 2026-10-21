@@ -25,7 +25,7 @@ flask_base是基础，flask_local是单件处理后参数，二者不重复叠�
 
 ## 读原文和引用
 
-view定向读pointer/fields/keys/query，按page_unit、continuations/deferred_values续页；复制当前native_references/evidence_template并核身份/source_revision，逻辑根和索引不跨评估搬用。
+view分页见[命令](commands.md#按需读取与修复)；引用核身份/source_revision，逻辑根和索引限本次评估。
 
 data的list/search/read定位公开只读source，沿实际路径/行号读上下文；local_data复制source/line/count/content_sha256模板，程序重读，含义由你核对。平台内部目录、私有过程和无关资料不读。
 
