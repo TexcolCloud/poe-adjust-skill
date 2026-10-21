@@ -2,7 +2,7 @@
 
 ## 只读查询与完成
 
-名称、状态、规格、费用、频率及已有数值含义用inspect/probe，--out保存JSON、--report交事实页，无需intent/plan。独立单次支付、固定收支和平均耗尽投影也属此路径；保留禁用/未知范围。另证机制、取舍或裁决作者转[配装](build.md)。
+读取名称、状态、规格、费用、频率、原生定义、来源范围及独立算术用inspect/probe，--out保存JSON、--report直接交事实页，无需intent/plan。独立支付、固定收支和平均耗尽投影保留其假设与未知。判断配置能否支持用法、解释原因或推断来源是否齐全，转[只读解释](build.md#只读解释)，将判断及反证写入当前claims/review并交程序生成的说明。
 
 ```powershell
 python '<entry>' inspect --input '<原件.xml>' --calculate --out '<工作区>/facts.json' --report '<工作区>/事实.html'

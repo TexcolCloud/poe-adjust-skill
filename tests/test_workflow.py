@@ -2123,6 +2123,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 code=poe.main(['inspect','--input',str(original),'--calculate','--out',str(output),'--report',str(report)])
             self.assertEqual(code,0)
             receipt=json.loads(stdout.getvalue());saved=poe.read_json(output)
+            self.assertLess(stdout.getvalue().index('"reply_policy"'),stdout.getvalue().index('"publication"'))
             self.assertEqual(receipt['publication']['facts_summary'],saved['publication']['facts_summary'])
             self.assertEqual(receipt['publication']['delivery_brief'],saved['publication']['delivery_brief'])
             self.assertIn('current.engine',receipt['diagnosis_summary'])
@@ -2145,6 +2146,8 @@ class WorkflowInterfaceTests(unittest.TestCase):
             projected=poe.bound_reply({'inspection':str(output),'report':str(report),'build':saved['build'],
                 'publication':saved['publication'],'diagnosis_summary':saved['diagnosis_summary'],
                 'reply_policy':poe.READONLY_REPLY_POLICY,'entrypoint':{'script':str(Path(poe.__file__).resolve()),'python':sys.executable}},args(command='inspect',out=str(output)))
+            self.assertEqual(next(iter(projected)),'reply_policy')
+            self.assertEqual(projected['reply_policy'],poe.READONLY_REPLY_POLICY)
             self.assertLessEqual(len(json.dumps(projected,ensure_ascii=False)),12000)
             for owner,key,pointer in [(projected,'diagnosis_summary','/diagnosis_summary'),
                                       (projected['publication'],'facts_summary','/publication/facts_summary')]:
@@ -2162,6 +2165,10 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertTrue(saved['publication']['facts_summary'].startswith(projected['publication']['facts_summary']))
             self.assertEqual(projected['publication']['delivery_brief'],saved['publication']['delivery_brief'])
             self.assertLessEqual(len(json.dumps(projected,ensure_ascii=False)),12000)
+            small={'inspection':str(output),'publication':{'scope':'Current native observation'},'reply_policy':'Current rule scope'}
+            projected=poe.bound_reply(small,args(command='inspect',out=str(output)))
+            self.assertEqual(next(iter(projected)),'reply_policy')
+            self.assertEqual(projected,small)
 
     def test_saved_inspection_returns_breakdown_feedback_and_current_references(self):
         native={'stats':{'FutureMetric':0},'points':0,'ascendancy_points':0,'breakdowns':[
@@ -2202,6 +2209,17 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(not_checked['report_integrity']['status'],'not_checked')
             self.assertIsNone(not_checked['report_integrity']['actual_sha256'])
             self.assertEqual(original.read_bytes(),original_bytes)
+            for selection in (['--calculate'],['--metrics','FutureMetric,CurrentNativeMetric']):
+                stdout=io.StringIO();details=Path(folder)/'detail-only.json'
+                with patch.object(engine,'calculate',return_value=native),patch.object(engine,'resolve_root',return_value=Path(folder)),redirect_stdout(stdout):
+                    code=poe.main(['inspect','--input',str(original),*selection,'--out',str(details)])
+                self.assertEqual(code,0,stdout.getvalue())
+                receipt=json.loads(stdout.getvalue());saved=poe.read_json(details)
+                self.assertEqual(receipt['reply_policy'],poe.READONLY_REPLY_POLICY)
+                self.assertEqual(saved['reply_policy'],poe.READONLY_REPLY_POLICY)
+                self.assertNotIn('report',receipt)
+                self.assertNotIn('publication',saved)
+                self.assertEqual(original.read_bytes(),original_bytes)
 
     def test_current_flask_parameters_are_shared_by_diagnosis_and_publication(self):
         native={'stats':{},'points':0,'ascendancy_points':0,'equipped':[
@@ -6442,7 +6460,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn(f"主技能综合 DPS：{saved['calculation']['stats']['CombinedDPS']:g}", result["diagnosis_summary"])
         self.assertIn(f"普通天赋 {saved['calculation']['points']} 点，升华 {saved['calculation']['ascendancy_points']} 点", result["diagnosis_summary"])
         self.assertIn("不再乘命中率", result["diagnosis_summary"])
-        self.assertIn("原样", result["reply_policy"])
+        self.assertEqual(result["reply_policy"],poe.READONLY_REPLY_POLICY)
         self.assertLessEqual(len(stdout.getvalue()), 12000)
         self.assertNotIn("calculation", result)
         self.assertGreater(len(path.read_text(encoding="utf-8")), 12000)

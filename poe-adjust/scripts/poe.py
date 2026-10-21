@@ -25,10 +25,10 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.46"
+VERSION = "2.8.47"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
-READONLY_REPLY_POLICY="当前事实及已返回的数值含义、独立支付、固定收支和平均投影直接交 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary，未测范围明确未知。需要另证机制因果、配装取舍或裁决作者主张时，按 references/build.md#只读解释使用 read_only_review、refine 空操作计划与当前证据复核，再由同一 publication 生成说明。数字用事实内插，名称沿本机对象；快照只证明所显示的观察。"
+READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。判断配置能否支持用法、解释原因或推断来源是否齐全时，按 references/build.md#只读解释用 read_only_review、refine 空操作计划，将结论和反证写入当前 claims/review，再由同一 publication 生成说明。HTML 交程序返回的 report/files；短答沿当次原生事实或已发布判断、限制、数字内插与本机名称。"
 INTENT_FIELDS={"schema_version", "confirmed", "task_kind", "delivery_scope", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "keep_skill_groups", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
@@ -3115,6 +3115,7 @@ def parser():
 
 def bound_reply(value, args):
     """Bound the complete envelope; every omitted field remains on disk."""
+    if 'reply_policy' in value: value={'reply_policy':value['reply_policy'],**value}
     size=lambda row:len(json.dumps({"ok":True,**row},ensure_ascii=False,allow_nan=False))+1
     if size(value)<=12000: return value
     prefix="/response"
@@ -3236,7 +3237,7 @@ def main(argv=None):
                 computed = engine.calculate(engine.resolve_root(args.pob), bx.serialise(document),breakdowns=breakdowns)
                 result["calculation"] = {key: value for key, value in computed.items() if key not in {"xml", "config_keys", "config_lists"}}
                 result["diagnosis_summary"] = diagnosis_summary(computed)
-                result["reply_policy"] = READONLY_REPLY_POLICY if report else "诊断数值原样使用 diagnosis_summary；随后只问尚未明确的玩家偏好，不重新推导有效 DPS。"
+                result["reply_policy"] = READONLY_REPLY_POLICY
                 bx.require(bx.digest(Path(args.input).read_bytes())==input_sha256,'只读计算期间原始文件发生变化；重新读取当前文件。',location='/input')
                 result['input_sha256']=input_sha256
                 if args.out:
@@ -3254,7 +3255,7 @@ def main(argv=None):
                 breakdown_summary=[]
                 inspection_actions=[{'action':'view','file':str(Path(args.out).resolve()),'pointer':'/reference_contract',
                     'explanation_reference':'references/build.md#只读解释',
-                    'scope':'view 定位当前对象、名称、原文和引用。快照数值及已返回的资源投影直接按publication范围说明；另证机制因果、配装取舍或裁决作者主张时，按explanation_reference复核。'}] if args.calculate else []
+                    'scope':'view 定位当前对象、名称、原文和引用。用数值判定用法或解释机制时，沿 explanation_reference 记录当前判断及反证，再由 publication 呈现。'}] if args.calculate else []
                 for index,row in enumerate(result.get('calculation',{}).get('breakdowns',[])):
                     pointer='/calculation/breakdowns/'+str(index)
                     breakdown_summary.append({**{key:row[key] for key in ('metric','actor','skill_ref','status','value','main_value','matches_main_value','reason','scope') if key in row},

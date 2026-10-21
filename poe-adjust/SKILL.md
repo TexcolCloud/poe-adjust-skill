@@ -19,8 +19,8 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 
 | 请求 | 协议与任务类型 |
 |---|---|
-| 名称、状态、规格、费用、频率及已有数值的含义 | [资料](references/data.md#只读查询与完成)，`inspect/probe --out --report` |
-| 机制解释、取舍或真实作者交付复核 | [配装与复核](references/build.md#只读解释)，`read_only_review` |
+| 读取名称、状态、规格、费用、频率、原生定义、来源范围及独立算术 | [资料](references/data.md#只读查询与完成)，`inspect/probe --out --report` |
+| 判断配置能否支持某种用法、解释机制、取舍或复核作者交付 | [配装与复核](references/build.md#只读解释)，`read_only_review` |
 | 局部比较，明确保留其余操作 | [规划交付](references/build.md#规划交付)，`build_plan` + `snapshot_comparison` |
 | 微调、整套配装或换流派方案 | [配装](references/build.md)，条件规划用 `build_plan/execution_plan`；核当前即用就绪才用 `build` |
 | 从零或跨阶段成长 | [路线](references/leveling.md)，`route`；模板仅作种子 |
@@ -32,4 +32,4 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 3. **验证判断。** 查当前对象、规则和反例，必要时 `probe`；零差分先核实际生效对象。用 `view` 的 native_references/evidence_template 引用实际观测，原话引用用于目标和持有声明。对象稳定后集中写判断，沿 `next_actions` 的源字段和 edit_arguments 保存、重算；失效判断核正文后用 review_claims 登记。
 4. **正式交付。** 对照原话、最终实物和操作，按[最终复核](references/evidence.md#最终复核与交付)提交判断并重算。配装冷算 `export`，路线重跑 `route`；只交 `scoped_result`、errors/pending为空、`file_exported:true` 的 `files`。未满足时继续修源；确实无法完成就说明缺口，保留内部失败文件。
 
-短答沿正式 files 的当前结果，给绝对路径、取舍、用法和退路。未来取得/训练/执行可留条件；自审或导出不证明游戏效果。
+HTML 交程序返回的 report/files；解释写入当前 claims/review，由同一 publication 呈现。短答沿已发布结论、限制和本机名称，给绝对路径、取舍、用法和退路。未来取得/训练/执行可留条件；自审或导出不证明游戏效果。
