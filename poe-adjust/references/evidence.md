@@ -15,7 +15,7 @@
 
 claims按同一理由合并适用对象，含claim_id、text、subjects及实际evidence_refs/conditions/uncertainties/checks。目标用objective:<id>关联，总体由assessment.goal_claim_ids选；其它subject沿当前pending/required_subject。comparison需非空checks，以当次reference及eq/ge/le核所选阈值；普通解释用judgment。未知不填0。
 
-解释从原命题的对象、场景、范围出发，核规则/明细中的输入、已含因子、上限和反例；先判断所用方法能否排除反例，再写推断。分别核对主体、资源和窗口，检查声称的必要条件是否确为必要。联合变化限联合观察，固定快照限当次状态。来源存在、自审绑定或数值差都不自动证明因果。
+解释先审验证方法：在现有findings区分证据直接证明的范围、你新增的前提及反例/缺口。查当次规则/明细的输入、已计因子和上限；声称必要条件前，检验本对象不满足它仍成立的反例，不能排除就不认证其必要性。再从原目标反查，即使数值成立还可能缺什么。分别核对主体、资源和窗口；联合变化限联合观察，固定快照限当次状态。来源、自审绑定或数值差不自动证明因果。
 
 ## 当前文字与数字
 

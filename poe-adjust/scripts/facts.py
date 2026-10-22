@@ -981,7 +981,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
               "completion_pending":list(dict.fromkeys(pending)),
               "review_template":{"token":token,"findings":"","unresolved":[],"condition_reviews":[],"conclusions":[template(key,"claim_id") for key in required],
                                  "objectives":[template(key,"objective_id") for key in required_objectives]},
-              "check": "先对照 facts.user_goal_sources 与当前实际对象逐项核目标：装备、技能、配置、进度、来源、切换和完整窗口是否落实，原生公式已含哪些因子。矛盾先修源重算；再按 references/evidence.md#最终复核与交付填写全部 objectives/conclusions，scope 限实际范围，findings 简写当前支持、反例与未知，数字用 {{fact:引用}}。用户要求不是结果证据。conditions 只承接完整设计后的取得/训练/执行，必要设计缺口记 unimplemented，未完成复核记 review.unresolved，先完成再交规划；readonly 可完整否定或保留未知。单独提交 assessment.review 后重算再导出；绑定不认证语义。",
+              "check": "先审方法再判目标：对照 facts.user_goal_sources，在每项 findings 写清证据直接证明的范围、新增前提及反例/缺口。查当次明细或规则已计哪些因子；声称必要条件前，检验本对象不满足该条件仍成立的反例。无法排除则不认证其必要性。即使数字成立，原目标还可能为何不成立？scope 限实际对象和窗口，数字用 {{fact:引用}}；原话只证明要求。矛盾先修源重算，按 references/evidence.md#最终复核与交付审全 objectives/conclusions。已设计的未来条件留 conditions，必要设计缺口记 unimplemented，未完复核记 review.unresolved；readonly 可完整否定或保留未知。最后单独提交 assessment.review、重算再导出；绑定不认证语义。",
               "scope": "摘要绑定防止旧复核沿用到新方案；同一模型自审，不能证明自由文字无误或等同独立模型/实战验证。"}
     # A completed model review may honestly retain relevant unmet goals.
     pending += ["objective:"+row["objective_id"]+":review:"+row["verdict"] for row in objectives if row["verdict"]!="supported" or row["unimplemented"]]

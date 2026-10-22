@@ -19,7 +19,7 @@ catalog种类取当前--help。独立查询可--batch提交queries的kind/query/
 
 config_controls读value/default/value_basis、Input/Placeholder与runtime/applied，选当前options[].val并核visibility/apply_source及resolved值。null非false，删覆盖可能恢复默认，一个控件未生效不代表全部关闭。
 
-`inspect --metrics`自动计算，breakdowns给value/detail/context、available_metrics及MAIN对照。解释因果先核输入、中间因子、上限、输出和已计入的因素，沿来源读适用原文；需要时用probe检验单一变量。派生值、主体、场景或上下文不同就分开，缺字段留未知。排他结论核相关实际对象与反例，有限实验不证明机制不存在。
+`inspect --metrics`自动计算，breakdowns给value/detail/context及MAIN对照。value_status与detail_status分别说明数值、明细是否可用；旧status保留明细状态，缺明细不抹掉已观测值或零值。available_metrics从本次CALCS输出及明细键读取，可包含MAIN没有的合法字段；不从名字猜对应关系。解释因果先核输入、中间因子、上限、输出和已计因子，沿来源读适用原文；需要时用probe检验单一变量。主体、场景或上下文不同就分开，缺字段留未知。有限实验不证明排他规则。
 
 flask_base是基础，flask_local是单件处理后参数，二者不重复叠加。角色修正、当前充能和实际覆盖另核；开启快照不证明持续。合法性据当前适用规则，计算接受与模型旧常识都不单独认证。
 

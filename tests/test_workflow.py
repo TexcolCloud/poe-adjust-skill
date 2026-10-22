@@ -2212,10 +2212,10 @@ class WorkflowInterfaceTests(unittest.TestCase):
 
     def test_saved_inspection_returns_breakdown_feedback_and_current_references(self):
         native={'stats':{'FutureMetric':0},'points':0,'ascendancy_points':0,'breakdowns':[
-            {'metric':'FutureMetric','actor':'player','status':'unsupported','value':0,'main_value':0,
+            {'metric':'FutureMetric','actor':'player','status':'unsupported','value_status':'observed','detail_status':'unavailable','value':0,'main_value':0,
              'matches_main_value':True,'reason':'No native breakdown','available_metrics':['CurrentNativeMetric'],
              'scope':'Current selected actor only'},
-            {'metric':'CurrentNativeMetric','actor':'player','status':'partial','value':4,'main_value':4,
+            {'metric':'CurrentNativeMetric','actor':'player','status':'partial','value_status':'observed','detail_status':'partial','value':4,'main_value':4,
              'detail':['Actual native formula'],'omissions':['Unavailable detail'],'available_metrics':['CurrentNativeMetric']}]}
         with tempfile.TemporaryDirectory() as folder:
             original=Path(folder)/'original.xml';original.write_text(SAMPLE,encoding='utf-8');output=Path(folder)/'current.json'
@@ -2226,6 +2226,8 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(saved['reference_contract']['current']['artifact'],{'file':str(output),'pointer':'/calculation'})
             missing,partial=receipt['breakdown_summary']
             self.assertEqual(missing['status'],'unsupported');self.assertEqual(missing['value'],0)
+            self.assertEqual(missing['value_status'],'observed');self.assertEqual(missing['detail_status'],'unavailable')
+            self.assertEqual(partial['value_status'],'observed');self.assertEqual(partial['detail_status'],'partial')
             self.assertEqual(partial['omission_count'],1);self.assertEqual(partial['status'],'partial')
             self.assertEqual(missing['available_metrics_pointer'],'/calculation/breakdowns/0/available_metrics')
             action=next(row for row in receipt['next_actions'] if row['pointer']==missing['available_metrics_pointer'])
@@ -6660,6 +6662,11 @@ class RealEngineTests(unittest.TestCase):
         minion=next(s for s in baseline["active_skills"] if s["minion"])
         result=engine.calculate(self.pob,xml,breakdowns=[{"metric":"Life"},{"metric":"UnavailableMetric"},{"metric":"Life","skill_ref":minion["skill_ref"],"actor":"minion"},{"metric":"LifeLeechRate"},{"metric":"LifeLeech"}])
         life,missing,summon,rate,detail=result["breakdowns"]
+        for row in result['breakdowns']:
+            self.assertEqual(row['value_status'],'observed' if bx.finite_number(row.get('value')) else 'unavailable')
+            self.assertEqual(row['detail_status'],row['status'] if 'detail' in row else 'unavailable')
+            if bx.finite_number(row.get('value')):self.assertIn(row['metric'],row['available_metrics'])
+        self.assertIn(rate['metric'],missing['available_metrics'])
         self.assertEqual(life["status"],"observed");self.assertEqual(life["value"],baseline["stats"]["Life"])
         self.assertTrue(life["matches_main_value"]);self.assertEqual(life["context"]["xml_sha256"],bx.digest(xml))
         self.assertEqual(missing["status"],"unsupported");self.assertNotIn("value",missing)

@@ -999,7 +999,8 @@ if request.breakdowns then
       end
     end
     local row = {metric=query.metric,actor=query.actor or target and target.actor or "unknown",skill_ref=target and target.skill_ref,
-      status="unsupported",scope="Native CALCS in EFFECTIVE mode, using the input build's combat configuration and selected skill state"}
+      value_status="unavailable",detail_status="unavailable",status="unsupported",
+      scope="Native CALCS in EFFECTIVE mode, using the input build's combat configuration and selected skill state"}
     if not target or not skill or not target.group then row.reason = "Requested active skill is unavailable in this XML"
     elseif row.actor == "mirage" and target.actor ~= "mirage" then row.reason = "No native mirage actor for this skill"
     else
@@ -1031,11 +1032,16 @@ if request.breakdowns then
       else
         row.native_actor = row.actor == "mirage" and "player_output_for_mirage_skill" or row.actor
         row.selected_skill_id = env.player.mainSkill.activeEffect.grantedEffect.id
-        row.value = actor.output[query.metric]
+        local values = scalarTable(actor.output)
+        row.value = values[query.metric]
+        row.value_status = row.value ~= nil and "observed" or "unavailable"
         row.main_value = target.is_main and (row.actor=="minion" and result.minion or result.stats)[query.metric] or row.actor=="player" and target.costs[query.metric] or nil
         if type(row.value)=="number" and type(row.main_value)=="number" then row.matches_main_value = math.abs(row.value-row.main_value) <= math.max(0.00001,math.abs(row.main_value)*0.00000001) end
+        local available = {}
+        for key in pairs(values) do if type(key)=="string" then available[key] = true end end
+        for key,value in pairs(actor.breakdown or {}) do if type(key)=="string" and type(value)=="table" then available[key] = true end end
         row.available_metrics = {}
-        for key,value in pairs(actor.breakdown or {}) do if type(key)=="string" and type(value)=="table" then table.insert(row.available_metrics,key) end end
+        for key in pairs(available) do table.insert(row.available_metrics,key) end
         table.sort(row.available_metrics)
         local detail = actor.breakdown and actor.breakdown[query.metric]
         if type(detail) ~= "table" then
@@ -1050,6 +1056,7 @@ if request.breakdowns then
           row.detail,row.omissions = evidenceTable(detail)
           row.status = #row.omissions == 0 and "observed" or "partial"
           if row.matches_main_value == false then row.status="different_context"; row.reason="CALCS value differs from MAIN; this breakdown cannot explain the MAIN value without further investigation" end
+          row.detail_status = row.status
         else row.reason = "No native breakdown for this metric; use an isolated input change and full recalculation for a bounded comparison" end
       end
     end

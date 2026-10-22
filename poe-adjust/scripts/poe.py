@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.48"
+VERSION = "2.8.49"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。判断配置能否支持用法、解释原因或推断来源是否齐全时，按 references/build.md#只读解释用 read_only_review、refine 空操作计划，将结论和反证写入当前 claims/review，再由同一 publication 生成说明。HTML 交程序返回的 report/files；短答沿当次原生事实或已发布判断、限制、数字内插与本机名称。"
@@ -3315,7 +3315,7 @@ def main(argv=None):
                     'scope':'view 定位当前对象、名称、原文和引用。用数值判定用法或解释机制时，沿 explanation_reference 记录当前判断及反证，再由 publication 呈现。'}] if args.calculate else []
                 for index,row in enumerate(result.get('calculation',{}).get('breakdowns',[])):
                     pointer='/calculation/breakdowns/'+str(index)
-                    breakdown_summary.append({**{key:row[key] for key in ('metric','actor','skill_ref','status','value','main_value','matches_main_value','reason','scope') if key in row},
+                    breakdown_summary.append({**{key:row[key] for key in ('metric','actor','skill_ref','value_status','value','main_value','matches_main_value','detail_status','status','reason','scope') if key in row},
                                               'detail_pointer':pointer+'/detail' if 'detail' in row else None,
                                               'available_metrics_pointer':pointer+'/available_metrics' if 'available_metrics' in row else None,
                                               'omission_count':len(row.get('omissions',[]))})
