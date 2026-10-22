@@ -25,10 +25,10 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.50"
+VERSION = "2.8.51"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
-READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。判断配置能否支持用法、解释原因或推断来源是否齐全时，按 references/build.md#只读解释用 read_only_review、refine 空操作计划，将结论和反证写入当前 claims/review，再由同一 publication 生成说明。HTML 交程序返回的 report/files；短答沿当次原生事实或已发布判断、限制、数字内插与本机名称。"
+READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
 INTENT_FIELDS={"schema_version", "confirmed", "task_kind", "delivery_scope", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "keep_skill_groups", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
@@ -672,7 +672,7 @@ def begin(args):
              "input_contract":input_contract('intent'),
              "next_actions":[{"action":"write_intent","command":"intent","arguments":{"run":str(run)},"required_arguments":["file"],
                               "instruction":"先将真实用户目标按 input_contract 保存为工作区 JSON，再以 --file 引用该已有文件。"}],
-            "next": "先按用户这次任务选择 intent.task_kind：即用配装使用 build；交付局部或有明确执行条件的方案使用 build_plan；不改角色的解释或作者复核使用 read_only_review。记录实际用户要求和 objectives，未来条件不冒充已落实。其余装备原文在 inspection，宝石字段是 skillId/nameSpec。"}
+            "next": "先按 SKILL.md#入口和范围及 references/build.md 选择本次交付的 intent.task_kind；XML有无改动不单独决定任务类型。记录实际用户要求和 objectives，未来条件不冒充已落实。其余装备原文在 inspection，宝石字段是 skillId/nameSpec。"}
     inspection['response']=response
     write_json(run / "inspection.json", inspection)
     return response

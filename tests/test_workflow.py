@@ -6270,9 +6270,19 @@ class RealEngineTests(unittest.TestCase):
         self.assertLess(clarity[0]["base_resources"]["manaReservationFlat"], clarity[-1]["base_resources"]["manaReservationFlat"])
         self.assertGreater(gems["ShieldCrush"]["level_requirements"][0]["base_resources"]["cost"]["Mana"], 0)
         self.assertGreater(gems["SupportMinionDamage"]["level_requirements"][0]["base_resources"]["manaMultiplier"], 0)
+        self.assertEqual(gems["SupportMinionDamage"]["level_requirements"][0]["base_resource_units"]["manaMultiplier"], "native_MORE_percent")
+        for gem in gems.values():
+            for row in gem["level_requirements"]:
+                self.assertEqual(set(row.get("base_resource_units", {})), set(row.get("base_resources", {})))
+                for resource in row.get("base_resources", {}).get("cost", {}):
+                    definition = row["base_resource_units"]["cost"][resource]
+                    self.assertEqual(definition["Resource"], resource)
+                    self.assertGreater(definition["Divisor"], 0)
+                    self.assertIn("{0}", definition["ResourceString"])
         route = route_fixture(self.native['data_version'])
         checked, _ = self.validate_route(route, gems)
         self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["name"], gems["ShieldCrush"]["display_name"])
+        self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["base_resource_units"]["cost"]["Mana"]["Resource"], "Mana")
         route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = "auto"
         checked, _ = self.validate_route(route, gems)
         actual = checked["stages"][-1]["skill_groups"][0]["gems"][0]["level"]
@@ -6404,11 +6414,23 @@ class RealEngineTests(unittest.TestCase):
     def test_13_native_multiple_actives_and_unused_supports_are_diagnostics(self):
         result=engine.calculate(self.pob,queries=[{"kind":"links","query":"Fireball,FreezingPulse,SupportAddedLightningDamage","limit":1},
             {"kind":"links","query":"ShieldCrush,SupportGreaterMultipleProjectiles","limit":1},{"kind":"links","query":"NonexistentFixture","limit":1},
-            {"kind":"bases","query":"id:Stone Axe","limit":1},{"kind":"bases","query":"id:Fishing Rod","limit":1},{"kind":"classes","query":"Templar","limit":1}])
-        multi,unused,unknown,axe,rod,classes=[q["entries"][0] for q in result["catalog_batch"]]
+            {"kind":"bases","query":"id:Stone Axe","limit":1},{"kind":"bases","query":"id:Fishing Rod","limit":1},{"kind":"classes","query":"Templar","limit":1},
+            {"kind":"links","query":"ShieldCrush","limit":1},{"kind":"links","query":"SupportGreaterMultipleProjectiles","limit":1}])
+        multi,unused,unknown,axe,rod,classes,active_only,support_only=[q["entries"][0] for q in result["catalog_batch"]]
         self.assertTrue(multi["valid"]);self.assertEqual([r["active_index"] for r in multi["relations"] if r["applied"]],[1,2])
         self.assertTrue(unused["valid"]);self.assertEqual(unused["incompatible"],["SupportGreaterMultipleProjectiles"])
         self.assertFalse(unknown["valid"]);self.assertTrue(unknown["errors"])
+        self.assertEqual(multi["checked_pairs"], len(multi["relations"]))
+        self.assertEqual(multi["status"], "observed")
+        self.assertEqual(multi["provided_ids"], ["Fireball", "FreezingPulse", "SupportAddedLightningDamage"])
+        self.assertEqual(unknown["status"], "invalid_inputs")
+        for row in (active_only, support_only):
+            self.assertTrue(row["valid"])
+            self.assertEqual(row["status"], "not_tested")
+            self.assertEqual(row["checked_pairs"], 0)
+            self.assertEqual(row["relations"], [])
+            self.assertEqual(row["incompatible"], [])
+            self.assertTrue(row["next"])
         self.assertEqual((axe["sockets"],rod["sockets"]),(6,4));self.assertIn("Weapon 1",axe["valid_slots"])
         self.assertEqual(classes["name_cn"],"圣堂武僧")
         for key,invalid in (("points",None),("ascendancy_points",True),("secondary_ascendancy_points",-1)):

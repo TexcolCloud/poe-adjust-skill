@@ -4,7 +4,7 @@
 
 ## 只读解释
 
-原生观察、来源范围及独立算术直接用inspect/probe事实页；判断数值能否支持用法、解释原因或推断来源是否齐全，用start/intent/evaluate/export：intent.task_kind为read_only_review，plan为refine及空operations。原对象保留，实验另用probe。本机范围可留league/version未知。
+原生观察、来源范围及独立算术直接用inspect/probe事实页；评审已有配置或使用安排、解释原因或推断来源是否齐全，用start/intent/evaluate/export：intent.task_kind为read_only_review，plan为refine及空operations。新方案设计按下节，即使operations为空。原对象保留，实验另用probe。本机范围可留league/version未知。
 
 先锁定原句的对象、场景和范围，再用当次规则/公式核前提、反例与结论。计算与某禁用判断冲突时，查字段用途及规则。完整否定/未知可完成只读审查，原角色问题留character_readiness，export仅报告与核验。
 

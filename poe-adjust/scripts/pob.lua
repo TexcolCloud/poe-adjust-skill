@@ -683,17 +683,28 @@ local function queryCatalog(kind, query, limit, offset)
         local requirements = {}
         for level, values in pairs(skill and skill.levels or {}) do
           if type(level) == "number" then
-            local resources = {}
+            local resources, resourceUnits = {}, {}
             for key, value in pairs(values) do
               if type(key) == "string" and (key == "cost" or key == "manaMultiplier" or string.find(key, "Reservation", 1, true)) then
                 resources[key] = value
+                resourceUnits[key] = key == "manaMultiplier" and "native_MORE_percent" or "native_raw"
+                if key == "cost" and type(value) == "table" then
+                  local definitions = {}
+                  for resource in pairs(value) do
+                    local definition = type(resource) == "string" and type(data.costs) == "table" and data.costs[resource]
+                    local fields = type(definition) == "table" and scalarTable(definition) or nil
+                    definitions[resource] = fields and next(fields) and fields or "native_raw"
+                  end
+                  resourceUnits[key] = definitions
+                end
               end
             end
             table.insert(requirements, {gem_level = level, character_level = values.levelRequirement, naturally_trainable = gem.naturalMaxLevel ~= nil and level <= gem.naturalMaxLevel,
               strength = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqStr or 0),
               dexterity = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqDex or 0),
               intelligence = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqInt or 0),
-              base_resources = next(resources) and resources or nil})
+              base_resources = next(resources) and resources or nil,
+              base_resource_units = next(resourceUnits) and resourceUnits or nil})
           end
         end
         table.sort(requirements, function(a,b) return a.gem_level < b.gem_level end)
@@ -737,9 +748,14 @@ local function queryCatalog(kind, query, limit, offset)
       end
     end
     local compatible, incompatible = {}, {}
-    for _, support in ipairs(supports) do table.insert(applied[support.input_index] and compatible or incompatible, support.grantedEffect.id) end
+    if #relations > 0 then
+      for _, support in ipairs(supports) do table.insert(applied[support.input_index] and compatible or incompatible, support.grantedEffect.id) end
+    end
     table.insert(entries, {id = query, relations = relations, compatible = compatible, incompatible = incompatible, errors = errors,
-      valid = #errors == 0, scope = "Native skill-type relations by input position; unused supports are diagnostics. Actual sockets, trigger levels, costs and cooldowns require a character calculation."})
+      valid = #errors == 0, provided_ids = ids, checked_pairs = #relations,
+      status = #errors > 0 and "invalid_inputs" or #relations == 0 and "not_tested" or "observed",
+      next = #errors == 0 and #relations == 0 and "links tests only supplied active/support pairs. Discover candidates with catalog gems, then supply at least one current active skill_id and one support skill_id. Zero checked pairs says nothing about available supports." or nil,
+      scope = "Only supplied active/support pairs, by input position; valid reports input IDs, not search coverage. Unused measured supports are diagnostics. Actual sockets, trigger levels, costs and cooldowns require a character calculation."})
   elseif kind == "classes" then
     for _, class in ipairs(result.classes) do
       if matches(class.name) or tostring(class.id) == q then table.insert(entries, class) end

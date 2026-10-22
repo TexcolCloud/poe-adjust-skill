@@ -154,6 +154,7 @@ def validate_group(group,stage,gems,library,compatibility,capacity,warnings,pend
         gem["name"]=native.get("display_name",native["name"])
         gem["attribute_requirements"]={k:(row or {}).get(k) for k in ATTRIBUTES}
         gem["base_resources"]=copy.deepcopy((row or {}).get("base_resources",{}))
+        gem["base_resource_units"]=copy.deepcopy((row or {}).get("base_resource_units",{}))
         gem["naturally_trainable"]=(row or {}).get("naturally_trainable")
     checked=(compatibility or {}).get(",".join(g["skill_id"] for g in entries))
     if not checked: pending.append("native:links:"+stage["stage_id"]+":"+group["name"])

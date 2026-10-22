@@ -2,7 +2,7 @@
 
 ## 只读查询与完成
 
-读取名称、状态、规格、费用、频率、原生定义、来源范围及独立算术用inspect/probe，--out保存JSON、--report直接交事实页，无需intent/plan。独立支付、固定收支和平均耗尽投影保留其假设与未知。判断配置能否支持用法、解释原因或推断来源是否齐全，转[只读解释](build.md#只读解释)，将判断及反证写入当前claims/review并交程序生成的说明。
+读取名称、状态、规格、费用、频率、原生定义、来源范围及独立算术用inspect/probe，--out保存JSON、--report直接交事实页，无需intent/plan。独立支付、固定收支和平均耗尽投影保留其假设与未知。解释或评审已有安排转[只读解释](build.md#只读解释)，新方案按[入口](../SKILL.md#入口和范围)选择任务类型；判断及反证进入当前claims/review，由程序生成说明。
 
 ```powershell
 python '<entry>' inspect --input '<原件.xml>' --calculate --out '<工作区>/facts.json' --report '<工作区>/事实.html'
@@ -11,11 +11,11 @@ python '<entry>' inspect --input '<原件.xml>' --metrics 'Life,ManaCost' --skil
 
 ## 按需目录
 
-catalog种类取当前--help。独立查询可--batch提交queries的kind/query/limit/offset，--out保存再view；先小查，沿真实ID分页。节点用--input或class_id取职业起点，升华连接计点；links核技能类型关系，物理孔连/属性/取得另核。bases.valid_slots属当次布局，缺上下文留未知。
+catalog种类取当前--help。独立查询可--batch提交queries的kind/query/limit/offset，--out保存再view；先小查，沿真实ID分页。节点用--input或class_id取职业起点，升华连接计点。links只测query中实际提供的主动/辅助skill_id配对，checked_pairs为本次实测数；候选从gems查询，空配对不表示没有可用辅助。物理孔连/属性/取得另核。bases.valid_slots属当次布局，缺上下文留未知。
 
 ## 技能、配置与明细
 
-保存level/quality与effective_specifications分开。active_skills沿skill_ref/actor读cost/rate/native_timing；组设置、授予效果和实际辅助均属于对象。
+保存level/quality与effective_specifications分开。gems逐级base_resources保留原生编码值；base_resource_units.cost按资源给本机费用定义（ResourceString、Divisor等），native_MORE_percent是百分比修正，native_raw为单位未知。它们均非完整角色费用。active_skills沿skill_ref/actor读cost/rate/native_timing；组设置、授予效果和实际辅助均属于对象。
 
 config_controls读value/default/value_basis、Input/Placeholder与runtime/applied，选当前options[].val并核visibility/apply_source及resolved值。null非false，删覆盖可能恢复默认，一个控件未生效不代表全部关闭。
 
