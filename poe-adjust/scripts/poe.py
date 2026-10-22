@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.47"
+VERSION = "2.8.48"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。判断配置能否支持用法、解释原因或推断来源是否齐全时，按 references/build.md#只读解释用 read_only_review、refine 空操作计划，将结论和反证写入当前 claims/review，再由同一 publication 生成说明。HTML 交程序返回的 report/files；短答沿当次原生事实或已发布判断、限制、数字内插与本机名称。"
@@ -87,7 +87,7 @@ def input_contract(kind):
                                       "metrics":"所选指标取本阶段实际 native stats 字段；未观测项保留缺口并返回可用字段。"}}
     else:
         nested['task_kind']={'values':['build','build_plan','read_only_review'],'default':'build'}
-        nested['delivery_scope']={'values':['execution_plan','snapshot_comparison'],'default':'execution_plan','snapshot_comparison':'仅 build_plan，真实用户比较要求的 /delivery_scope 依据；以 delivery_scope claim 复核用户依据和当前 materialization。未改技能组的整套操作安排另保留在角色就绪状态。'}
+        nested['delivery_scope']={'values':['execution_plan','snapshot_comparison'],'default':'execution_plan','snapshot_comparison':'仅 build_plan，真实用户比较要求的 /delivery_scope 依据；以 delivery_scope claim 复核用户依据和当前 materialization。未改非主组的整套操作及相同支付错误可按当前 condition_reviews 复核范围，原角色问题仍保留；不会自动判为无关。'}
     return {"kind":kind,"top_level_fields":sorted(fields[kind]),
             "field_owners":{key:[owner for owner,allowed in fields.items() if key in allowed] for key in sorted(set().union(*fields.values()))},
             "nested_fields":nested,
@@ -1399,7 +1399,8 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         statements.extend(skill_statements(calculation,name))
         statements.append(effect_statement(calculation,name))
         statements.extend(flask_statements(calculation,name))
-    audits=resource_audits if resource_audits is not None else {"candidate":readiness} if readiness else {}
+    audits=dict(resource_audits if resource_audits is not None else {"candidate":readiness} if readiness else {})
+    audits.update({'variant:'+row['id']:row['readiness'] for row in experiments or [] if 'readiness' in row})
     for name,audit in audits.items():
         snapshot_scopes=list(dict.fromkeys(row["scope"] for row in audit.get("resources",[]) if row.get("scope")))
         if snapshot_scopes:
@@ -1417,6 +1418,16 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
             counts=Counter(row["status"] for row in payments)
             statements.append({"kind":"single_payment","subject":name,"status":"refuted" if counts["refuted"] else "unknown" if counts["unknown"] else "supported",
                                "text":f"{name} · 独立单次支付：可支付 {counts['supported']} 项、不可支付 {counts['refuted']} 项、未测得 {counts['unknown']} 项。每项独立从满可用储量开始，不证明任意时点或连续动作可支付。"})
+        for payment in payments:
+            mean=payment.get('mean_use')
+            if not mean or payment.get('payment')==0 and mean.get('cost_per_second')==0: continue
+            def value(key): return f'{mean[key]:.10g}' if bx.finite_number(mean.get(key)) else '未知'
+            statements.append({'kind':'single_skill_mean','subject':name,'skill_ref':payment['skill_ref'],'actor':payment.get('actor'),
+                'resource_id':payment['resource_id'],'status':mean['status'],'values':mean,
+                'text':name+' · '+str(payment['skill_ref'])+' / '+str(payment.get('actor') or '主体未知')+' / '+payment['resource_id']+
+                       '：单技能原生费用 '+value('cost_per_second')+'/秒 − 当前固定净回复 '+value('fixed_net_regeneration_per_second')+
+                       '/秒 = 平均净消耗 '+value('net_drain_per_second')+'/秒（正值为消耗，负值为余量）；原生频率 '+value('native_action_rate')+
+                       ' 次/秒。未计回复 '+json.dumps(mean.get('excluded_recovery',[]),ensure_ascii=False)+'。'+mean['scope']})
         sustained=audit.get("sustained_use")
         if sustained:
             state=sustained["status"]
@@ -1795,6 +1806,11 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
         return (claim is not None and (subject is None or subject in claim["subjects"]) and assessed(conclusions.get(identifier))
                 and claim["evidence_refs"] and not claim["missing_evidence"]
                 and claim["check_status"] not in {"refuted","unknown"})
+    def current_condition(row):
+        return (row.get("reference_status")=="resolved" and row["conditions"] and row["fallback"] and row["evidence_refs"]
+                and all(identifier in indexed and assessed(conclusions.get(identifier))
+                        and not indexed[identifier]["missing_evidence"] and indexed[identifier]["check_status"] not in {"refuted","unknown"}
+                        for identifier in row["claim_ids"]))
     for stage in review.get("facts",{}).get("stages",[]):
         sid=stage["stage_id"];calculation=stage.get("calculation",{})
         for identifier in stage.get("entry_conditions",[]):
@@ -1813,6 +1829,7 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
             conditional_candidates[subject]=set(assumptions)
     scope=review.get("facts",{}).get("delivery_scope",{})
     exclusions=[]
+    excluded_errors=[]
     scope_diagnostics=[]
     if scope.get("kind")=="snapshot_comparison":
         scope_claims=[claim for claim in claims if current_claim(claim["claim_id"],"delivery_scope")
@@ -1828,6 +1845,21 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
             exclusions=[subject for subject in scope["unchanged_group_usage"] if subject in pending]
             blockers.difference_update(exclusions)
             handled.update(exclusions)
+            scope_ids={claim['claim_id'] for claim in scope_claims}
+            for issue in scope.get('inherited_usage_errors',[]):
+                sources=[row for row in diagnostics if row.get('message')==issue['error']]
+                reviewed=next((row for row in review.get('condition_reviews',[]) if current_condition(row)
+                               and issue['subject'] in row['subjects'] and scope_ids.intersection(row['claim_ids'])
+                               and set(issue['evidence_refs'])<=set(row['evidence_refs'])),None)
+                if reviewed and sources and all(row.get('category')=='usage' for row in sources):
+                    excluded_errors.append({**issue,'condition_review':reviewed})
+                    exclusions.append(issue['subject']);handled.add(issue['subject'])
+                else:
+                    scope_diagnostics.append({'code':'comparison_scope_review_missing','action':'revise_conclusion',
+                        'location':'/assessment/review/condition_reviews','required_subject':issue['subject'],
+                        'expected':{'subjects':[issue['subject']],'claim_ids':sorted(scope_ids),'evidence_refs':issue['evidence_refs']},
+                        'actual':issue,
+                        'message':'本次未改非主组的支付事实与原角色相同。模型按原要求判断它是否影响局部目标，当前 condition_reviews 关联范围判断、原始及当前支付依据；有关、改变或未复核的问题仍阻止交付。完整角色错误不会消失。'})
     task_diagnostics=goal_diagnostics+scope_diagnostics
     resolved_inputs=set()
     unresolved_inputs=set()
@@ -1858,11 +1890,7 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
     blockers.difference_update(handled)
     conditions=[]
     for row in review.get("condition_reviews",[]):
-        valid=(row.get("reference_status")=="resolved" and row["conditions"] and row["fallback"] and row["evidence_refs"]
-               and all(identifier in indexed and assessed(conclusions.get(identifier))
-                       and not indexed[identifier]["missing_evidence"] and indexed[identifier]["check_status"] not in {"refuted","unknown"}
-                       for identifier in row["claim_ids"]))
-        if valid:
+        if current_condition(row):
             accepted=[]
             for subject in row["subjects"]:
                 if subject in conditional_candidates and conditional_candidates[subject]<=set(row["claim_ids"]):
@@ -1872,9 +1900,10 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
             if accepted: conditions.append({**row,"subjects":accepted})
     task_pending.extend(subject for subject in pending if subject not in handled or subject in blockers)
     task_pending=list(dict.fromkeys(task_pending))
-    return {"kind":kind,"status":"blocked" if errors else "draft" if task_pending else "scoped_result",
-            "errors":list(errors),"pending":task_pending,"diagnostics":task_diagnostics+review["diagnostics"],"conditions":conditions,"scope_exclusions":exclusions,
-            "scope":("本次原生快照比较；实际未改技能组的整套使用安排不属于本次交付，仍保留在角色未就绪项。不认证连续操作或实战表现。" if scope.get("kind")=="snapshot_comparison" else "本次具体条件方案及逐项目标的规划交付；完整角色/阶段未就绪项保留。取得、成长与实际执行条件尚未发生，不表示角色已就绪或游戏效果已验证。")}
+    task_errors=[error for error in errors if error not in {row['error'] for row in excluded_errors}]
+    return {"kind":kind,"status":"blocked" if task_errors else "draft" if task_pending else "scoped_result",
+            "errors":task_errors,"pending":task_pending,"diagnostics":task_diagnostics+review["diagnostics"],"conditions":conditions,"scope_exclusions":exclusions,"scope_excluded_errors":excluded_errors,
+            "scope":("本次原生快照比较；已复核的未改非主组操作及相同支付错误另保留在角色未就绪项。不认证支付、连续操作或实战表现。" if scope.get("kind")=="snapshot_comparison" else "本次具体条件方案及逐项目标的规划交付；完整角色/阶段未就绪项保留。取得、成长与实际执行条件尚未发生，不表示角色已就绪或游戏效果已验证。")}
 
 
 def assess_candidate(original, document, baseline, result, intent, plan, evidence_folder, intent_evidence_folder=None, *, root=None, crafted_items=()):
@@ -1908,6 +1937,33 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     audit = resources.assess(result, intent, plan, claims)
     errors += audit["errors"]
     warnings += audit["warnings"]
+    delivery_scope={"kind":intent.get("delivery_scope","execution_plan"),"unchanged_group_usage":[],"inherited_usage_errors":[],
+                    "user_basis":intent.get("constraint_sources",{}).get("/delivery_scope")}
+    if delivery_scope["kind"]=="snapshot_comparison" and unmeasured is not None:
+        before=engine.character_state(unmeasured)["gems"]
+        after=engine.character_state(result)["gems"]
+        original_refs={skill.get("skill_ref") for skill in unmeasured.get("active_skills",[])}
+        for skill in result.get("active_skills",[]):
+            ref=skill.get("skill_ref")
+            if not ref or ref not in original_refs or skill.get("is_main"): continue
+            group=skill.get("group")
+            if type(group) is not int: continue
+            old=[gem for gem in before if gem["group"]==group]
+            new=[gem for gem in after if gem["group"]==group]
+            if old and old==new: delivery_scope["unchanged_group_usage"].append("usage:"+ref)
+        original_payments={(row['skill_ref'],row['resource_id']):row for row in resources.single_payments(unmeasured)}
+        for index,diagnostic in enumerate(audit.get('diagnostics',[])):
+            payments=diagnostic.get('payment_facts',[])
+            if not payments or diagnostic.get('category')!='usage': continue
+            previous=[{key:original_payments.get((row['skill_ref'],row['resource_id']),{}).get(key) for key in row} for row in payments]
+            unchanged=(previous==payments and unmeasured.get('resource_rules')==result.get('resource_rules')
+                       and all('usage:'+str(row['skill_ref']) in delivery_scope['unchanged_group_usage'] for row in payments))
+            diagnostic.update(original_payment_facts=previous,inherited_from_original=unchanged)
+            if unchanged:
+                delivery_scope['inherited_usage_errors'].append({'subject':'delivery_scope:inherited_usage_error:'+str(index),
+                    'error':diagnostic['message'],'affected_skills':[row['skill_ref'] for row in payments],
+                    'evidence_refs':[f'native:resources#/diagnostics/{index}','native:original#/stats'],
+                    'scope':'原生单次支付及储量与原角色相同、技能组未改且不是当前主攻；仍须模型按真实目标复核是否无关，不证明支付或整套角色可执行。'})
     context=comparison_context(baseline,result)
     labels={'level':'角色等级','class':'职业','main_skill':'主技能口径','config_values':'战斗配置','effects':'当前原生技能效果或药剂开关','config_switches':'两侧已观察的配置开关'}
     comparison_notes=[labels[key]+'不同。' for key in context['changes']]
@@ -1933,6 +1989,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     if budget["over_budget"]: errors.append("已知采购成本下界超过用户预算。")
     warnings += budget["warnings"]
     pending = native_gaps + constraint_pending + audit["pending"] + coverage_pending + generation['pending']
+    pending += [row['subject'] for row in delivery_scope['inherited_usage_errors']]
     scene_diagnostics=facts.configuration_diagnostics(claims,{"candidate":result})
     if scene_diagnostics: pending.append("config:scenario")
     measurement=plan.get("measurement",{})
@@ -1959,20 +2016,6 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     pending += ["assessment:"+v for v in assessment.get("unresolved", [])]
     version = facts.version_fact(intent.get("version_source"), intent.get("game_version"), intent["league"], evidence_folder / ".poe-evidence", result["engine_fingerprint"])
     if version["status"] != "source_observed": pending.append("version:target")
-    delivery_scope={"kind":intent.get("delivery_scope","execution_plan"),"unchanged_group_usage":[],
-                    "user_basis":intent.get("constraint_sources",{}).get("/delivery_scope")}
-    if delivery_scope["kind"]=="snapshot_comparison" and unmeasured is not None:
-        before=engine.character_state(unmeasured)["gems"]
-        after=engine.character_state(result)["gems"]
-        original_refs={skill.get("skill_ref") for skill in unmeasured.get("active_skills",[])}
-        for skill in result.get("active_skills",[]):
-            ref=skill.get("skill_ref")
-            if not ref or ref not in original_refs or skill.get("is_main"): continue
-            group=skill.get("group")
-            if type(group) is not int: continue
-            old=[gem for gem in before if gem["group"]==group]
-            new=[gem for gem in after if gem["group"]==group]
-            if old and old==new: delivery_scope["unchanged_group_usage"].append("usage:"+ref)
     review, review_pending = facts.final_review({"intent": intent, "plan": plan}, evidence, claims,
         {"baseline": calculation_facts(baseline, claims), "candidate": calculation_facts(result, claims),
          "resources": audit, "reference_contract":references, 'materialization':materialization, "materials": requirements, "budget": budget, "objective_coverage":coverage, "equipment_changes":equipment,"comparison":comparison,"comparison_notes": comparison_notes,"comparison_context":context,
@@ -2025,6 +2068,11 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
         text="执行条件 · "+"、".join(row["subjects"])+"："+"；".join(row["conditions"])+"；退路或执行时点："+row["fallback"]
         published["statements"].append({"kind":"plan_condition",**row,"text":text})
         published["facts_summary"]+='\n\n'+text
+    for row in completion.get('scope_excluded_errors',[]):
+        current_review=row['condition_review']
+        text='仅本次比较范围另保留角色问题：'+row['error']+' 本次模型范围判断及条件：'+'；'.join(current_review['conditions'])+'；退路：'+current_review['fallback']+'。当前复核不以此认证支付、动作或整套就绪。'
+        published['statements'].append({'kind':'comparison_scope_exclusion',**row,'text':text})
+        published['facts_summary']+='\n'+text
     published['facts_summary']+='\n'+change_text
     return {"status":status,"task_completion":completion,"character_readiness":character_readiness,"delivery_brief":published["delivery_brief"],"publication":published, "errors":errors,"pending":pending,"warnings":list(dict.fromkeys(warnings)),
             "validation":{"mechanical":"failed" if mechanical_errors else "unknown" if native_gaps else "passed",
@@ -2390,7 +2438,8 @@ def probe(args):
         response['baseline_calculation']={key:value for key,value in baseline.items() if key not in ('xml','config_keys','config_lists')}
         response['publication']=publication('scoped_result',[],[],{'status':'not_requested'},{'current':baseline},keys=metrics,
             delivery_label='只读原生变体比较',delivery_message='已读取本次原生快照及变体；未执行配装目标认证。',
-            scope='只读原生变体比较；各变体的错误、未测范围、实际输入与共同条件分别保留。数值差不证明因果、动作执行、效果持续或用户目标达成。',experiments=rows)
+            scope='只读原生变体比较；各变体的错误、未测范围、实际输入与共同条件分别保留。数值差不证明因果、动作执行、效果持续或用户目标达成。',experiments=rows,
+            resource_audits={'current':resources.assess(baseline,state['intent'],{},[])})
         response['reference_contract']=facts.reference_contract({'current':response['baseline_calculation']},{'current':{'file':str(Path(args.out).resolve()),'pointer':'/baseline_calculation'}})
         response['reply_policy']=READONLY_REPLY_POLICY
         response['next_actions']=[{'action':'view','file':str(Path(args.out).resolve()),'pointer':pointer,'limit':10} for pointer in ('/publication','/alternatives','/comparison_basis')]
@@ -3181,6 +3230,14 @@ def bound_reply(value, args):
                 owner,field=previews[0]
                 owner[field]=owner[field][:len(owner[field])//2]
                 owner[field+'_is_preview']=True
+                continue
+            if len(result['continuations'])>1:
+                # The complete saved parent also recovers every omitted child;
+                # enumerating all child pointers/counts can exceed the envelope.
+                result['continuations']=[{'action':'view','file':str(details),'pointer':prefix,'offset':0,'limit':20,
+                                          'purpose':'read_complete_saved_reply'}]
+                for key in trimmed-{'errors','pending','next_actions'}:
+                    result.pop(key,None);result.pop(key+'_total',None)
                 continue
         bx.require(options,"返回元数据过大。",code="response_too_large",location="/",expected="bounded response metadata",actual={"characters":size(result)})
         key=max(options,key=lambda k:len(json.dumps(result[k],ensure_ascii=False)))

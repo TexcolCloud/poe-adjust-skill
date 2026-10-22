@@ -15,7 +15,7 @@
 
 claims按同一理由合并适用对象，含claim_id、text、subjects及实际evidence_refs/conditions/uncertainties/checks。目标用objective:<id>关联，总体由assessment.goal_claim_ids选；其它subject沿当前pending/required_subject。comparison需非空checks，以当次reference及eq/ge/le核所选阈值；普通解释用judgment。未知不填0。
 
-解释从原命题的对象、场景、范围出发，核规则/明细中的输入、已含因子、上限和反例；再写推断。联合变化限联合观察，固定快照限当次状态。来源存在、自审绑定或数值差都不自动证明因果。
+解释从原命题的对象、场景、范围出发，核规则/明细中的输入、已含因子、上限和反例；先判断所用方法能否排除反例，再写推断。分别核对主体、资源和窗口，检查声称的必要条件是否确为必要。联合变化限联合观察，固定快照限当次状态。来源存在、自审绑定或数值差都不自动证明因果。
 
 ## 当前文字与数字
 
@@ -27,7 +27,7 @@ claims按同一理由合并适用对象，含claim_id、text、subjects及实际
 
 按原目标选择单次、平均或完整窗口：
 
-- single_payments各从满可用储量独立支付；mean_use为单技能满速费用减固定净回复，mean_pool_depletion_seconds为同口径投影。吸取、充能、药剂补充、额外损失及动态变化未含，当前角色数值仍须核其效果状态。
+- single_payments各从满可用储量独立支付；mean_use为单技能满速费用减固定净回复，正值为消耗、负值为余量，mean_pool_depletion_seconds为同口径投影。publication按当前及各实验变体呈现，吸取、充能、药剂补充、额外损失及动态变化未含；平均余量不证明持续，固定回复与事件回复也不能合并成同一个必要条件。
 - 简单同窗usage用{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}，单位次/秒及秒；未知省略。claim关联skill:<ref>，每技能用自己的窗口。
 - 准备接战斗或混合动作用timeline:{duration_seconds,repeat,events:[{skill_ref,at}]}；at只付一次，repeat:true核接缝。preparation:{duration_seconds,events}只准备一次，等待耗时、实际余额带入战斗；需补放的效果在战斗重列。此时usage只关联skill_ref/claim_id及必要phase。
 

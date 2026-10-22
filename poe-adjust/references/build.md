@@ -10,7 +10,7 @@
 
 ## 规划交付
 
-条件方案用build_plan，当前即用就绪核验用build；[入口](../SKILL.md#入口和范围)决定原范围。snapshot_comparison只用于用户明确要求的局部比较：constraint_sources关联原话，delivery_scope判断引用该依据及native:materialization#/actual_changes。仅未改非主组的usage不纳入比较，其余变化、错误和目标照常核验。
+条件方案用build_plan，当前即用就绪核验用build；[入口](../SKILL.md#入口和范围)决定原范围。snapshot_comparison只用于用户明确要求的局部比较：constraint_sources关联原话，delivery_scope判断引用该依据及native:materialization#/actual_changes。未改非主组的usage可不纳入比较；相同支付错误由当前delivery_scope.inherited_usage_errors列主体与依据，模型判断是否影响原目标，再用condition_reviews关联范围判断及所列引用。不相关的已审问题保留在character_readiness，相关、改变或未复核的错误仍阻止交付。
 
 先落实能承担目标的最低对象。整套任务说明装备、天赋、技能如何共同工作及保留理由，局部任务保持许可边界；不为凑改动强制换件。未来条件和本轮设计缺口见[最终复核](evidence.md#最终复核与交付)。
 

@@ -347,6 +347,7 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
     by_ref = {skill.get("skill_ref"):skill for skill in active if skill.get("skill_ref")}
     usages = {}
     diagnostics=[]
+    payments=single_payments(result)
     for index,row in enumerate(usage):
         ref = row.get("skill_ref")
         bx.require(ref in by_ref and ref not in usages,"usage.skill_ref 需要本次原生返回的唯一技能引用。",location=f"/usage/{index}/skill_ref",expected=list(by_ref),actual=ref)
@@ -440,7 +441,15 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
         elif manual_cost is None: cost=None
         subject="resource:"+resource
         if single is not None and pool is not None and single>0 and (single>pool or resource=="Life" and single>=pool):
-            errors.append(f"可用{label} {pool:g} 不能支付单次消耗 {single:g}。")
+            message=f"可用{label} {pool:g} 不能支付单次消耗 {single:g}。"
+            failed=[row for row in payments if row['resource_id']==resource and row['payment'] is not None
+                    and row['payment']>0 and row['pool'] is not None
+                    and (row['payment']>row['pool'] or resource=='Life' and row['payment']>=row['pool'])]
+            errors.append(message)
+            diagnostics.append({'code':'resource_single_payment_unaffordable','category':'usage','subject':subject,
+                'resource_id':resource,'location':'/resources/'+str(len(resources)),
+                'payment_facts':[{key:row[key] for key in ('skill_ref','actor','resource_id','payment','pool','cost_source')} for row in failed],
+                'actual':{'pool':pool,'single_cost':single},'message':message,'status':'failed','action':'inspect_error'})
         recharge=number(stats,"EnergyShieldRecharge") if resource=="EnergyShield" else None
         recharge_counted=0
         if recharge and facts.has_claim(claims,"resource:EnergyShield:recharge"):
@@ -504,11 +513,11 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
                 diagnostic["payment_schedule"]={**schedule,"phase":phase,"duration_seconds":window["duration_seconds"],"repeat":window["repeat"],
                     "reference":"native:"+reference_name+"#"+pointer,"window_payment_status":window["status"],
                     "scope":capabilities()["timeline"]["event_semantics"]+" 所列支付不认证动作实际执行、效果持续或关联目标达成。"}
-    payments=single_payments(result)
     for row in payments:
         if row["status"]=="refuted":
             message=f"技能 {row['skill_ref']} 的 {row['resource_id']} 单次支付 {row['payment']:g} 超出可用储量 {row['pool']:g}（生命须支付后存活）。"
-            errors.append(message);diagnostics.append({"code":"single_payment_unaffordable","location":row["cost_source"]["skill_pointer"],"subject":row["skill_ref"],"resource_id":row["resource_id"],"expected":{"pool":row["pool"],"life_must_remain_positive":row["resource_id"]=="Life"},"actual":row["payment"],"message":message,"action":"inspect_error"})
+            errors.append(message);diagnostics.append({"code":"single_payment_unaffordable","category":"usage","location":row["cost_source"]["skill_pointer"],"subject":row["skill_ref"],"resource_id":row["resource_id"],"expected":{"pool":row["pool"],"life_must_remain_positive":row["resource_id"]=="Life"},"actual":row["payment"],"message":message,"action":"inspect_error",
+                "payment_facts":[{key:row[key] for key in ('skill_ref','actor','resource_id','payment','pool','cost_source')}]})
         elif row["status"]=="unknown": pending.append("native:single_payment:"+str(row["skill_ref"])+":"+row["resource_id"])
     finite=timeline is not None and not timeline["repeat"]
     execution={"status":"unknown","scope":"未测得整套动作实际可执行；逐次支付、同技能间隔与跨技能动作互斥、触发实现、效果覆盖分别判断。",

@@ -1691,6 +1691,18 @@ class FinalReviewTests(unittest.TestCase):
         self.assertEqual(mean["mean_pool_depletion_seconds"],4)
         self.assertEqual(mean["status"],"native_mean_projection")
         self.assertEqual(resources.assess(result,{}, {})["sustained_use"]["status"],"unknown")
+        for fixed in (15,75,95):
+            result['stats']['NetManaRegen']=fixed
+            audit=resources.assess(result,{}, {})
+            packet=poe.publication('draft',[],audit['pending'],{'status':'unknown'},{'candidate':result},readiness=audit,keys=[])
+            published=next(row for row in packet['statements'] if row['kind']=='single_skill_mean'
+                           and row['skill_ref']=='secondary' and row['resource_id']=='Mana')
+            actual=next(row for row in audit['single_payments'] if row['skill_ref']=='secondary' and row['resource_id']=='Mana')
+            self.assertEqual(published['values'],actual['mean_use'])
+            self.assertEqual(published['actor'],actual['actor'])
+            self.assertIn(str(75-fixed),published['text'])
+            self.assertIn(published['text'],packet['facts_summary'])
+            self.assertEqual(packet['resource_audits']['candidate']['sustained_use']['status'],'unknown')
         result["stats"]["NetManaRegen"]=75
         mean=next(r for r in resources.single_payments(result) if r["skill_ref"]=="secondary" and r["resource_id"]=="Mana")["mean_use"]
         self.assertEqual(mean["net_drain_per_second"],0)
@@ -1821,6 +1833,14 @@ class FinalReviewTests(unittest.TestCase):
         self.assertEqual(row["status"],"supported")
         self.assertEqual(audit["sustained_use"]["status"],"unknown")
         self.assertIn("usage:aux",audit["pending"])
+        result["stats"]["ManaUnreserved"]=-3
+        result["active_skills"][1].update(trigger=True)
+        result["active_skills"][1]["costs"].update(SkillTriggerRate=1,ManaPerSecondCost=70)
+        audit=resources.assess(result,{}, {})
+        failure=next(row for row in audit['diagnostics'] if row.get('payment_facts') and row['subject']=='resource:Mana')
+        self.assertEqual([(row['skill_ref'],row['payment'],row['pool']) for row in failure['payment_facts']],[('aux',70,-3)])
+        self.assertIn(failure['message'],audit['errors'])
+        self.assertEqual(failure['category'],'usage')
 
     def test_snapshot_positive_balance_does_not_prove_sustained_use(self):
         result=resource_fixture();result["stats"].update(LifeCost=10,LifePerSecondCost=20,LifeLeechGainRate=30)
@@ -1940,6 +1960,26 @@ class FinalReviewTests(unittest.TestCase):
             pointers={r["pointer"] for r in response["continuations"]}
             self.assertTrue({"/response/pending","/response/readiness"}<=pointers)
             self.assertEqual(facts.pointer(poe.read_json(response["details_file"]),"/response/pending"),long["pending"])
+            for count in (40,100):
+                dense={**long,**{'observation-'+str(i):['current native observation '*200] for i in range(count)}}
+                poe.write_json(artifact,{'response':dense});before=artifact.read_bytes();output=io.StringIO()
+                with patch.object(poe,'evaluate',return_value=dense),redirect_stdout(output):
+                    code=poe.main(['evaluate','--run',str(run),'--name','test','--plan','fixture.json'])
+                self.assertEqual(code,0,output.getvalue())
+                self.assertLess(len(output.getvalue()),12000)
+                reply=json.loads(output.getvalue())
+                self.assertEqual(reply['status'],'draft')
+                self.assertEqual(artifact.read_bytes(),before)
+                saved=poe.read_json(reply['details_file'])
+                self.assertTrue(reply['continuations'])
+                for row in reply['continuations']: facts.pointer(saved,row['pointer'])
+                # A saved parent is a valid recovery path for every child; the
+                # metadata enumerating omitted fields must itself remain bounded.
+                for key in dense:
+                    if key in reply and reply[key]==dense[key]: continue
+                    pointer='/response/'+key
+                    self.assertTrue(any(pointer==row['pointer'] or pointer.startswith(row['pointer']+'/')
+                                        for row in reply['continuations']),key)
 
     def test_stage_targets_use_actual_values_and_preserve_unmet_conditions(self):
         claim={"claim_id":"ready","status":"model_assessed","subjects":["stage:a"]}
@@ -2524,13 +2564,18 @@ class WorkflowInterfaceTests(unittest.TestCase):
                     'nodes':[1,2],'equipped':[],
                     'config_types':{'future-switch':'check'},'config_lists':{},
                     'config_controls':{'future-switch':{'type':'check','value':False}}}
+            native['stats'].update(ManaUnreserved=200,NetManaRegen=15)
+            native['resource_rules']={'energy_shield_protects_mana':False}
+            native['active_skills']=[{'skill_ref':'future-ref','actor':'player','is_main':True,
+                'costs':{'ManaCost':20,'ManaPerSecondCost':60},'usage_rate':{'value':3}}]
             def calculate(*pos,**kw):
                 if 'xml_batch' in kw:
                     changed=copy.deepcopy(native);changed['config_controls']['future-switch']['value']=True
+                    changed['stats']['NetManaRegen']=70
                     return {'calculations':[{**changed,'request_id':engine.batch_id('xml',i,xml),'input_xml_sha256':bx.digest(xml)} for i,xml in enumerate(kw['xml_batch'])]}
                 return native
             before=source.read_bytes()
-            with patch.object(poe,'read_candidate',side_effect=AssertionError('Read-only input must not need a candidate session')),patch.object(engine,'resolve_root',return_value=Path(folder)),patch.object(engine,'check',return_value={'engine_fingerprint':'fixture'}),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',return_value={'errors':[],'pending':[],'warnings':[]}):
+            with patch.object(poe,'read_candidate',side_effect=AssertionError('Read-only input must not need a candidate session')),patch.object(engine,'resolve_root',return_value=Path(folder)),patch.object(engine,'check',return_value={'engine_fingerprint':'fixture'}),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',side_effect=lambda current,*pos:{'errors':[],'pending':[],'warnings':[],'single_payments':resources.single_payments(current)}):
                 response=poe.probe(args(input=str(source),variants=str(variants)))
                 self.assertEqual(response['source_mode'],'input_xml')
                 self.assertIs(response['baseline_effect_state']['config_switches']['future-switch'],False)
@@ -2565,6 +2610,13 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 self.assertIn('原始文件字节 SHA256 '+bx.digest(before),page)
                 self.assertIn('request_selections_verified',page);self.assertIn('actual_changes',page)
                 self.assertIn('数值差不证明因果',page)
+                means=[row for row in saved['publication']['statements'] if row['kind']=='single_skill_mean' and row['resource_id']=='Mana']
+                self.assertEqual({row['subject']:row['values']['net_drain_per_second'] for row in means},
+                                 {'current':45,'variant:observed-switch':-10})
+                for row in means:
+                    self.assertIn(row['text'],saved['publication']['facts_summary'])
+                    self.assertIn(html.escape(row['text']),page)
+                self.assertEqual(saved['publication']['resource_audits']['variant:observed-switch'],saved['alternatives'][0]['readiness'])
                 def changed_source(*pos,**kw):
                     source.write_bytes(before+b'\n')
                     return calculate(*pos,**kw)
@@ -4788,8 +4840,10 @@ class TaskCompletionTests(unittest.TestCase):
             plan['assessment']={'goal_claim_ids':['current'],'scope':'Only the requested snapshot comparison'}
             pending=['usage:current-other']
             audit={'errors':[],'warnings':[],'pending':pending,'resources':[],'diagnostics':[]}
+            assess_resources=resources.assess
+            use_native_resources=False
             def assess(current_plan=plan,current_native=native,current_intent=intent,errors=()):
-                with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(list(errors),[],[])),patch.object(resources,'assess',return_value=copy.deepcopy(audit)):
+                with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(list(errors),[],[])),patch.object(resources,'assess',side_effect=lambda *a,**k:assess_resources(*a,**k) if use_native_resources else copy.deepcopy(audit)):
                     return poe.assess_candidate(document,document,copy.deepcopy(native),copy.deepcopy(current_native),current_intent,current_plan,run,root=run)
             first=assess();review=copy.deepcopy(first['review_packet']['review_template'])
             review['findings']='Comparison scope comes from the user; full operation schedule is outside this request.'
@@ -4825,6 +4879,74 @@ class TaskCompletionTests(unittest.TestCase):
                 violation=poe.assess_candidate(document,changed,native,native,kept,plan,run,root=run)
             self.assertEqual(violation['task_completion']['status'],'blocked')
             self.assertTrue(any('技能组 1' in error for error in violation['task_completion']['errors']))
+
+            # Inherited payment failures still block the character, but a current
+            # user-scoped comparison may explicitly review their irrelevance.
+            native['resource_rules']={'energy_shield_protects_mana':False}
+            native['stats']['ManaUnreserved']=-3
+            native['active_skills']=[copy.deepcopy(resource_fixture()['active_skills'][0]),
+                {'group':2,'skill_ref':'current-other','actor':'player','is_main':False,'trigger':True,
+                 'costs':{'ManaCost':7,'ManaPerSecondCost':7,'LifeCost':0,'LifePerSecondCost':0,
+                          'ESCost':0,'ESPerSecondCost':0,'SkillTriggerRate':1}}]
+            use_native_resources=True
+            audit=resources.assess(native,intent,plan,[])
+            original_audit=copy.deepcopy(audit)
+            first=assess()
+            issue=first['review_packet']['facts']['delivery_scope']['inherited_usage_errors'][0]
+            self.assertIn(issue['error'],first['character_readiness']['errors'])
+            self.assertEqual(first['status'],'blocked')
+            reviewed=copy.deepcopy(first['review_packet']['review_template'])
+            reviewed['findings']='Only the requested comparison; inherited action payment remains invalid.'
+            for field in ('conclusions','objectives'):
+                for row in reviewed[field]:
+                    row.update(scope='Current snapshot only',findings='The compared benefit does not require this unchanged action.',
+                               verdict='partial',conditions=['Use only for this comparison; do not execute the invalid action.'],
+                               evidence_refs=['user','native:materialization#/actual_changes','native:candidate#/stats'])
+            reviewed['condition_reviews']=[{'subjects':first['review_packet']['facts']['pending'],
+                'claim_ids':['current'],'conditions':['Inherited payment failure is outside this specific comparison.'],
+                'fallback':'Keep the file; do not claim that the character is executable.',
+                'evidence_refs':issue['evidence_refs']+['user','native:materialization#/actual_changes']}]
+            plan['assessment']['review']=reviewed
+            current=assess()
+            self.assertEqual(current['status'],'scoped_result',current['task_completion'])
+            self.assertEqual(current['task_completion']['errors'],[])
+            self.assertEqual([row['error'] for row in current['task_completion']['scope_excluded_errors']],audit['errors'])
+            self.assertEqual(current['character_readiness']['errors'],audit['errors'])
+            self.assertEqual(current['character_readiness']['status'],'blocked')
+            self.assertEqual(audit,original_audit)
+            self.assertTrue(any(row['kind']=='comparison_scope_exclusion' for row in current['publication']['statements']))
+            explanation=next(row for row in current['publication']['statements'] if row['kind']=='comparison_scope_exclusion')
+            self.assertEqual(explanation['condition_review']['fallback'],reviewed['condition_reviews'][0]['fallback'])
+            self.assertIn(reviewed['condition_reviews'][0]['fallback'],explanation['text'])
+            self.assertIn(reviewed['condition_reviews'][0]['conditions'][0],explanation['text'])
+            missing=copy.deepcopy(plan)
+            missing['assessment']['review']['condition_reviews'][0]['subjects'].remove(issue['subject'])
+            self.assertEqual(assess(missing)['status'],'blocked')
+            self.assertEqual(assess(errors=audit['errors'])['status'],'blocked')
+            for changed_input in ('cost','pool','rules','group','main'):
+                snapshot=copy.deepcopy(native)
+                if changed_input=='cost': snapshot['active_skills'][1]['costs']['ManaCost']=8
+                elif changed_input=='pool': snapshot['stats']['ManaUnreserved']=-4
+                elif changed_input=='rules': snapshot['resource_rules']['energy_shield_protects_mana']=True
+                elif changed_input=='group': snapshot['gems'][0]['level']=2
+                else: snapshot['active_skills'][1]['is_main']=True
+                with self.subTest(changed_input=changed_input):
+                    checked=assess(current_native=snapshot)
+                    self.assertEqual(checked['review_packet']['facts']['delivery_scope']['inherited_usage_errors'],[])
+                    self.assertNotEqual(checked['status'],'scoped_result')
+                    if checked['errors']: self.assertEqual(checked['status'],'blocked')
+            native['stats']['ManaUnreserved']=3
+            first=assess()
+            issues=first['review_packet']['facts']['delivery_scope']['inherited_usage_errors']
+            self.assertTrue(issues)
+            reviewed['token']=first['review_packet']['token']
+            reviewed['condition_reviews'][0]['subjects']=first['review_packet']['facts']['pending']
+            reviewed['condition_reviews'][0]['evidence_refs']=list(dict.fromkeys(
+                ref for row in issues for ref in row['evidence_refs']))+['user','native:materialization#/actual_changes']
+            plan['assessment']['review']=reviewed
+            checked=assess()
+            self.assertEqual(checked['status'],'scoped_result',checked['task_completion'])
+            self.assertEqual(checked['character_readiness']['status'],'blocked')
 
     def test_comparison_intent_requires_explicit_user_scope_and_keeps_default_execution(self):
         with tempfile.TemporaryDirectory() as temp:
