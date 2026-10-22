@@ -16,7 +16,7 @@
 
 ## 意图与方案
 
-intent登记原目标、场景、许可、预算、保留项及真实user_statement依据。整组声明保留用keep_skill_groups原文件1起序号，派生效果另审；confirmed仅流程记录。等级/点数取实际进度，progress_limits只是当次上界。
+intent登记原目标、场景、许可、预算、保留项及真实user_statement依据。整组声明保留用keep_skill_groups原文件1起序号；程序对照原声明及当次原生保存的等价声明，派生效果另审，原件字节身份分别保留。confirmed仅流程记录。等级/点数取实际进度，progress_limits只是当次上界。
 
 用[增量保存](commands.md#增量保存方案)创建plan。rebuild同接口，可用相对plan目录的template_xml，说明来源及迁移。非显然语义：
 

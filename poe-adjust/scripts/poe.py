@@ -25,9 +25,9 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.49"
+VERSION = "2.8.50"
 SCHEMA_VERSION = 2
-JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
+JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。判断配置能否支持用法、解释原因或推断来源是否齐全时，按 references/build.md#只读解释用 read_only_review、refine 空操作计划，将结论和反证写入当前 claims/review，再由同一 publication 生成说明。HTML 交程序返回的 report/files；短答沿当次原生事实或已发布判断、限制、数字内插与本机名称。"
 INTENT_FIELDS={"schema_version", "confirmed", "task_kind", "delivery_scope", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "keep_skill_groups", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
@@ -534,7 +534,7 @@ def view_json(args):
         if not integrity['valid']:
             result['next_actions'].append({'action':'regenerate_report','file':str(path),'report':str(report),
                                           'instruction':'沿原 inspect/probe 请求重新生成报告与完整凭证；不能仅改摘要继承旧结果。'})
-    if is_json and not contract and path.stat().st_size<=2_000_000:
+    if is_json and (not contract or args.pointer and not native_reference(args.pointer)):
         result['evidence_template']={'kind':'artifact','path':str(path),'pointer':args.pointer}
         result['scope']+=' evidence_template 以准确绝对路径指向分页/投影前的完整源节点，补 evidence_id/subject 后只读核原文件；可追溯不证明语义或扩展授权。'
     fits=lambda value: len(json.dumps(value,ensure_ascii=False,allow_nan=False))<=9500
@@ -995,7 +995,7 @@ def equipment_changes(original, document, before, after):
     return {"changed_slots":changed,"replaced_items":replaced,"changes":rows}
 
 
-def check_constraints(original, document, before, after, intent, plan, equipment=None):
+def check_constraints(original, document, before, after, intent, plan, equipment=None, *, original_native=None):
     errors, pending = [], []
     if intent.get("mode") not in (None,"both",plan["mode"]): errors.append("候选超出用户确认的改装模式。")
     if intent.get("target_level") is not None and after["level"] != intent["target_level"]: errors.append("候选等级与用户确认的目标等级不一致。")
@@ -1024,11 +1024,23 @@ def check_constraints(original, document, before, after, intent, plan, equipment
     for skill in intent.get("keep_skill_ids",[]):
         if skill not in enabled_ids: errors.append("必须保留的技能未启用："+skill)
     if intent.get("keep_skill_groups"):
+        # An unchanged declaration may already be a native normalized save.
+        # Keep the requested declaration check as well: an ignored requested
+        # change cannot pass merely because native output stayed unchanged.
+        native_xml=(original_native or {}).get('xml')
+        canonical=bool(native_xml and after.get('xml'))
         original_groups,current_groups=bx.groups(original),bx.groups(document)
+        saved_original=bx.groups(bx.parse(native_xml)) if canonical else []
+        saved_current=bx.groups(bx.parse(after['xml'])) if canonical else []
+        signature=lambda group:ET.canonicalize(bx.serialise(group),strip_text=True) if group is not None else None
         for index in intent["keep_skill_groups"]:
             source=bx.index_one(original_groups,index,"保留技能组")
             current=current_groups[index-1] if index<=len(current_groups) else None
-            if current is None or ET.canonicalize(bx.serialise(source),strip_text=True)!=ET.canonicalize(bx.serialise(current),strip_text=True):
+            allowed={signature(source)}
+            observed_unchanged=not canonical or (index<=len(saved_original) and index<=len(saved_current) and signature(saved_original[index-1])==signature(saved_current[index-1]))
+            if canonical and observed_unchanged:
+                allowed.add(signature(saved_original[index-1]))
+            if current is None or not observed_unchanged or signature(current) not in allowed:
                 errors.append(f"必须原样保留的技能组 {index} 已改动或移除；核对原组声明与实际操作。")
     for key,threshold in intent.get("minimum_stats",{}).items():
         value=after["stats"].get(key)
@@ -1930,7 +1942,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     errors, warnings, native_gaps = mechanical_issues(document, result, intent)
     mechanical_errors = list(errors)
     equipment=equipment_changes(original,document,baseline,result)
-    constraint_errors, constraint_pending = check_constraints(original, document, baseline, result, intent, plan,equipment)
+    constraint_errors, constraint_pending = check_constraints(original, document, baseline, result, intent, plan,equipment,original_native=unmeasured)
     # Permission and absent native measurements cannot be supplied by a model conclusion.
     constraint_pending = [p for p in constraint_pending if p.startswith(("permission:", "metric:")) or not facts.has_claim(claims,p)]
     errors += constraint_errors
@@ -2377,6 +2389,9 @@ def probe(args):
     metrics=getattr(args,"metrics",None)
     metrics=metrics.split(",") if metrics else list(METRICS)
     bx.require(all(k and isinstance(k,str) for k in metrics),"metrics 使用本次数值输出中的指标名。")
+    original_native=engine.calculate(root,bx.serialise(original)) if state['intent'].get('keep_skill_groups') else None
+    if original_native is not None:
+        bx.require(original_native['engine_fingerprint']==outcome['engine_fingerprint'],'保留组核对期间引擎变化，请重算。')
     rows=[]
     for offset in range(0,len(variants),12):
         prepared_variants=[]
@@ -2409,7 +2424,7 @@ def probe(args):
                 continue
             bx.require(result["engine_fingerprint"]==outcome["engine_fingerprint"],"比较期间引擎变化，请重算。")
             errors,warnings,pending=mechanical_issues(document,result,state["intent"])
-            ce,cp=check_constraints(original,document,outcome["baseline"],result,state["intent"],plan)
+            ce,cp=check_constraints(original,document,outcome["baseline"],result,state["intent"],plan,original_native=original_native)
             audit=resources.assess(result,state["intent"],plan,[])
             context=comparison_context(baseline,result)
             context_changes=context['changes']
@@ -3180,10 +3195,10 @@ def bound_reply(value, args):
     bx.require(details.is_file(),"完整返回凭证不存在，不能截断后交付。",code="response_artifact_missing",location="/out",expected="saved full response",actual=str(details))
     saved=read_json(details)
     result=dict(value)
-    result.update(details_file=str(details),output_scope="终端摘要；errors/pending 以 *_total 为准，*_is_preview 标识预览。continuations 用 view 读完整字段，无须重算。",continuations=[])
+    result.update(details_file=str(details),output_scope="终端摘要；存在 *_total 时为全量数量，*_is_preview 标识预览。continuations 用 view 读完整字段，无须重算。",continuations=[])
     if args.command=="edit":
         result["next_actions"]=[row for row in value.get('next_actions',[]) if row['action']=='calculate_current_input']+[{"action":"view","file":str(details),"pointer":"/handles","keys":True}]+([{"action":"view","file":str(details),"pointer":"/stage_instances","limit":10}] if result["kind"]=="route" else [])+[{"action":"view","file":str(details),"pointer":"/input_contract"}]
-    protected={"entrypoint","runtime","status","file_exported","xml_exported","kind","file","revision","receipt_file","details_file","output_scope","continuations","inspection","probe_file","report","report_sha256","reply_policy"}
+    protected={"entrypoint","runtime","status","file_exported","xml_exported","files","files_total","files_is_preview","kind","file","revision","receipt_file","details_file","output_scope","continuations","inspection","probe_file","report","report_sha256","reply_policy"}
     if args.command in {'edit','start'}: protected.add('next_actions')
     if value.get("task_completion"):
         for key in ("task_completion","character_readiness"):
@@ -3223,6 +3238,16 @@ def bound_reply(value, args):
                 continuation=next((row for row in result['continuations'] if row['pointer']==pointer),None)
                 if continuation:continuation['offset']=len(owner[key])
                 else:result['continuations'].append({'action':'view','file':str(details),'pointer':pointer,'offset':len(owner[key]),'limit':5000})
+                continue
+            if isinstance(result.get('files'),list) and result['files'] and not result.get('files_is_preview'):
+                target=facts.pointer(saved,prefix+'/files')
+                result.update(files=[],files_total=len(target),files_is_preview=True)
+                result['continuations'].append({'action':'view','file':str(details),'pointer':prefix+'/files','offset':0,'limit':20})
+                for filename in target:
+                    result['files'].append(filename)
+                    if size(result)>10400:
+                        result['files'].pop()
+                        break
                 continue
             previews=[(result[key],field) for key in ('character_readiness','task_completion')
                       for field in ('errors','pending') if result.get(key,{}).get(field)]

@@ -1406,6 +1406,30 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(failed['status'],'unresolved');self.assertNotIn('next_actions',failed['repair'])
             with self.assertRaises(bx.ContractError): facts.evidence_shape([dict(declaration,excerpt='also text')])
             with self.assertRaises(bx.ContractError): facts.evidence_shape([dict(declaration,kind='web')])
+
+    def test_current_json_view_evidence_reuses_large_original_without_transcription(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);source=folder/'native-observations.json'
+            poe.write_json(source,{'observed':False,'other_observations':'x'*2_000_001})
+            original=source.read_bytes();stamp=source.stat().st_mtime_ns
+            page=poe.view_json(args(file=str(source),pointer='/observed',fields='',keys=False,query='',offset=0,limit=20))
+            self.assertIn('evidence_template',page)
+            declaration={**page['evidence_template'],'evidence_id':'current','subject':'current native observation'}
+            record=facts.load_evidence([declaration],folder,{})['current']
+            self.assertEqual(record['status'],'artifact_observed',record)
+            self.assertIs(record['value'],False)
+            self.assertEqual(record['content_sha256'],page['revision'])
+            self.assertEqual(source.read_bytes(),original)
+            self.assertEqual(source.stat().st_mtime_ns,stamp)
+            value=json.loads(original);value['calculation']={'stats':{'Observed':7}}
+            value['reference_contract']=facts.reference_contract({'current':value['calculation']},{'current':{'pointer':'/calculation'}})
+            poe.write_json(source,value)
+            external=poe.view_json(args(file=str(source),pointer='/observed',fields='',keys=False,query='',offset=0,limit=20))
+            self.assertIn('evidence_template',external)
+            self.assertIs(facts.load_evidence([{**external['evidence_template'],'evidence_id':'current','subject':'observation'}],folder,{})['current']['value'],False)
+            native=poe.view_json(args(file=str(source),pointer='/calculation/stats/Observed',fields='',keys=False,query='',offset=0,limit=20))
+            self.assertNotIn('evidence_template',native)
+            self.assertEqual(native['native_references']['/calculation/stats/Observed'],'native:current#/stats/Observed')
     def test_native_pointer_must_resolve_in_current_calculation(self):
         claims=[{"claim_id":"life","text":"Native life value","subjects":["goal"],"evidence_refs":["native:candidate#/stats/Life"]}]
         evidence={};native={"candidate":{"stats":{"Life":123},"engine_fingerprint":"new","xml":"<fixture/>"}}
@@ -1993,6 +2017,43 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_successful_export_files_survive_terminal_envelope_reduction(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);artifact=run/'output/final/final-assessment.json'
+            files=[str(run/'output/final/role.xml'),str(run/'output/final/report.html')]
+            response={'status':'scoped_result','file_exported':True,'xml_exported':True,'files':files,
+                      'facts_summary':'Observed current fact. '*300,
+                      'reply_policy':'Use the current delivered files and their limits. '*45,
+                      'delivery_brief':{'scope':'Current measured window; other conditions unknown. '*60},
+                      'publication':{'scope':'window '*600},
+                      'entrypoint':{'script':'current entrypoint','python':'current Python','skill_version':poe.VERSION},
+                      'runtime':{'elapsed_seconds':1},'extra_observations':['Current observation. '*1000]}
+            poe.write_json(artifact,{'response':response});original=artifact.read_bytes()
+            reply=poe.bound_reply(response,args(command='export',run=str(run),name='final'))
+            self.assertEqual(reply['files'],files)
+            self.assertTrue(reply['file_exported']);self.assertTrue(reply['xml_exported'])
+            self.assertLess(len(json.dumps({'ok':True,**reply},ensure_ascii=False))+1,12000)
+            self.assertEqual(artifact.read_bytes(),original)
+            for row in reply['continuations']:facts.pointer(poe.read_json(artifact),row['pointer'])
+
+            report=run/'route.html';details=report.with_suffix('.evidence.json')
+            files=[str(run/('materialized-stage-'+str(index)+'-'+'x'*120)/'snapshot.xml') for index in range(90)]
+            response={'status':'scoped_result','file_exported':True,'files':files,
+                      'facts_summary':'Current measured observations. '*300,'reply_policy':'Use current saved files and declared limits.'}
+            poe.write_json(details,{'response':response});original=details.read_bytes()
+            stdout,stderr=io.StringIO(),io.StringIO()
+            with patch.object(poe,'route_command',return_value=copy.deepcopy(response)),redirect_stdout(stdout),redirect_stderr(stderr):
+                code=poe.main(['route','--file',str(run/'route.json'),'--out',str(report)])
+            self.assertEqual(code,0,stderr.getvalue())
+            reply=json.loads(stdout.getvalue())
+            self.assertTrue(reply['ok']);self.assertTrue(reply['file_exported'])
+            self.assertTrue(reply['files_is_preview']);self.assertEqual(reply['files_total'],len(files))
+            self.assertEqual(reply['files'],files[:len(reply['files'])]);self.assertLess(len(reply['files']),len(files))
+            self.assertLess(len(stdout.getvalue()),12000)
+            continuation=next(row for row in reply['continuations'] if row['pointer']=='/response/files')
+            self.assertEqual(facts.pointer(poe.read_json(continuation['file']),continuation['pointer']),files)
+            self.assertEqual(details.read_bytes(),original)
+
     def test_nonstandard_native_resource_observations_reach_facts_and_diagnosis(self):
         current={'stats':{'LifeOnFutureEvent':7,'ManaFutureGain':-2,'OtherOutput':9},
                  'points':0,'ascendancy_points':0,'active_skills':[]}
@@ -2713,6 +2774,13 @@ class WorkflowInterfaceTests(unittest.TestCase):
         removed=copy.deepcopy(original)
         bx.active_set(removed,'Skills','SkillSet','activeSkillSet').remove(bx.groups(removed)[1])
         self.assertTrue(any('技能组 2' in error for error in violations(removed)))
+        native_original={'xml':bx.serialise(original)}
+        observed={**after,'xml':bx.serialise(formatting)}
+        self.assertFalse(poe.check_constraints(original,formatting,before,observed,locked,plan,original_native=native_original)[0])
+        observed['xml']=bx.serialise(changed)
+        self.assertTrue(poe.check_constraints(original,original,before,observed,locked,plan,original_native=native_original)[0])
+        observed['xml']=native_original['xml']
+        self.assertTrue(poe.check_constraints(original,changed,before,observed,locked,plan,original_native=native_original)[0])
 
     def test_measurement_resolves_native_effect_order_and_keeps_physical_assignment(self):
         document=bx.parse(SAMPLE)
@@ -5293,6 +5361,37 @@ class TaskCompletionTests(unittest.TestCase):
 
 
 class NativeSelectionIntegrityTests(unittest.TestCase):
+    def test_native_candidate_probe_preserves_groups_across_saved_defaults(self):
+        root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
+        native=engine.calculate(root,'')
+        plan={'mode':'rebuild','summary':'Native transport normalization fixture',
+              'operations':{'replace_skills':[{'gems':[{'skill_id':'Fireball','level':1}]},
+                                            {'gems':[{'skill_id':'Fireball','level':1}]}],'main_group':1}}
+        source=bx.apply_plan(bx.parse(native['xml']),plan,native=native)
+        preserved=bx.groups(source)[1];preserved.set('includeInFullDPS','nil')
+        preserved.find('Gem').set('enableGlobal2','nil');preserved.find('Gem').set('count','nil')
+        with tempfile.TemporaryDirectory() as folder:
+            work=Path(folder);original=work/'original.xml';poe.write_text(original,bx.serialise(source));original_hash=bx.digest(original.read_bytes())
+            run=work/'run';poe.begin(args(invoked=True,input=str(original),run=str(run)))
+            intent={'schema_version':2,'confirmed':True,'task_kind':'build_plan','goal':'Keep the second skill group while comparing this native snapshot.',
+                    'keep_skill_groups':[2],
+                    'objectives':[{'objective_id':'preserve','text':'Preserve the second group.','evidence_refs':['user']}],
+                    'constraint_sources':{'/goal':'user','/keep_skill_groups':'user'},
+                    'evidence':[{'evidence_id':'user','kind':'user_statement','subject':'intent','text':'Preserve the second skill group.'}]}
+            intent_path=work/'intent.json';poe.write_json(intent_path,intent);poe.set_intent(args(run=str(run),file=str(intent_path)))
+            path=work/'plan.json';poe.write_json(path,{'schema_version':2,'mode':'refine','summary':'Keep current native declarations.','operations':{}})
+            poe.evaluate(args(run=str(run),name='baseline',plan=str(path)))
+            variants=work/'variants.json';poe.write_json(variants,{'variants':[
+                {'id':'unchanged','operations':{}},
+                {'id':'group-disabled','operations':{'groups':[{'index':2,'enabled':False}]}},
+                {'id':'gem-quality','operations':{'gems':[{'group':2,'index':1,'quality':1}]}}]})
+            observed=poe.probe(args(run=str(run),name='baseline',variants=str(variants)))
+            rows={row['id']:row for row in observed['alternatives']}
+            self.assertFalse(any('技能组 2' in error for error in rows['unchanged']['errors']),rows['unchanged']['errors'])
+            for name in ('group-disabled','gem-quality'):
+                self.assertTrue(any('技能组 2' in error for error in rows[name]['errors']),rows[name]['errors'])
+            self.assertEqual(bx.digest(original.read_bytes()),original_hash)
+
     def test_native_read_only_auto_level_review_repeats_and_exports(self):
         root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
         native=engine.calculate(root,'')

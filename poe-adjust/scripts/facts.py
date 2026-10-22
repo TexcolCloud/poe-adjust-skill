@@ -22,6 +22,7 @@ import buildxml as bx
 import engine
 
 HOSTS = {"poedb.tw", "poe.qq.com", "www.pathofexile.com", "pathofexile.com"}
+JSON_ARTIFACT_LIMIT = 64 * 1024 * 1024
 
 
 class PageText(HTMLParser):
@@ -200,6 +201,7 @@ def load_evidence(declarations, folder, context, *, root=None):
         location=f"/evidence/{index}"
         key, kind = entry.get("evidence_id"), entry.get("kind")
         artifact_source=None
+        artifact_limit=2_000_000
         bx.require(kind == "local_data" or not set(entry) & {"source", "line", "count", "content_sha256"}, "source/line/count/content_sha256 仅用于 local_data。",location=location,expected="local_data for source fields",actual=kind)
         record = {"evidence_id": key, "kind": kind, "subject": entry["subject"], "context": entry.get("context", {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         if entry.get("checked_at"):
@@ -235,10 +237,11 @@ def load_evidence(declarations, folder, context, *, root=None):
                 bx.require(path.is_file(),"artifact.path 未找到文本文件；按 source_base 核对相对路径。",
                            location="/path",expected={"source_base":str(base),"type":"existing text file"},actual=str(path))
                 size=path.stat().st_size
-                bx.require(size<=2_000_000,"资料超过 artifact 读取上限。",
-                           location="/path",expected={"maximum_bytes":2_000_000},actual=size)
+                if "pointer" in entry and path.suffix.lower()=='.json': artifact_limit=JSON_ARTIFACT_LIMIT
+                bx.require(size<=artifact_limit,"资料超过 artifact 读取上限。",
+                           location="/path",expected={"maximum_bytes":artifact_limit},actual=size)
                 raw=path.read_bytes()
-                bx.require(len(raw)<=2_000_000,"资料超过 artifact 读取上限。",location="/path",expected={"maximum_bytes":2_000_000},actual=len(raw))
+                bx.require(len(raw)<=artifact_limit,"资料超过 artifact 读取上限。",location="/path",expected={"maximum_bytes":artifact_limit},actual=len(raw))
                 text=raw.decode("utf-8-sig")
                 artifact_source=(path,raw,text)
                 if "pointer" in entry:
@@ -258,7 +261,7 @@ def load_evidence(declarations, folder, context, *, root=None):
             record.update(status="unresolved", reason=str(exc))
             if hasattr(exc,"diagnostic"): record["diagnostic"]={**exc.diagnostic,"location":location+exc.diagnostic.get("location","")}
             if kind == "artifact":
-                record["repair"]={"source_base":str(base),"maximum_bytes":2_000_000,
+                record["repair"]={"source_base":str(base),"maximum_bytes":artifact_limit,
                                   "declaration":{k:entry[k] for k in ("evidence_id","kind","subject","path","excerpt","pointer") if k in entry},
                                   "message":"保留证据 ID；相对路径沿 source_base，获准原文件用准确绝对路径。JSON 沿 view 的 evidence_template 选实际 pointer，文本填真实 excerpt；原生计算沿 native 引用。不扩大授权范围或复制旧结果冒充新测量。"}
                 if artifact_source is not None and artifact_source[0].suffix.lower()=='.json':
