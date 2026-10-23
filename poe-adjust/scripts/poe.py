@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.51"
+VERSION = "2.8.52"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1378,10 +1378,18 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         measurement={key:variant.get('measurement',{}).get(key) for key in ('requested_operations','request_selections_verified','actual_changes','changed_state_fields','observation_scope','observed_subject','common_conditions','damage_observation','individual_contributions_measured','scope')}
         comparison=variant.get('comparison',{})
         notes=variant.get('errors',[])+variant.get('pending',[])
-        text='变体 '+str(variant.get('id'))+' ['+variant['status']+'] · /alternatives/'+str(index)+'：'+(measurement['scope'] or '未取得完整测量范围；失败或未测状态不能作为实验结果。')
-        text+=' 请求 '+json.dumps(measurement['requested_operations'],ensure_ascii=False)+'；实际变化 '+json.dumps(measurement['actual_changes'],ensure_ascii=False)
-        text+='；作用主体 '+json.dumps({'subject':measurement['observed_subject'],'damage':measurement['damage_observation']},ensure_ascii=False)+'；共同条件 '+json.dumps(measurement['common_conditions'],ensure_ascii=False)
+        pointer='/alternatives/'+str(index)
+        has_measurement=isinstance(variant.get('measurement'),dict)
+        observation=measurement['damage_observation'] or {}
+        context=observation.get('context',{});meaning=observation.get('meaning',{})
+        text='变体 '+str(variant.get('id'))+' ['+variant['status']+'] · '+pointer+'；测量 '+str(observation.get('formatted_fact') or '伤害未测得')
+        text+='；指标面板归属 '+str(meaning.get('actor') or '未知')+'，选定技能引用 '+str(context.get('main_skill_ref') or '未知')
+        text+='；请求 '+json.dumps(measurement['requested_operations'],ensure_ascii=False)+'；实际差异字段 '+(str(measurement['changed_state_fields']) if measurement['changed_state_fields'] is not None else '未测得')
+        text+=('，完整对象/共同条件见 '+pointer+'/measurement') if has_measurement else ('；未取得测量，诊断见 '+pointer)
         text+='；原生算术比较 '+json.dumps(comparison,ensure_ascii=False)+'；错误/未测 '+json.dumps(notes,ensure_ascii=False)
+        audit=variant.get('readiness',{})
+        text+='；资源检查 '+json.dumps({key:audit[key].get('status','unknown') for key in ('execution_coverage','sustained_use','timeline') if isinstance(audit.get(key),dict)},ensure_ascii=False)
+        text+='。'+(measurement['scope'] or '未取得完整测量范围；失败或未测状态不能作为实验结果。')
         statements.append({'kind':'experiment','subject':variant.get('id'),'status':variant['status'],'pointer':'/alternatives/'+str(index),
                            'measurement':measurement,'comparison':comparison,'errors':variant.get('errors',[]),'pending':variant.get('pending',[]),'text':text})
     for row in (review or {}).get("objectives",[]):
@@ -1477,9 +1485,10 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
     headline={'delivery','budget','execution_coverage','sustained_use','timeline_scope'}
     current=[row['text'] for row in statements if row['kind'] in {'delivery','budget'}]
     current += [effect_statement(calculation,name,compact=True)['text'] for name,calculation in calculations.items()]
-    current += [row['text'] for row in statements if row['kind'] in headline-{'delivery','budget'}]
+    variant_subjects={'variant:'+row['id'] for row in experiments or []}
+    current += [row['text'] for row in statements if row['kind'] in headline-{'delivery','budget'} and row.get('subject') not in variant_subjects]
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
-            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+[m['text'] for m in measurements]+[s['text'] for s in statements if s['kind'] not in primary|headline]),
+            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+[m['text'] for m in measurements]+[s['text'] for s in statements if s['kind'] in headline and s.get('subject') in variant_subjects]+[s['text'] for s in statements if s['kind'] not in primary|headline]),
             "scope":scope if scope is not None else "仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
 
 
@@ -2229,7 +2238,7 @@ def report_html(state, outcome):
             rows=''.join('<tr>'+''.join('<td>'+esc(value)+'</td>' for value in (
                 key,show(row.get('before')),show(row.get('after')),show(row.get('delta')),show(row.get('percent'))))+'</tr>'
                 for key,row in variant.get('comparison',{}).items())
-            comparisons.append('<section><h2>变体 '+esc(variant.get('subject'))+' · '+esc(variant['status'])+'</h2><p>'+esc(variant['measurement']['scope'] or '实验范围未知')+'</p>'+bullets(variant.get('errors',[])+variant.get('pending',[]))+
+            comparisons.append('<section><h2>变体 '+esc(variant.get('subject'))+' · '+esc(variant['status'])+'</h2><p>'+esc(variant['text'])+'</p>'+bullets(variant.get('errors',[])+variant.get('pending',[]))+
                 '<table><tr><th>原生指标 ID</th><th>本次起点</th><th>变体</th><th>差值</th><th>相对变化 %</th></tr>'+rows+'</table>'+
                 '<details><summary>实际输入、对象与实验范围 · '+esc(variant['pointer'])+'</summary><pre>'+esc(json.dumps(variant['measurement'],ensure_ascii=False,indent=2))+'</pre></details></section>')
         controls=''.join('<tr>'+''.join('<td>'+esc(value)+'</td>' for value in (

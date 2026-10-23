@@ -13,6 +13,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -2687,6 +2688,27 @@ class WorkflowInterfaceTests(unittest.TestCase):
                     poe.probe(args(input=str(source),variants=str(variants)))
                 self.assertEqual(caught.exception.diagnostic['location'],'/input')
                 source.write_bytes(before)
+                # Real CLI projection must keep the measured actor beside a batch result,
+                # rather than filling the preview with repeated audit/context details.
+                native['stat_metadata']={'CombinedDPS':[{'label':'Combined DPS','actor':'player','format':'.1f'}]}
+                native['config_values']={'large-current-context':'context '*1500}
+                poe.write_json(variants,{'variants':[{'id':'observed-switch-'+str(i),'operations':{'config':{'future-switch':True}}} for i in range(12)]})
+                stdout=io.StringIO()
+                with redirect_stdout(stdout):
+                    code=poe.main(['probe','--input',str(source),'--variants',str(variants),'--out',str(output),'--report',str(report)])
+                self.assertEqual(code,0,stdout.getvalue())
+                saved=poe.read_json(output);receipt=json.loads(stdout.getvalue())
+                experiments=[s for s in saved['publication']['statements'] if s['kind']=='experiment']
+                first=experiments[0]
+                self.assertIn('player',first['text'])
+                self.assertIn('future-ref',first['text'])
+                self.assertIn('Combined DPS',first['text'])
+                self.assertLess(len(first['text']),2500)
+                self.assertIn('future-ref',receipt['publication']['facts_summary'])
+                self.assertIn('observed-switch-0',receipt['publication']['facts_summary'])
+                self.assertEqual(saved['alternatives'][0]['measurement']['damage_observation']['context']['config_values'],native['config_values'])
+                page=report.read_text(encoding='utf-8')
+                self.assertIn('<p>'+html.escape(first['text'])+'</p>',page)
             self.assertEqual(source.read_bytes(),before)
             self.assertEqual({row.name for row in Path(folder).iterdir()},{'supplied.xml','variants.json','comparison.json','comparison.html'})
 
@@ -2830,6 +2852,18 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(response['baseline_damage_observation']['context']['xml_sha256'],'before')
             self.assertIn('actual_changes',response['alternatives'][0])
             self.assertEqual(response['alternatives'][0]['configuration_changes'],{})
+            # A display panel can belong to the player while another actor executes
+            # the selected skill; publication must not equate those native fields.
+            other=copy.deepcopy(baseline)
+            other['active_skills'][0].update(actor='mirage',skill_ref='qualified-other-actor')
+            measured=poe.measurement_facts(baseline,other,{})
+            observed=poe.publication('scoped_result',[],[],{'status':'not_requested'},{'current':baseline},
+                experiments=[{'id':'different-native-actor','status':'screened','measurement':measured,'comparison':{}}])
+            text=next(row['text'] for row in observed['statements'] if row['kind']=='experiment')
+            self.assertEqual(measured['damage_observation']['meaning']['actor'],'player')
+            self.assertEqual(other['active_skills'][0]['actor'],'mirage')
+            self.assertIn('面板归属 player',text)
+            self.assertIn('qualified-other-actor',text)
 
     def test_damage_observation_selects_current_minion_metric_and_keeps_missing_unknown(self):
         calculation={'stats':{'CombinedDPS':0,'MinionCombinedDPS':230},'main_skill':'native-minion','active_skills':[{'skill_ref':'current-minion','is_main':True,'minion':True,'actor':'minion'}]}
@@ -4748,10 +4782,17 @@ class DeliveryIntegrityTests(unittest.TestCase):
                     if singles[0]>1: raise engine.EngineError('injected single failure')
                     return baseline
                 with self.subTest(count=count),patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'materialize_items',side_effect=lambda plan,root:(plan,[])):
-                    result=poe.probe(args(run=str(run),name='fixture',variants=str(variants)))
+                    output=run/('failed-probe-'+str(count)+'.json')
+                    result=poe.probe(args(run=str(run),name='fixture',variants=str(variants),out=str(output)))
                     self.assertEqual({r['id'] for r in result['alternatives']},{'first','second'})
                     self.assertTrue(all(r['status']=='failed' for r in result['alternatives']))
                     self.assertEqual(result['status'],'failed')
+                    poe.write_json(output,result)
+                    # Follow actual advertised paths, without judging prose semantics.
+                    for statement in result['publication']['statements']:
+                        if statement['kind']!='experiment': continue
+                        for pointer in set(re.findall(r'/alternatives/\d+(?:/\w+)*',statement['text'])):
+                            poe.view_json(args(file=str(output),pointer=pointer,offset=0,limit=20,fields='',keys=False,query=''))
 
     def test_incomplete_catalog_batch_is_a_structured_failure(self):
         queries=[{'kind':'gems','query':'a'},{'kind':'gems','query':'b'}]
