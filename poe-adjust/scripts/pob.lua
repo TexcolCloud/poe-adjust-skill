@@ -708,8 +708,15 @@ local function queryCatalog(kind, query, limit, offset)
           end
         end
         table.sort(requirements, function(a,b) return a.gem_level < b.gem_level end)
+        local effects = setmetatable({}, {__jsontype = "array"})
+        for index, effect in ipairs(gem.grantedEffectList or {skill}) do
+          table.insert(effects, {index = index, id = effect.id, name = effect.name,
+            description = effect.description or json.null, support = effect.support or false,
+            has_global_effect = effect.hasGlobalEffect or false, skill_types = skillTypes(effect)})
+        end
         table.insert(entries, {id = id, name = gem.name, skill_id = gem.grantedEffectId, tags = gem.tags,
-          description = skill and skill.description,
+          description = skill and skill.description, granted_effects = effects,
+          level_requirements_effect_id = gem.grantedEffectId,
           min_level = requirements[1] and requirements[1].character_level, level_requirements = requirements,
           natural_max_level = gem.naturalMaxLevel, vaal = gem.vaalGem or false,
           special_variant = string.find(gem.grantedEffectId, "Alt[XYZ]") ~= nil or string.find(id, "Awakened", 1, true) ~= nil})

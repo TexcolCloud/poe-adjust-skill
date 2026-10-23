@@ -19,8 +19,8 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 
 | 请求 | 协议与任务类型 |
 |---|---|
-| 读取名称、状态、规格、费用、频率、原生定义、来源范围及独立算术 | [资料](references/data.md#只读查询与完成)，`inspect/probe --out --report` |
-| 解释、比较或复核已有配置、用法或作者交付 | [配装与复核](references/build.md#只读解释)，`read_only_review` |
+| 对已有配置、机制、用法、资源支撑或作者交付下判断 | [配装与复核](references/build.md#只读解释)，`read_only_review` |
+| 摘录原生名称、状态、规格、费用、频率、定义、来源范围及独立算术 | [资料](references/data.md#只读查询与完成)，`inspect/probe --out --report`，交事实页 |
 | 局部比较，明确保留其余操作 | [规划交付](references/build.md#规划交付)，`build_plan` + `snapshot_comparison` |
 | 设计或调整配装、使用安排（准备、切换、动作、补给），即使实物不变 | [规划交付](references/build.md#规划交付)，用 `build_plan/execution_plan`；核当前即用就绪才用 `build` |
 | 从零或跨阶段成长 | [路线](references/leveling.md)，`route`；模板仅作种子 |

@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.53"
+VERSION = "2.8.54"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -622,7 +622,7 @@ def diagnosis_summary(result):
     rows.append("DPS 已包含引擎的命中计算，不再乘命中率。其他技能是否计入总输出以 damage_sources 的实际分项为准，不能根据装备着召唤宝石推断。")
     rows.append(scenario_summary(result))
     rows.append(effect_statement(result,'当前角色',compact=True)['text'])
-    rows.extend(row['text'] for row in skill_statements(result,'当前角色'))
+    rows.extend(row['text'] for row in skill_statements(result,'当前角色',compact=True))
     rows.extend(row['text'] for row in flask_statements(result,'当前角色'))
     if stats.get("ManaUnreserved", 0) < 0:
         rows.append("原文件的保留配置超出可用魔力，需要调整同时开启的保留技能。各技能可能支付魔力、生命或能盾，不能据此断言所有技能都不能使用。")
@@ -1284,22 +1284,30 @@ def flask_statements(calculation, name):
     return rows
 
 
-def skill_statements(calculation, name):
-    """Share current native names, flags and main usage across factual outputs."""
+def skill_statements(calculation, name, *, compact=False):
+    """Keep each native skill's identity and observations together across outputs."""
     rows=[]
-    main=next((skill for skill in calculation.get('active_skills',[]) if skill.get('is_main')),None)
-    if main:
-        rate=main.get('usage_rate',{})
+    for index,skill in enumerate(calculation.get('active_skills',[])):
+        if compact and not skill.get('is_main'):
+            continue
+        rate=skill.get('usage_rate') or {}
         rate_text=f"{rate['value']:.10g} 次/秒" if bx.finite_number(rate.get('value')) else '未测得'
-        label=main.get('display_name') or main.get('name_cn') or main.get('name') or main.get('id') or '未知技能'
-        values={key:main.get(key) for key in ('usage_rate','costs','cost_scope','disabled')}
-        rows.append({'kind':'damage_subject','subject':name,'skill_ref':main.get('skill_ref'),'actor':main.get('actor'),'status':'observed','values':values,
-            'text':name+' · 当前主技能 '+str(label)+'；主体 '+str(main.get('actor','未知'))+'；原生频率 '+rate_text+
-                   '（'+str(rate.get('metric') or '来源未测得')+'）。费用原值 '+json.dumps(main.get('costs',{}),ensure_ascii=False,sort_keys=True)+
-                   '。'+str(rate.get('scope') or '频率适用范围未测得。')+' 伤害、吸取与回复按主体和资源分别读取；频率不认证动作互斥、支付可行或效果持续。'})
+        label=skill.get('display_name') or skill.get('name_cn') or skill.get('name') or skill.get('id') or '未知技能'
+        values={key:skill.get(key) for key in ('id','group','index','slot','usage_rate','costs','cost_scope','disabled','trigger','no_cost')}
+        rows.append({'kind':'damage_subject' if skill.get('is_main') else 'native_skill_observation','subject':name,
+            'reference':f'native:{name}#/active_skills/{index}','skill_ref':skill.get('skill_ref'),'actor':skill.get('actor'),'status':'observed','values':values,
+            'text':name+(' · 当前主技能 ' if skill.get('is_main') else ' · 当前技能 ')+str(label)+' ['+str(skill.get('skill_ref') or '引用未测得')+
+                   ']；伤害主体 '+str(skill.get('actor') or '未知')+'；停用='+json.dumps(skill.get('disabled'))+'；触发='+str(skill.get('trigger') or '未提供')+'；原生频率 '+rate_text+
+                   '（'+str(rate.get('metric') or '来源未测得')+'）。费用原值 '+json.dumps(skill.get('costs',{}),ensure_ascii=False,sort_keys=True)+
+                   '；费用来源 '+str(skill.get('cost_scope') or '未测得')+'。'+str(rate.get('scope') or '频率适用范围未测得。')+
+                   ' 伤害、吸取与回复按主体和资源分别读取；频率不认证动作互斥、支付可行或效果持续。'})
+    if compact:
+        rows.append({'kind':'native_skill_index','subject':name,'status':'observed',
+            'text':f"{name} · 已保存 {len(calculation.get('active_skills',[]))} 个原生技能及 {len(calculation.get('gems',[]))} 个宝石条目；逐技能费用、频率、主体及时长来源见 /calculation/active_skills，宝石规格与授予效果见 /calculation/gems。使用 --report 时，publication 与正式事实页另列完整技能观察。"})
+        return rows
     groups={}
     fields=('group','index','id','name','name_cn','display_name','name_source','slot','level','quality','effective_level','effective_quality',
-            'effective_specification_source','effective_specification_status','group_enabled','slot_enabled','enabled','support','support_applied','supports_skills')
+            'effective_specification_source','effective_specification_status','group_enabled','slot_enabled','enabled','support','support_applied','supports_skills','granted_effects')
     for index,gem in enumerate(calculation.get('gems',[])):
         groups.setdefault(gem.get('group'),[]).append({**{key:gem[key] for key in fields if key in gem},'reference':f'native:{name}#/gems/{index}'})
     def activation(value,label): return label+('已启用' if value is True else '未启用' if value is False else '状态未知')
@@ -1309,14 +1317,17 @@ def skill_statements(calculation, name):
               ' — '.join(str(g.get('display_name') or g.get('name_cn') or g.get('name') or g.get('id') or '未知技能')+
                   ' ['+str(g.get('id') or 'ID未测得')+'] 保存等级/品质 '+('/'.join(str(g[key]) if g.get(key) is not None else '未知' for key in ('level','quality')))+
                   '；当前有效等级/品质 '+('/'.join(str(g[key]) if g.get(key) is not None else '未知' for key in ('effective_level','effective_quality')))+
-                  '（'+activation(g.get('enabled'),'宝石')+'）' for g in gems)+
+                  '（'+activation(g.get('enabled'),'宝石')+'）；授予效果 '+
+                  ('、'.join(str(e.get('id') or 'ID未知')+'（全局开关='+json.dumps(e.get('global_enabled'))+
+                            '，当前技能存在='+json.dumps(e.get('active_skill_present'))+'）' for e in g.get('granted_effects') or []) or '未测得') for g in gems)+
               '。本机当次名称；缺译名保留原标识。启用标记不证明具体效果适用，辅助对象与实际应用见同一 gems 条目。')
         rows.append({'kind':'native_skill_group','subject':name,'status':'observed','values':{'group':group,'gems':gems},'text':text})
     for skill in calculation.get('active_skills',[]):
         timing=skill.get('native_timing',{})
         if any(bx.finite_number(timing.get(key)) for key in ('duration_seconds','cooldown_seconds')):
-            rows.append({'kind':'native_skill_timing','subject':name,'status':'observed','skill_ref':skill.get('skill_ref'),'values':timing,
-                'text':name+' · '+str(skill.get('display_name') or skill.get('name') or skill.get('id'))+' 原生时长/冷却：'+json.dumps(timing,ensure_ascii=False)+'。按实际使用时点核对覆盖；支付一次不代表效果延续到后续窗口。'})
+            rows.append({'kind':'native_skill_timing','subject':name,'status':'observed','skill_ref':skill.get('skill_ref'),'actor':skill.get('actor'),'values':timing,
+                'text':name+' · '+str(skill.get('display_name') or skill.get('name') or skill.get('id'))+' ['+str(skill.get('skill_ref') or '引用未测得')+
+                       '] 原生时长/冷却：'+json.dumps(timing,ensure_ascii=False)+'。此为所列source的观测；召唤物自身动作另按主体读取，按实际使用时点核对覆盖。'})
     return rows
 
 

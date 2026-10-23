@@ -2,7 +2,7 @@
 
 ## 只读查询与完成
 
-读取名称、状态、规格、费用、频率、原生定义、来源范围及独立算术用inspect/probe，--out保存JSON、--report直接交事实页，无需intent/plan。独立支付、固定收支和平均耗尽投影保留其假设与未知。解释或评审已有安排转[只读解释](build.md#只读解释)，新方案按[入口](../SKILL.md#入口和范围)选择任务类型；判断及反证进入当前claims/review，由程序生成说明。
+摘录本次原生对象、定义和独立算术用inspect/probe，--out保存JSON、--report交事实页，无需intent/plan。支付与平均投影保留其假设和未知。要在此基础上下机制、用法或资源支撑结论，转[只读解释](build.md#只读解释)写入当前claims/review，由同一publication生成说明；新方案按[入口](../SKILL.md#入口和范围)选择任务类型。
 
 ```powershell
 python '<entry>' inspect --input '<原件.xml>' --calculate --out '<工作区>/facts.json' --report '<工作区>/事实.html'
@@ -15,7 +15,7 @@ catalog种类取当前--help。独立查询可--batch提交queries的kind/query/
 
 ## 技能、配置与明细
 
-保存level/quality与effective_specifications分开。gems逐级base_resources保留原生编码值；base_resource_units.cost按资源给本机费用定义（ResourceString、Divisor等），native_MORE_percent是百分比修正，native_raw为单位未知。它们均非完整角色费用。active_skills沿skill_ref/actor读cost/rate/native_timing；组设置、授予效果和实际辅助均属于对象。
+保存level/quality与effective_specifications分开。catalog.gems的granted_effects列整颗宝石授予的效果，level_requirements_effect_id标明逐级数值对应哪个效果；本角色开关和实际技能取inspect.gems.granted_effects。逐级base_resources为原生编码值，base_resource_units.cost给本机ResourceString/Divisor；native_MORE_percent为百分比修正，native_raw为单位未知，均非完整角色费用。active_skills按skill_ref绑定费用、频率、native_timing及各自source/cost_scope，伤害actor不替换费用或时长的来源主体。
 
 config_controls读value/default/value_basis、Input/Placeholder与runtime/applied，选当前options[].val并核visibility/apply_source及resolved值。null非false，删覆盖可能恢复默认，一个控件未生效不代表全部关闭。
 

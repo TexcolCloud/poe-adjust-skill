@@ -2148,10 +2148,15 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 'config_values':{'new-scene':'boss'},'config_placeholders':{'new-mode':3},
                 'config_loader_source':{'source':'engine/Classes/CurrentLoader.lua','line':21,'count':4,'total_lines':4},
                 'main_group':1,'config_labels':{},'gems':[
-                    {'group':1,'index':1,'id':'NewSkill','name':'New native skill','display_name':None,'slot':'Current Slot','group_enabled':True,'slot_enabled':False,'enabled':True},
+                    {'group':1,'index':1,'id':'NewSkill','name':'New native skill','display_name':None,'slot':'Current Slot','group_enabled':True,'slot_enabled':False,'enabled':True,
+                     'granted_effects':[{'id':'NewSkill','global_enabled':False,'active_skill_present':False},
+                                        {'id':'OtherEffect','global_enabled':True,'active_skill_present':True}]},
                     {'group':1,'index':2,'id':'NewSupport','name':'New native support','display_name':'当次辅助（New native support）','slot':'Current Slot','group_enabled':True,'slot_enabled':False,'enabled':False,'support':True,'support_applied':False}],
                 'active_skills':[{'group':1,'index':1,'id':'NewSkill','name':'New native skill','skill_ref':'1:1:NewSkill:mirage:gem:1','actor':'mirage','is_main':True,
-                    'usage_rate':{'value':3.75,'metric':'CurrentRate','basis':'native_action_rate','scope':'Current native rate only'},'costs':{'LifeCost':2.5,'LifePerSecondCost':9.375,'ManaCost':0},'cost_scope':'Current actor costs only'}],
+                    'usage_rate':{'value':3.75,'metric':'CurrentRate','basis':'native_action_rate','scope':'Current native rate only'},'costs':{'LifeCost':2.5,'LifePerSecondCost':9.375,'ManaCost':0},'cost_scope':'Current actor costs only'},
+                    {'group':1,'index':1,'id':'OtherEffect','name':'Other native effect','skill_ref':'1:1:OtherEffect:minion:gem:1','actor':'minion','is_main':False,
+                     'usage_rate':{'value':None,'metric':None},'costs':{'ManaCost':4,'ManaPerSecondCost':None},'cost_scope':'Native player output only',
+                     'native_timing':{'cooldown_seconds':2,'duration_seconds':None,'source':'Native player output only'}}],
                 'config_controls':{'new-mode':{'id':'new-mode','type':'list','value':None,'default':1,'shown':False,'if_cond':'FutureCondition',
                     'input_origin':{'status':'input_xml_observed','input_present':False,'placeholder_present':True,'placeholder_value':1},
                     'runtime_placeholder_present':True,'runtime_placeholder_value':3,
@@ -2197,9 +2202,18 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(main['values']['usage_rate'],native['active_skills'][0]['usage_rate'])
             self.assertEqual(main['values']['costs'],native['active_skills'][0]['costs'])
             self.assertIn('3.75',main['text']);self.assertIn('mirage',main['text'])
+            secondary=next(row for row in saved['publication']['statements'] if row['kind']=='native_skill_observation')
+            self.assertEqual(secondary['reference'],'native:current#/active_skills/1')
+            self.assertEqual(secondary['skill_ref'],native['active_skills'][1]['skill_ref'])
+            self.assertEqual(secondary['values']['costs'],{'ManaCost':4,'ManaPerSecondCost':None})
+            self.assertEqual(secondary['actor'],'minion')
+            self.assertEqual(group['values']['gems'][0]['granted_effects'],native['gems'][0]['granted_effects'])
             page=report.read_text(encoding='utf-8')
             self.assertIn('New native skill',page);self.assertNotIn('None',page)
             self.assertIn(html.escape(group['text']),page)
+            self.assertIn(html.escape(secondary['text']),page)
+            self.assertIn('Native player output only',page)
+            self.assertIn('OtherEffect',page)
             self.assertIn('未知',page);self.assertIn('Current default',page)
             self.assertIn('可见性与关联条件',page);self.assertIn('FutureCondition',page)
             self.assertIn('XML 输入来源',page);self.assertIn('input_present',page)
@@ -5693,6 +5707,18 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
 
 
 class RealEngineTests(unittest.TestCase):
+    def test_catalog_preserves_current_gem_effect_identity_without_character_switches(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        multi=[gem for gem in current['gems'] if len(gem.get('granted_effects',[]))>1]
+        self.assertTrue(multi,'Native sample must exercise the multi-effect query contract')
+        result=engine.calculate(self.pob,queries=[{'kind':'gems','query':'id:'+gem['id'],'limit':10} for gem in multi])
+        for gem,query in zip(multi,result['catalog_batch']):
+            entry=next(row for row in query['entries'] if row['skill_id']==gem['id'])
+            self.assertEqual(entry['level_requirements_effect_id'],entry['skill_id'])
+            self.assertEqual([row['id'] for row in entry['granted_effects']],[row['id'] for row in gem['granted_effects']])
+            self.assertTrue(all('support' in row and 'skill_types' in row for row in entry['granted_effects']))
+            self.assertTrue(all('global_enabled' not in row and 'active_skill_present' not in row for row in entry['granted_effects']))
+
     def test_native_preparation_projection_and_saved_view_share_current_payment_evidence(self):
         before=engine.calculate(self.pob,bx.serialise(self.original))
         plan={'mode':'rebuild','summary':'Two native standalone actions',
