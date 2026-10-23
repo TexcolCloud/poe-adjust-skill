@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.52"
+VERSION = "2.8.53"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -86,7 +86,9 @@ def input_contract(kind):
                                       "assumptions":"非空当前 claim_id 数组；正文在 claims，程序从引用绑定本阶段，无需重复 snapshot 标签。",
                                       "metrics":"所选指标取本阶段实际 native stats 字段；未观测项保留缺口并返回可用字段。"}}
     else:
-        nested['task_kind']={'values':['build','build_plan','read_only_review'],'default':'build'}
+        nested['task_kind']={'values':['build','build_plan','read_only_review'],'default':'build',
+            'purposes':{'build':'设计并核验当前可用角色。','build_plan':'设计新的配装或操作安排，允许明确的未来条件。','read_only_review':'审查已有对象，保留原角色；实验另用 probe。'},
+            'selection_basis':'按用户请求的交付选择；没有更换物品不等于只读，新的操作安排仍是设计。'}
         nested['delivery_scope']={'values':['execution_plan','snapshot_comparison'],'default':'execution_plan','snapshot_comparison':'仅 build_plan，真实用户比较要求的 /delivery_scope 依据；以 delivery_scope claim 复核用户依据和当前 materialization。未改非主组的整套操作及相同支付错误可按当前 condition_reviews 复核范围，原角色问题仍保留；不会自动判为无关。'}
     return {"kind":kind,"top_level_fields":sorted(fields[kind]),
             "field_owners":{key:[owner for owner,allowed in fields.items() if key in allowed] for key in sorted(set().union(*fields.values()))},
@@ -690,7 +692,8 @@ def validate_intent(value, original, native=None, folder=None):
         bx.require(value.get("league") is None or isinstance(value["league"],str) and value["league"].strip(),"未知 league 保留 null。",location="/league")
         bx.require(value.get("league") is not None or not value.get("version_source") and not value.get("game_version"),"未知赛季不能声明目标游戏版本或公告；本机数据范围另由原生事实说明。",location="/game_version")
     if task_kind=="read_only_review":
-        bx.require(not value.get("scenario") and value.get("baseline_main_group") is None,"只读评审不能写入共同场景或改选主技能组；条件实验使用 probe。",location="/scenario")
+        bx.require(not value.get("scenario") and value.get("baseline_main_group") is None,"只读评审不能写入共同场景或改选主技能组；条件实验使用 probe。",location="/scenario",
+                   details={'intent_fields':{'/task_kind':input_contract('intent')['nested_fields']['task_kind']}})
     if value.get("game_version"):
         engine.validate_game_version(value["game_version"], value["league"])
     if value.get("version_checked_at"): engine.validate_checked_at(value["version_checked_at"])
@@ -1737,10 +1740,11 @@ def record_command_failure(args, exc):
 def require_read_only_plan(intent, plan):
     """A review can analyse experiments, but its assessed role cannot be edited."""
     if intent.get("task_kind")!="read_only_review": return
+    details={'intent_fields':{'/task_kind':input_contract('intent')['nested_fields']['task_kind']}}
     for key in ("operations","template_xml","scenario","measurement"):
-        bx.require(not plan.get(key),"只读评审不能改动角色；实验使用 probe，评审保留原对象。",code="read_only_mutation",location="/"+key,actual=plan.get(key))
+        bx.require(not plan.get(key),"只读评审不能改动角色；实验使用 probe，评审保留原对象。",code="read_only_mutation",location="/"+key,actual=plan.get(key),details=details)
     bx.require(plan.get("mode")=="refine","只读评审使用 refine 空操作计划。",location="/mode")
-    bx.require(not intent.get("scenario") and intent.get("baseline_main_group") is None,"只读评审不能写入共同条件或改选主技能。",code="read_only_mutation",location="/scenario")
+    bx.require(not intent.get("scenario") and intent.get("baseline_main_group") is None,"只读评审不能写入共同条件或改选主技能。",code="read_only_mutation",location="/scenario",details=details)
 
 
 def read_only_completion(original, document, materialization, coverage, claims, review):

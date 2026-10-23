@@ -3656,6 +3656,34 @@ class TimelineTests(unittest.TestCase):
         missing=next(row for row in audit['diagnostics'] if row['code']=='timeline_skill_unscheduled')
         self.assertEqual(missing['location'],'/timeline/preparation/events')
         self.assertEqual(missing['skill_ref'],'future-startup')
+        repair=missing['repair_options']['unused']['usage']
+        resources.input_shape({'timeline':timeline,'usage':[repair]})
+        self.assertEqual(repair['phase'],'preparation')
+        self.assertEqual(resources.timeline_assessment(result,timeline,[repair])['preparation']['status'],'unknown')
+
+    def test_active_automatic_payments_cover_preparation_and_keep_their_phase(self):
+        result,timeline=self.automatic_fixture()
+        timeline['preparation']={'duration_seconds':4,'events':[{'skill_ref':'main','at':0}]}
+        missing=resources.timeline_assessment(result,timeline)
+        setup=missing['preparation']
+        self.assertEqual(setup['status'],'unknown')
+        self.assertIn('automatic:future-auto',setup['resources'][0]['gaps'])
+        self.assertIsNone(missing['resources'][0]['initial'])
+        self.assertEqual(missing['resources'][1]['status'],'supported')
+        self.assertTrue(any(row['code']=='timeline_automatic_schedule_incomplete'
+                            and row['location']=='/timeline/preparation/events' for row in missing['diagnostics']))
+        timeline['preparation']['events'] += [{'skill_ref':'future-auto','at':0},{'skill_ref':'future-auto','at':2}]
+        measured=resources.timeline_assessment(result,timeline)
+        self.assertEqual(measured['status'],'supported')
+        self.assertEqual(measured['preparation']['resources'][0]['scheduled_payment_total'],40)
+        self.assertEqual(measured['resources'][0]['initial'],measured['preparation']['resources'][0]['final'])
+        for event in timeline['events']:
+            if event['skill_ref']=='future-auto':event['at']+=.5
+        shifted=resources.timeline_assessment(result,timeline)
+        self.assertEqual(shifted['preparation']['status'],'supported')
+        self.assertEqual(shifted['resources'][0]['status'],'unknown')
+        self.assertIsNone(shifted['resources'][0]['scheduled_payment_total'])
+        self.assertEqual(shifted['automatic_schedules']['future-auto']['previous_window']['gap_seconds'],2.5)
 
     def automatic_fixture(self):
         result,timeline=self.fixture();timeline['repeat']=False
@@ -3664,6 +3692,27 @@ class TimelineTests(unittest.TestCase):
                                         'usage_rate':{'value':.5,'metric':'SkillTriggerRate','basis':'native_action_rate'}})
         timeline['events'] += [{'skill_ref':'future-auto','at':0},{'skill_ref':'future-auto','at':2}]
         return result,timeline
+
+    def test_fixed_automatic_payments_keep_balances_when_a_window_has_no_payment_due(self):
+        result,_=self.automatic_fixture()
+        result['active_skills']=result['active_skills'][-1:]
+        result['stats'].update(Mana=100,ManaRegenRecovery=0)
+        events=[{'skill_ref':'future-auto','at':at} for at in (1,3,5,7)]
+        flat=resources.timeline_assessment(result,{'duration_seconds':8,'repeat':False,'events':events})
+        self.assertEqual(flat['status'],'supported')
+        for boundary in (.5,1,1.5,3,7.5):
+            timeline={'duration_seconds':8-boundary,'repeat':False,
+                      'preparation':{'duration_seconds':boundary,'events':[e for e in events if e['at']<boundary]},
+                      'events':[{**e,'at':e['at']-boundary} for e in events if e['at']>=boundary]}
+            with self.subTest(boundary=boundary):
+                split=resources.timeline_assessment(result,timeline)
+                self.assertEqual(split['status'],'supported',split['diagnostics'])
+                setup,combat=split['preparation']['resources'][0],split['resources'][0]
+                self.assertEqual(combat['initial'],setup['final'])
+                self.assertEqual(combat['final'],flat['resources'][0]['final'])
+                self.assertEqual(setup['scheduled_payment_total']+combat['scheduled_payment_total'],40)
+        timeline['repeat']=True
+        self.assertEqual(resources.timeline_assessment(result,timeline)['status'],'unknown')
 
     def test_declared_native_trigger_payments_share_clock_without_certifying_execution(self):
         result,timeline=self.automatic_fixture();audit=resources.assess(result,{}, {'timeline':timeline})
@@ -3833,6 +3882,10 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(diagnostic["resource_id"],"Mana")
         self.assertEqual(diagnostic["location"],"/timeline/events")
         self.assertEqual(diagnostic["action"],"edit_input")
+        repair=diagnostic['repair_options']['unused']['usage']
+        resources.input_shape({'timeline':timeline,'usage':[repair]})
+        self.assertEqual(repair['phase'],'combat')
+        self.assertEqual(resources.timeline_assessment(result,timeline,[repair])['status'],'unknown')
         self.assertNotIn("capability:timeline:Mana",audit["pending"])
         del result["active_skills"][0]["costs"]["ManaCost"]
         self.assertIn("capability:timeline:Mana",resources.timeline_assessment(result,timeline)["pending"])
@@ -4816,6 +4869,23 @@ class DeliveryIntegrityTests(unittest.TestCase):
 
 
 class TaskCompletionTests(unittest.TestCase):
+    def test_read_only_scope_conflicts_offer_current_intent_choices_without_switching(self):
+        contract=poe.input_contract('intent')['nested_fields']['task_kind']
+        for field in ('operations','template_xml','scenario','measurement'):
+            intent={'task_kind':'read_only_review'}
+            plan={'mode':'refine',field:{'requested':'value'}}
+            before=copy.deepcopy((intent,plan))
+            with self.subTest(field=field):
+                with self.assertRaises(bx.ContractError) as caught:poe.require_read_only_plan(intent,plan)
+                diagnostic=poe.failure_record(caught.exception)['diagnostic']
+                self.assertEqual(diagnostic['location'],'/'+field)
+                self.assertEqual(diagnostic['intent_fields']['/task_kind'],contract)
+                self.assertIn('build_plan',contract['purposes'])
+                self.assertEqual((intent,plan),before)
+        intent={'schema_version':2,'confirmed':True,'task_kind':'read_only_review','goal':'Review existing arrangement','scenario':{'requested':'value'}}
+        with self.assertRaises(bx.ContractError) as caught:poe.validate_intent(intent,bx.parse(SAMPLE))
+        self.assertEqual(caught.exception.diagnostic['intent_fields']['/task_kind'],contract)
+
     def test_reviewed_configuration_and_goal_have_consistent_pending_and_diagnostics(self):
         claim={'claim_id':'current','subjects':['configuration:candidate','objective:requested'],
                'evidence_refs':['native:candidate#/config_values'],'missing_evidence':[],

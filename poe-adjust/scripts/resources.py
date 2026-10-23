@@ -150,15 +150,15 @@ def timeline_assessment(result, timeline, usage=None):
     preparation=None;initial=None
     if 'preparation' in timeline:
         declared=timeline['preparation']
-        requested=prepared|{event['skill_ref'] for event in declared['events']}
+        requested=prepared|{event['skill_ref'] for event in declared['events']}|{ref for ref,skill in skills.items() if skill.get('trigger')}
         for ref in requested:
             bx.require(ref in skills,'准备动作使用本次原生 skill_ref。',location='/timeline/preparation/events',expected=list(skills),actual=ref)
-        preparation=_timeline_window(result,{**declared,'repeat':False},{ref:skills[ref] for ref in requested},location='/timeline/preparation')
+        preparation=_timeline_window(result,{**declared,'repeat':False},{ref:skills[ref] for ref in requested},location='/timeline/preparation',next_window=timeline)
         initial={row['resource_id']:row.get('final') if row['status']=='supported' else None for row in preparation['resources']}
-        preparation['scope']='仅声明的准备动作及当前固定净回复；未安排的自动效果、其他损失、条件变化和准备效果在战斗中的覆盖未测得。余额按实际终点带入战斗，不自动回满。'
+        preparation['scope']='声明的准备动作、当次启用自动技能及当前固定净回复；自动支付须有完整安排，其他损失、条件变化和准备效果在战斗中的覆盖未测得。余额按实际终点带入战斗，不自动回满。'
     combat_refs={event['skill_ref'] for event in timeline['events']}
     combat={ref:skill for ref,skill in skills.items() if ref not in prepared or skill.get('trigger') or ref in combat_refs}
-    outcome=_timeline_window(result,timeline,combat,initial=initial)
+    outcome=_timeline_window(result,timeline,combat,initial=initial,prior_window=preparation)
     if preparation:
         for ref,scheduled in outcome['skill_schedules'].items():
             previous=preparation['skill_schedules'].get(ref,{})
@@ -179,7 +179,7 @@ def timeline_assessment(result, timeline, usage=None):
     return outcome
 
 
-def _timeline_window(result, timeline, skills, *, initial=None, location='/timeline'):
+def _timeline_window(result, timeline, skills, *, initial=None, location='/timeline', prior_window=None, next_window=None):
     """Replay discrete payments on one clock using constant native net regen.
 
     This bounded projection excludes leech, recharge and flask refills. Channels
@@ -220,9 +220,28 @@ def _timeline_window(result, timeline, skills, *, initial=None, location='/timel
         if complete:
             complete=all(math.isclose(after-before,interval,rel_tol=1e-7,abs_tol=1e-8) for before,after in zip(times,times[1:]))
         if complete and repeating: complete=math.isclose(duration-times[-1]+times[0],interval,rel_tol=1e-7,abs_tol=1e-8)
+        following=None
+        if not times and next_window is not None:
+            first=min((event['at'] for event in next_window['events'] if event['skill_ref']==ref),default=None)
+            following={'first_payment_at':first,'first_payment_from_window_start':duration+first if first is not None else None}
+            complete=interval is not None and first is not None and duration+first<interval
+        previous_schedule=(prior_window or {}).get('automatic_schedules',{}).get(ref)
+        transition=None
+        if previous_schedule is not None:
+            last=previous_schedule['last_payment_at']
+            gap=prior_window['duration_seconds']+times[0]-last if times and last is not None else None
+            transition={'duration_seconds':prior_window['duration_seconds'],'last_payment_at':last,'gap_seconds':gap,'status':previous_schedule['status']}
+            if times:
+                continuous=(math.isclose(gap,interval,rel_tol=1e-7,abs_tol=1e-8) if gap is not None and interval is not None else
+                            interval is not None and last is None and prior_window['duration_seconds']+times[0]<interval)
+                complete=complete and previous_schedule['status']=='supported' and continuous
+            else:
+                complete=not repeating and interval is not None and last is not None and previous_schedule['status']=='supported' and prior_window['duration_seconds']+duration-last<=interval+1e-8
         automatic_schedules[ref]={'status':'supported' if complete else 'unknown','native_rate':rate,'interval_seconds':interval,
-                                  'event_count':len(times),'first_payment_at':times[0] if times else None,
-                                  'scope':'Declared fixed native SkillTriggerRate payment pattern and phase only; startup, targets, trigger realization and changing rates are unmeasured.'}
+                                  'event_count':len(times),'first_payment_at':times[0] if times else None,'last_payment_at':times[-1] if times else None,
+                                  'scope':'Declared fixed native SkillTriggerRate payment pattern and continuous phase across declared windows only; startup, targets, trigger realization and changing rates are unmeasured.'}
+        if transition is not None: automatic_schedules[ref]['previous_window']=transition
+        if following is not None: automatic_schedules[ref]['following_window']=following
     eb=result.get("resource_rules",{}).get("energy_shield_protects_mana")
     records=[]
     for resource,cost_key in (("Mana","Mana"),("Life","Life"),("EnergyShield","ES")):
@@ -254,9 +273,10 @@ def _timeline_window(result, timeline, skills, *, initial=None, location='/timel
                                     "skill":{key:skill[key] for key in ("id","name","display_name","group","index","actor","costs","usage_rate","trigger") if key in skill},
                                     "affected_window":location,"action":"edit_input",
                                     "repair_options":{"schedule":{"location":location+"/events","event":{"at":None,"skill_ref":ref},"requires":"模型选择实际时点，并核对原生频率及其他动作条件"},
-                                                      "unused":{"usage":{"skill_ref":ref,"phase":"unused"},"requires":"模型确认此阶段确实不使用该技能，并撤回依赖其效果的结论"},
+                                                      "unused":{"usage":{"skill_ref":ref,"phase":"preparation" if location=='/timeline/preparation' else "combat"},
+                                                                "required_subject":"skill:"+ref,"requires":"补本次 claim_id，复核此阶段不用及撤回效果依赖；此项只关联判断，不排除启用技能的费用，无事件仍保留未测。要求完整支付时须补动作或修改源方案重算。"},
                                                       "change_character":{"requires":"按当前原生技能位置停用或调整，重新物化及计算"}},
-                                    "message":"此阶段启用的有费用技能未安排到共同时间线；由模型补实际动作、停用或说明阶段不用后重算。准备不替代战斗中的效果覆盖。"})
+                                    "message":"此阶段启用的有费用技能未安排到共同时间线；模型补实际动作或修改源方案后重算，不用的范围说明关联当前判断，未安排仍保留未测。准备不替代战斗中的效果覆盖。"})
         known=pool is not None and pool>=0 and starting is not None and starting>=0 and regen is not None and not gaps
         record={"resource_id":resource,"duration_seconds":duration,"initial":starting,"capacity":pool,"net_regeneration_per_second":regen,
                 "included_recovery":"native_net_regen_only","excluded_recovery":capabilities()["timeline"]["excluded_recovery"],"status":"unknown","trace":[],"initial_pool_restored":None,"gaps":gaps}
