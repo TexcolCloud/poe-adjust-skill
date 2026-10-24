@@ -29,7 +29,7 @@ description_cn: 明确目标，用本机 PoECharm 实算配装或开荒路线，
 
 1. **锁定交付。** 保存原话、目标、场景和保留许可；预算未知留 null。自选指标用于取舍，按原目标判断必要性，在已有授权内自行完成普通可用方案。作者复核先收原目标、原件和真实最后交付。
 2. **落实方案。** 用具体装备、天赋、技能和操作承担目标，再计算。整套设计说明协同与保留理由；必要规格、支付和退路落实后才算设计完成。场景落到实际开关和窗口，取得/资源见[证据](references/evidence.md)。
-3. **验证判断。** 查当前对象、规则和反例，必要时 `probe`；零差分先核实际生效对象。用 `view` 的 native_references/evidence_template 引用实际观测，原话引用用于目标和持有声明。对象稳定后集中写判断，沿 `next_actions` 的源字段和 edit_arguments 保存、重算；失效判断核正文后用 review_claims 登记。
+3. **验证判断。** 把机制解释当作待证假设：对齐实际主体、效果和触发/持续条件，查当前规则，寻找能推翻原句的状态；必要时 `probe`，零差分先核生效对象。按实际支持范围改写结论，用 `view` 的 native_references/evidence_template 引用观测。对象稳定后沿 `next_actions` 的源字段和 edit_arguments 保存、重算；失效判断重审原句后用 review_claims 登记。
 4. **正式交付。** 对照原话、最终实物和操作，按[最终复核](references/evidence.md#最终复核与交付)提交判断并重算。配装冷算 `export`，路线重跑 `route`；只交 `scoped_result`、errors/pending为空、`file_exported:true` 的 `files`。未满足时继续修源；确实无法完成就说明缺口，保留内部失败文件。
 
 HTML 交程序返回的 report/files；解释写入当前 claims/review，由同一 publication 呈现。短答沿已发布结论、限制和本机名称，给绝对路径、取舍、用法和退路。未来取得/训练/执行可留条件；自审或导出不证明游戏效果。
