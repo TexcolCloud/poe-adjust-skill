@@ -15,13 +15,13 @@ catalog种类取当前--help。独立查询可--batch提交queries的kind/query/
 
 ## 技能、配置与明细
 
-保存level/quality与effective_specifications分开。catalog.gems的granted_effects列整颗宝石授予的效果，level_requirements_effect_id标明逐级数值对应哪个效果；本角色开关和实际技能取inspect.gems.granted_effects。逐级base_resources为原生编码值，base_resource_units.cost给本机ResourceString/Divisor；native_MORE_percent为百分比修正，native_raw为单位未知，均非完整角色费用。active_skills按skill_ref绑定费用、频率、native_timing及各自source/cost_scope，伤害actor不替换费用或时长的来源主体。
+gems列实体宝石的保存level/quality与effective_specifications；完整已应用辅助取active_skills[].supports，未对应保存宝石的规格留未知。catalog.gems.granted_effects列整颗宝石效果，level_requirements_effect_id指定逐级对象；本角色开关见gems.granted_effects。base_resources为原生编码，base_resource_units.cost给ResourceString/Divisor；native_MORE_percent为百分比、native_raw单位未知，均非完整角色费用。active_skills以skill_ref绑定费用、频率、native_timing及source/cost_scope，伤害actor不替换费用或时长来源。
 
 从config_controls的原生标签、关联条件与apply_source选控制，用options[].val，按value/default/value_basis及Input/Placeholder、runtime/applied核读数。probe的requested_config_controls保留所选控件两侧含义与观测。null留未知，删覆盖可恢复默认；效果适用由模型结合规则与场景判断。
 
 `inspect --metrics`自动计算，breakdowns给value/detail/context及MAIN对照。value_status与detail_status分别说明数值、明细是否可用；旧status保留明细状态，缺明细不抹掉已观测值或零值。available_metrics从本次CALCS输出及明细键读取，可包含MAIN没有的合法字段；不从名字猜对应关系。解释因果先核输入、中间因子、上限、输出和已计因子，沿来源读适用原文；需要时用probe检验单一变量。主体、场景或上下文不同就分开，缺字段留未知。有限实验不证明排他规则。
 
-flask_base是基础，flask_local是单件处理后参数，二者不重复叠加。角色修正、当前充能和实际覆盖另核；开启快照不证明持续。合法性据当前适用规则，计算接受与模型旧常识都不单独认证。
+equipped[].effective_in_calculation与effect_state.equipment_inclusion记录本次原生对象纳入，输入开关另列；纳入不证明每条词缀适用或持续覆盖。flask_base为基础，flask_local为单件处理后参数，不重复叠加；角色修正、当前充能另核。合法性据当前规则，计算接受与旧常识不单独认证。
 
 ## 读原文和引用
 

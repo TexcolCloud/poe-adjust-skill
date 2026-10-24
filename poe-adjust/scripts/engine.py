@@ -361,6 +361,8 @@ def effect_state(result):
                                **{key:gem.get(key) for key in ("enabled","group_enabled","slot_enabled")}}
                               for gem in result.get("gems",[]) for effect in gem.get("granted_effects",[]) if effect.get("has_global_effect") is True],
             "flasks":{item["slot"]:item.get("active") for item in result.get("equipped",[]) if item.get("slot","").startswith("Flask ")},
+            "equipment_inclusion":{item["slot"]:item.get("effective_in_calculation") if type(item.get("effective_in_calculation")) is bool else None for item in result.get("equipped",[]) if isinstance(item.get("slot"),str) and item["slot"]},
+            "equipment_inclusion_source":"Known native MAIN slots from equipped[].effective_in_calculation; missing slot identity stays in equipped. Object inclusion does not prove each modifier applies or effects persist.",
             "guard_active":result.get("stats",{}).get("GuardSkillActive"),
             "scope":"Current native switches and skill instances only; enabled flags, control visibility and equipment presence do not measure effect coverage."}
 
@@ -631,6 +633,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         entries = [(role,entry) for key,role in (("gems","skills"),("equipped","items"),("classes","display"),
                    ("secondary_ascendancies","display"),("active_skills","skills"),("damage_sources","skills"),("granted_passives","nodes"))
                    for entry in calculation.get(key,[])]
+        entries += [("skills",support) for skill in calculation.get("active_skills",[]) for support in skill.get("supports") or []]
         entries += [(catalog_roles.get(catalog,"display"),entry) for entry in calculation.get("catalog",[])]
         for query_result in calculation.get("catalog_batch", []):
             entries += [(catalog_roles.get(query_result['kind'],"display"),entry) for entry in query_result["entries"]]

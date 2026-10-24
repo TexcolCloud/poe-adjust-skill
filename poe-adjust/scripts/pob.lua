@@ -284,6 +284,14 @@ local function supportLevelLimit(effect)
     end
   end
 end
+local function gemLocation(instance)
+  if not instance then return nil, nil end
+  for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
+    for gemIndex, gem in ipairs(group.gemList) do
+      if gem == instance then return groupIndex, gemIndex end
+    end
+  end
+end
 for _, skill in ipairs(mainEnv.player.activeSkillList) do
   local cache = GlobalCache.cachedData and GlobalCache.cachedData[mainEnv.mode]
   local cached = cache and type(cacheSkillUUID) == "function" and cache[cacheSkillUUID(skill, mainEnv)]
@@ -298,8 +306,20 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   for index, group in ipairs(build.skillsTab.socketGroupList) do if skill.socketGroup == group then groupIndex = index; break end end
   local limit = supportLevelLimit(computed.triggeredBy)
   local instance = skill.activeEffect.srcInstance
-  local gemIndex
-  for index, gem in ipairs(skill.socketGroup and skill.socketGroup.gemList or {}) do if gem == instance then gemIndex = index; break end end
+  local _, gemIndex = gemLocation(instance)
+  local supports = type(computed.effectList) == "table" and setmetatable({}, {__jsontype = "array"}) or json.null
+  for _, effect in ipairs(type(computed.effectList) == "table" and computed.effectList or {}) do
+    if effect.grantedEffect.support == true then
+      local sourceGroup, sourceIndex = gemLocation(effect.srcInstance)
+      table.insert(supports, {id = effect.grantedEffect.id, name = effect.grantedEffect.name,
+        description = effect.grantedEffect.description or json.null,
+        level = sourceGroup and effect.srcInstance.level or json.null,
+        quality = sourceGroup and effect.srcInstance.quality or json.null,
+        effective_level = type(effect.level) == "number" and effect.level or json.null,
+        effective_quality = type(effect.quality) == "number" and effect.quality or json.null,
+        source_group = sourceGroup or json.null, source_index = sourceIndex or json.null})
+    end
+  end
   local actor = computed.skillData.triggeredByGeneralsCry and "mirage" or computed.skillFlags.minion and "minion" or "player"
   local nativeOutput = cached and cached.Env.player.output or {}
   local rateKey = computed.skillFlags.trap and "TrapThrowingSpeed" or computed.skillFlags.mine and "MineLayingSpeed" or computed.skillFlags.totem and "TotemPlacementSpeed" or "Speed"
@@ -318,6 +338,8 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     effective_level = type(skill.activeEffect.level) == "number" and skill.activeEffect.level or json.null,
     effective_quality = type(skill.activeEffect.quality) == "number" and skill.activeEffect.quality or json.null,
     effective_specification_source = "mainEnv.player.activeSkillList.activeEffect",
+    supports = supports,
+    supports_source = type(computed.effectList) == "table" and (computed == skill and "mainEnv.player.activeSkillList.effectList" or "cached.Env.player.mainSkill.effectList") or json.null,
     skill_types = skillTypes(skill.activeEffect.grantedEffect),
     base_cast_time_seconds = skill.activeEffect.grantedEffect.castTime or json.null,
     group = groupIndex, index = gemIndex, slot = skill.socketGroup and skill.socketGroup.slot,

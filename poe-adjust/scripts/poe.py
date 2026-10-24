@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.58"
+VERSION = "2.8.59"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1257,8 +1257,9 @@ def effect_statement(calculation, name, *, compact=False):
     counts=Counter('unknown' if value is None else 'on' if value else 'off' for value in state['config_switches'].values())
     controls=(f"开启 {counts['on']}、关闭 {counts['off']}、未知 {counts['unknown']}；具体值见 config_controls" if compact else "、".join(sorted(switches)) or "见 config_controls")
     effect_text=f"{len(effects)} 项，明细见 effect_state.global_effects" if compact else "、".join(effects) or "无原生条目"
-    text=(name+" · 当前效果开关：护卫="+json.dumps(state['guard_active'])+"；药剂="+json.dumps(state['flasks'],ensure_ascii=False)+
-          "；全局效果="+effect_text+"；当前 check 控件集合="+controls+
+    text=(name+" · 当前原生对象纳入="+json.dumps(state['equipment_inclusion'],ensure_ascii=False)+
+          "；药剂槽输入开关="+json.dumps(state['flasks'],ensure_ascii=False)+"；护卫="+json.dumps(state['guard_active'])+
+          "；技能全局开关/存在="+effect_text+"；当前 check 控件集合="+controls+
           f"。另有 {len(state['config_values_not_in_controls'])} 项输入仅见 config_values_not_in_controls；省略不等于关闭。null 未知；输入、启用或可见不证明效果适用或持续。")
     return {"kind":"effect_state","subject":name,"status":"observed" if state['config_controls_available'] else "unknown","values":state,"text":text}
 
@@ -1272,13 +1273,14 @@ def flask_statements(calculation, name):
     for item in calculation.get('equipped',[]):
         local=item.get('flask_local')
         if not isinstance(local,dict):continue
-        values={key:item.get(key) for key in ('slot','id','name','name_cn','display_name','name_source','title','title_cn','title_name_source','base','base_cn','display_base','base_name_source','flask_base','flask_local','flask_local_source','flask_scope')}
+        values={key:item.get(key) for key in ('slot','id','name','name_cn','display_name','name_source','title','title_cn','title_name_source','base','base_cn','display_base','base_name_source','active','effective_in_calculation','activity_source','flask_base','flask_local','flask_local_source','flask_scope')}
         base=item.get('flask_base',{})
         base_labels={'life':('生命总量',''),'mana':('魔力总量',''),'duration':('持续','秒'),'chargesMax':('最大充能',''),'chargesUsed':('单次充能','')}
         base_parts=[f'基底{label} {base[key]:g}'+unit for key,(label,unit) in base_labels.items() if isinstance(base,dict) and bx.finite_number(base.get(key))]
         parts=[label+f' {local[key]:g}'+unit for key,(label,unit) in labels.items() if bx.finite_number(local.get(key))]
         text=(f"{name} · {item.get('slot')} {item.get('display_name') or item.get('name') or item.get('id')} [ID {item.get('id')}]："
               +('；'.join(base_parts)+'；' if base_parts else '')+'单件处理后：'+'；'.join(parts)
+              +'；本次原生对象纳入='+json.dumps(item.get('effective_in_calculation'))
               +'。已由原生处理本地词缀与品质；角色修正、当前充能及覆盖另核。')
         rows.append({'kind':'native_flask_parameters','subject':name,'status':'observed','values':values,'text':text})
     return rows
@@ -1293,17 +1295,24 @@ def skill_statements(calculation, name, *, compact=False):
         rate=skill.get('usage_rate') or {}
         rate_text=f"{rate['value']:.10g} 次/秒" if bx.finite_number(rate.get('value')) else '未测得'
         label=skill.get('display_name') or skill.get('name_cn') or skill.get('name') or skill.get('id') or '未知技能'
-        values={key:skill.get(key) for key in ('id','group','index','slot','usage_rate','costs','cost_scope','disabled','trigger','no_cost')}
+        supports=skill.get('supports')
+        support_text='未观测' if supports is None else ('、'.join(str(row.get('display_name') or row.get('name') or row.get('id'))+
+            ' ['+str(row.get('id'))+'] 保存等级/品质 '+('/'.join(str(row[key]) if row.get(key) is not None else '未知' for key in ('level','quality')))+
+            '；有效等级/品质 '+('/'.join(str(row[key]) if row.get(key) is not None else '未知' for key in ('effective_level','effective_quality')))
+            for row in supports) or '无已计入辅助')
+        values={key:skill.get(key) for key in ('id','group','index','slot','usage_rate','costs','cost_scope','disabled','trigger','no_cost','benefit_excluded','supports','supports_source')}
         rows.append({'kind':'damage_subject' if skill.get('is_main') else 'native_skill_observation','subject':name,
             'reference':f'native:{name}#/active_skills/{index}','skill_ref':skill.get('skill_ref'),'actor':skill.get('actor'),'status':'observed','values':values,
             'text':name+(' · 当前主技能 ' if skill.get('is_main') else ' · 当前技能 ')+str(label)+' ['+str(skill.get('skill_ref') or '引用未测得')+
-                   ']；伤害主体 '+str(skill.get('actor') or '未知')+'；停用='+json.dumps(skill.get('disabled'))+'；触发='+str(skill.get('trigger') or '未提供')+'；原生频率 '+rate_text+
+                   ']'+('；条件审计观察，原快照未计此技能收益' if skill.get('benefit_excluded') is True else '')+
+                   '；伤害主体 '+str(skill.get('actor') or '未知')+'；停用='+json.dumps(skill.get('disabled'))+'；触发='+str(skill.get('trigger') or '未提供')+'；原生频率 '+rate_text+
                    '（'+str(rate.get('metric') or '来源未测得')+'）。费用原值 '+json.dumps(skill.get('costs',{}),ensure_ascii=False,sort_keys=True)+
-                   '；费用来源 '+str(skill.get('cost_scope') or '未测得')+'。'+str(rate.get('scope') or '频率适用范围未测得。')+
+                   '；费用来源 '+str(skill.get('cost_scope') or '未测得')+'；所列原生计算的已应用辅助 '+support_text+
+                   '（来源 '+str(skill.get('supports_source') or '未测得')+'）。'+str(rate.get('scope') or '频率适用范围未测得。')+
                    ' 伤害、吸取与回复按主体和资源分别读取；频率不认证动作互斥、支付可行或效果持续。'})
     if compact:
         rows.append({'kind':'native_skill_index','subject':name,'status':'observed',
-            'text':f"{name} · 已保存 {len(calculation.get('active_skills',[]))} 个原生技能及 {len(calculation.get('gems',[]))} 个宝石条目；逐技能费用、频率、主体及时长来源见 /calculation/active_skills，宝石规格与授予效果见 /calculation/gems。使用 --report 时，publication 与正式事实页另列完整技能观察。"})
+            'text':f"{name} · 已保存 {len(calculation.get('active_skills',[]))} 个原生技能及 {len(calculation.get('gems',[]))} 个宝石条目；逐技能费用、频率、主体、时长及完整原生辅助链 supports 见 /calculation/active_skills，实体宝石规格与授予效果见 /calculation/gems。使用 --report 时，publication 与正式事实页另列完整技能观察。"})
         return rows
     groups={}
     fields=('group','index','id','name','name_cn','display_name','name_source','slot','level','quality','effective_level','effective_quality',
@@ -1320,7 +1329,7 @@ def skill_statements(calculation, name, *, compact=False):
                   '（'+activation(g.get('enabled'),'宝石')+'）；授予效果 '+
                   ('、'.join(str(e.get('id') or 'ID未知')+'（全局开关='+json.dumps(e.get('global_enabled'))+
                             '，当前技能存在='+json.dumps(e.get('active_skill_present'))+'）' for e in g.get('granted_effects') or []) or '未测得') for g in gems)+
-              '。本机当次名称；缺译名保留原标识。启用标记不证明具体效果适用，辅助对象与实际应用见同一 gems 条目。')
+              '。本机当次名称；缺译名保留原标识。启用标记不证明具体效果适用；实体辅助对象见 gems，完整原生辅助链见 active_skills[].supports。')
         rows.append({'kind':'native_skill_group','subject':name,'status':'observed','values':{'group':group,'gems':gems},'text':text})
     for skill in calculation.get('active_skills',[]):
         timing=skill.get('native_timing',{})
@@ -2274,7 +2283,7 @@ def report_html(state, outcome):
 <style>body{{font:16px/1.7 system-ui;max-width:1050px;margin:auto;padding:28px}}table{{border-collapse:collapse;width:100%}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left;overflow-wrap:anywhere}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}</style>
 <h1>{esc(outcome['name'])}</h1><p>只读 · 本机 PoECharm {esc(result.get('engine_version','未知'))} · {esc(outcome.get('input_digest_basis','原始文件字节'))} SHA256 {esc(outcome['input_sha256'])}</p>
 <section><h2>当前原生事实</h2>{current_facts}<p>{esc(scenario_summary(result))}</p><p>{esc(outcome['publication']['scope'])}</p><p>只读快照不证明配装目标、动作或效果持续；负资源等缺口按当前 JSON 保留。</p></section>
-<section><h2>当前技能与本机名称</h2>{links}<p>启用标记不证明具体效果适用；辅助作用对象见完整 JSON 的 gems/granted_effects/active_skills。</p></section>
+<section><h2>当前技能与本机名称</h2>{links}<p>启用标记不证明具体效果适用；完整原生辅助链见 JSON 的 active_skills[].supports，实体宝石见 gems/granted_effects。</p></section>
 {''.join(comparisons)}
 <section><h2>当前配置控件</h2><p>未知读数保持未知；默认值与合法选项单独展示。这里只列 config_controls，集合外输入在下方 config_values 中；XML 标签来源、原生输入、运行时占位表分别核对。config_loader_source 给出当前加载函数位置；占位值是否被使用须结合该字段的本机处理与测量判断，标签存在不证明生效，当前输入缺省也不证明占位无效。输入、可见性及默认值不证明效果适用或覆盖。</p><details><summary>查看当前控件、枚举与原文</summary><table><tr><th>ID</th><th>原生标签</th><th>控件读数</th><th>默认值</th><th>当次合法选项</th><th>读数来源</th><th>运行时占位值</th><th>可见性与关联条件</th><th>XML 输入来源</th><th>原生描述</th></tr>{controls}</table></details></section>
 <section><h2>证据与范围</h2><p>完整只读计算凭证：{esc(outcome['inspection_file'])}。此页直接来自当前事实；正式机制与取舍说明沿现有角色流程的判断、证据和复核呈现，原角色到报告状态的实际变化须单独核对。</p><details><summary>查看身份、版本与配置原值</summary><pre>{esc(json.dumps(sources,ensure_ascii=False,indent=2))}</pre></details></section></html>'''

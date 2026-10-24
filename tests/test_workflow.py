@@ -2153,8 +2153,11 @@ class WorkflowInterfaceTests(unittest.TestCase):
                                         {'id':'OtherEffect','global_enabled':True,'active_skill_present':True}]},
                     {'group':1,'index':2,'id':'NewSupport','name':'New native support','display_name':'当次辅助（New native support）','slot':'Current Slot','group_enabled':True,'slot_enabled':False,'enabled':False,'support':True,'support_applied':False}],
                 'active_skills':[{'group':1,'index':1,'id':'NewSkill','name':'New native skill','skill_ref':'1:1:NewSkill:mirage:gem:1','actor':'mirage','is_main':True,
+                    'supports':[{'id':'FutureExtraSupport','name':'Future current native support','level':None,'quality':None,'effective_level':8,'effective_quality':3}],
+                    'supports_source':'Current native applied effect list',
                     'usage_rate':{'value':3.75,'metric':'CurrentRate','basis':'native_action_rate','scope':'Current native rate only'},'costs':{'LifeCost':2.5,'LifePerSecondCost':9.375,'ManaCost':0},'cost_scope':'Current actor costs only'},
                     {'group':1,'index':1,'id':'OtherEffect','name':'Other native effect','skill_ref':'1:1:OtherEffect:minion:gem:1','actor':'minion','is_main':False,
+                     'benefit_excluded':True,
                      'usage_rate':{'value':None,'metric':None},'costs':{'ManaCost':4,'ManaPerSecondCost':None},'cost_scope':'Native player output only',
                      'native_timing':{'cooldown_seconds':2,'duration_seconds':None,'source':'Native player output only'}}],
                 'config_controls':{'new-mode':{'id':'new-mode','type':'list','value':None,'default':1,'shown':False,'if_cond':'FutureCondition',
@@ -2201,17 +2204,22 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertIs(group['values']['gems'][0]['slot_enabled'],False)
             self.assertEqual(main['values']['usage_rate'],native['active_skills'][0]['usage_rate'])
             self.assertEqual(main['values']['costs'],native['active_skills'][0]['costs'])
+            self.assertEqual(main['values']['supports'],native['active_skills'][0]['supports'])
+            self.assertIn('Future current native support',main['text'])
             self.assertIn('3.75',main['text']);self.assertIn('mirage',main['text'])
             secondary=next(row for row in saved['publication']['statements'] if row['kind']=='native_skill_observation')
             self.assertEqual(secondary['reference'],'native:current#/active_skills/1')
             self.assertEqual(secondary['skill_ref'],native['active_skills'][1]['skill_ref'])
             self.assertEqual(secondary['values']['costs'],{'ManaCost':4,'ManaPerSecondCost':None})
             self.assertEqual(secondary['actor'],'minion')
+            self.assertIs(secondary['values']['benefit_excluded'],True)
+            self.assertIn('条件审计',secondary['text'])
             self.assertEqual(group['values']['gems'][0]['granted_effects'],native['gems'][0]['granted_effects'])
             page=report.read_text(encoding='utf-8')
             self.assertIn('New native skill',page);self.assertNotIn('None',page)
             self.assertIn(html.escape(group['text']),page)
             self.assertIn(html.escape(secondary['text']),page)
+            self.assertIn(html.escape(main['text']),page)
             self.assertIn('Native player output only',page)
             self.assertIn('OtherEffect',page)
             self.assertIn('未知',page);self.assertIn('Current default',page)
@@ -2459,7 +2467,13 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertIn('控件集合',statement['text'])
 
     def test_comparison_context_separates_control_observability_from_actual_conditions(self):
-        before={'config_values':{},'config_controls':{'shared':{'type':'check','value':False}},'stats':{}}
+        before={'config_values':{},'config_controls':{'shared':{'type':'check','value':False}},'stats':{'FutureMetric':10}}
+        for included in (None,False,True):
+            after=copy.deepcopy(before)
+            after['equipped']=[{'slot':'Future Item Slot','id':9,'active':False,'effective_in_calculation':included}]
+            context=poe.comparison_context(before,after)
+            self.assertEqual(context['changes'],[])
+            self.assertEqual(poe.compare(before,after,not context['changes'])['FutureMetric']['percent'],0)
         after=copy.deepcopy(before)
         after['config_controls']['newly-visible']={'type':'check','value':False,'value_basis':'native_unchecked_default'}
         context=poe.comparison_context(before,after)
@@ -2765,10 +2779,11 @@ class WorkflowInterfaceTests(unittest.TestCase):
         native={'stats':{'Observed':12,'GuardSkillActive':True},'config_controls':{'future-condition':{'type':'check','value':False}},
                 'gems':[{'group':1,'index':1,'id':'future-gem','enabled':True,'group_enabled':True,'slot_enabled':True,
                          'granted_effects':[{'id':'future-guard','name':'Future guard','has_global_effect':True,'global_enabled':True,'active_skill_present':True}]}],
-                'equipped':[]}
+                'equipped':[{'slot':'Future Native Slot','active':False,'effective_in_calculation':True}]}
         result=poe.publication('draft',[],[],{'status':'unknown'}, {'candidate':native},keys=['Observed'])
         rows=[row for row in result['statements'] if row['kind']=='effect_state']
         self.assertEqual(len(rows),1);self.assertIs(rows[0]['values']['config_switches']['future-condition'],False)
+        self.assertIs(rows[0]['values']['equipment_inclusion']['Future Native Slot'],True)
         self.assertIn('future-guard',result['facts_summary']);self.assertIn('future-condition=false',result['facts_summary'])
         self.assertIs(poe.calculation_facts(native)['config_controls']['future-condition']['value'],False)
         note='Shared current-native control scope'
@@ -5588,7 +5603,7 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
         root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
         base=engine.calculate(root,'')
         document=bx.apply_plan(bx.parse(base['xml']),{'mode':'rebuild','summary':'Native saved/effective specification regression',
-            'operations':{'items':[{'id':201,'text':'Rarity: RARE\nNative Specs\nIron Gauntlets\nSockets: B-B-R\n+2 to Level of Socketed Gems\n+5% to Quality of Socketed Gems'}],
+            'operations':{'items':[{'id':201,'text':'Rarity: RARE\nNative Specs\nIron Gauntlets\nSockets: B-B-R\n+2 to Level of Socketed Gems\n+5% to Quality of Socketed Gems\nSocketed Gems are Supported by Level 1 Added Chaos Damage\nSocketed Gems are Supported by Level 1 Melee Physical Damage'}],
                           'equip':[{'slot':'Gloves','item_id':201}], 'main_group':1,
                           'replace_skills':[{'slot':'Gloves','gems':[{'skill_id':'Fireball','level':1,'quality':0},
                               {'skill_id':'SupportFasterCasting','level':1,'quality':0},
@@ -5604,6 +5619,16 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
         self.assertTrue(support['support_applied'])
         self.assertEqual(support['effective_specification_source'],'MAIN gem.supportEffect')
         main=next(skill for skill in result['active_skills'] if skill['is_main'])
+        applied={row['id']:row for row in main['supports']}
+        self.assertIn('SupportAddedChaosDamage',applied)
+        self.assertNotIn('SupportMeleePhysicalDamage',applied)
+        extra=applied['SupportAddedChaosDamage']
+        self.assertEqual((extra['level'],extra['quality']),(None,None))
+        self.assertEqual((extra['effective_level'],extra['effective_quality']),(1,0))
+        linked=applied[support['id']]
+        self.assertEqual((linked['level'],linked['quality']),(support['level'],support['quality']))
+        self.assertEqual((linked['effective_level'],linked['effective_quality']),
+                         (support['effective_level'],support['effective_quality']))
         self.assertEqual((active['effective_level'],active['effective_quality']),
                          (main['effective_level'],main['effective_quality']))
         displayed=poe.publication('scoped_result',[],[],{'status':'not_requested'},{'current':result},keys=[])['facts_summary']
