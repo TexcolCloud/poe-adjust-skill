@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.54"
+VERSION = "2.8.55"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1389,7 +1389,7 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
     statements=[{"kind":"delivery","status":status,"text":brief["message"]},
                 {"kind":"budget","status":"supported" if within is True else "refuted" if within is False else "unknown","text":budget_text}]
     for index,variant in enumerate(experiments or []):
-        measurement={key:variant.get('measurement',{}).get(key) for key in ('requested_operations','request_selections_verified','actual_changes','changed_state_fields','observation_scope','observed_subject','common_conditions','damage_observation','individual_contributions_measured','scope')}
+        measurement={key:variant.get('measurement',{}).get(key) for key in ('requested_operations','requested_config_controls','request_selections_verified','actual_changes','changed_state_fields','observation_scope','observed_subject','common_conditions','damage_observation','individual_contributions_measured','scope')}
         comparison=variant.get('comparison',{})
         notes=variant.get('errors',[])+variant.get('pending',[])
         pointer='/alternatives/'+str(index)
@@ -1399,6 +1399,12 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         text='变体 '+str(variant.get('id'))+' ['+variant['status']+'] · '+pointer+'；测量 '+str(observation.get('formatted_fact') or '伤害未测得')
         text+='；指标面板归属 '+str(meaning.get('actor') or '未知')+'，选定技能引用 '+str(context.get('main_skill_ref') or '未知')
         text+='；请求 '+json.dumps(measurement['requested_operations'],ensure_ascii=False)+'；实际差异字段 '+(str(measurement['changed_state_fields']) if measurement['changed_state_fields'] is not None else '未测得')
+        if measurement['requested_config_controls']:
+            labels=[]
+            for key,sides in measurement['requested_config_controls'].items():
+                control=sides['after'] or sides['before'] or {}
+                labels.append(key+'：'+(control.get('display_label') or control.get('label') or '原生含义未观测'))
+            text+='；请求配置控件 '+'、'.join(labels)
         text+=('，完整对象/共同条件见 '+pointer+'/measurement') if has_measurement else ('；未取得测量，诊断见 '+pointer)
         text+='；原生算术比较 '+json.dumps(comparison,ensure_ascii=False)+'；错误/未测 '+json.dumps(notes,ensure_ascii=False)
         audit=variant.get('readiness',{})
@@ -2355,11 +2361,18 @@ def measurement_facts(before, after, operations):
     """Report the verified intervention and observed actor, not causal attribution."""
     old,new=engine.character_state(before),engine.character_state(after)
     changed=engine.character_changes(before,after)
-    return {"requested_operations":operations,"request_selections_verified":True,"before_state":old,"after_state":new,"actual_changes":changed,
+    control_fields=('id','type','label','display_label','label_source','value','default','value_basis','shown','if_cond','if_enemy_cond','if_flag','if_skill','if_option','apply_source','input_origin')
+    controls={}
+    for key in operations.get('config',{}):
+        controls[key]={}
+        for side,calculation in (('before',before),('after',after)):
+            row=calculation.get('config_controls',{}).get(key)
+            controls[key][side]={field:row[field] for field in control_fields if field in row} if isinstance(row,dict) else None
+    return {"requested_operations":operations,"requested_config_controls":controls,"request_selections_verified":True,"before_state":old,"after_state":new,"actual_changes":changed,
             "common_conditions":{"config_values":{key:value for key,value in before.get("config_values",{}).items() if key in after.get("config_values",{}) and bx.same_scalar(value,after["config_values"][key])},
                                  "engine_fingerprint":after.get("engine_fingerprint")},
             "observed_subject":{key:after.get(key) for key in ("main_skill","main_skill_name","main_group")},
-            "verification_scope":"本次请求经过现有原生选择核对；actual_changes 单列实际输入，效果是否实现及因果由模型另审。",
+            "verification_scope":"本次请求经过原生输入选择核对；requested_config_controls并列所选控件的原生含义与读数，null为未观测。actual_changes单列实际输入；效果适用与因果由模型另审。",
             "damage_observation":damage_observation(after,"variant"),"individual_contributions_measured":False,
             "observation_scope":"native_state_difference","changed_state_fields":len(changed),
             "scope":"actual_changes 的 locator 相对 before_state/after_state，保留全部实际状态变化；changed_state_fields 仅计差异字段，含派生状态，不代表独立变量数。由模型结合请求、实际变化、作用主体和共同条件判断实验能区分哪些假设。联合变化只支持联合观察，没有独立测量的单项贡献未证明；零差分不能推出普遍规则。"}

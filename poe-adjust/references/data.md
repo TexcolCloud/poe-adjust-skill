@@ -17,7 +17,7 @@ catalog种类取当前--help。独立查询可--batch提交queries的kind/query/
 
 保存level/quality与effective_specifications分开。catalog.gems的granted_effects列整颗宝石授予的效果，level_requirements_effect_id标明逐级数值对应哪个效果；本角色开关和实际技能取inspect.gems.granted_effects。逐级base_resources为原生编码值，base_resource_units.cost给本机ResourceString/Divisor；native_MORE_percent为百分比修正，native_raw为单位未知，均非完整角色费用。active_skills按skill_ref绑定费用、频率、native_timing及各自source/cost_scope，伤害actor不替换费用或时长的来源主体。
 
-config_controls读value/default/value_basis、Input/Placeholder与runtime/applied，选当前options[].val并核visibility/apply_source及resolved值。null非false，删覆盖可能恢复默认，一个控件未生效不代表全部关闭。
+从config_controls的原生标签、关联条件与apply_source选控制，用options[].val，按value/default/value_basis及Input/Placeholder、runtime/applied核读数。probe的requested_config_controls保留所选控件两侧含义与观测。null留未知，删覆盖可恢复默认；效果适用由模型结合规则与场景判断。
 
 `inspect --metrics`自动计算，breakdowns给value/detail/context及MAIN对照。value_status与detail_status分别说明数值、明细是否可用；旧status保留明细状态，缺明细不抹掉已观测值或零值。available_metrics从本次CALCS输出及明细键读取，可包含MAIN没有的合法字段；不从名字猜对应关系。解释因果先核输入、中间因子、上限、输出和已计因子，沿来源读适用原文；需要时用probe检验单一变量。主体、场景或上下文不同就分开，缺字段留未知。有限实验不证明排他规则。
 
