@@ -2720,7 +2720,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 self.assertLess(len(first['text']),2500)
                 self.assertIn('future-ref',receipt['publication']['facts_summary'])
                 self.assertIn('observed-switch-0',receipt['publication']['facts_summary'])
-                self.assertEqual(saved['alternatives'][0]['measurement']['damage_observation']['context']['config_values'],native['config_values'])
+                self.assertEqual(saved['alternatives'][0]['measurement']['metric_observation']['context']['config_values'],native['config_values'])
                 page=report.read_text(encoding='utf-8')
                 self.assertIn('<p>'+html.escape(first['text'])+'</p>',page)
             self.assertEqual(source.read_bytes(),before)
@@ -2841,29 +2841,37 @@ class WorkflowInterfaceTests(unittest.TestCase):
         for invalid in ({'flasks_enabled':0},{'effects':[{'skill_id':'x','enabled':True},{'skill_id':'x','enabled':False}]},{'effects':[{'skill_id':'x','enabled':'false'}]}):
             with self.subTest(invalid=invalid),self.assertRaises(bx.ContractError):bx.measurement_shape(invalid)
 
-    def test_probe_damage_observation_keeps_selected_skill_and_actor_context(self):
+    def test_probe_metric_observation_keeps_selected_skill_and_actor_context(self):
         with tempfile.TemporaryDirectory() as folder:
             run=Path(folder);poe.write_text(run/'original.xml',SAMPLE)
             variant_file=run/'variants.json';poe.write_json(variant_file,{'variants':[{'id':'secondary-change','operations':{}}]})
-            baseline={'stats':{'CombinedDPS':100},'main_skill':'fixture-main','main_skill_name':'Fixture main','main_group':1,'config_values':{'native-scene':True},'engine_fingerprint':'fixture','input_xml_sha256':'before',
+            baseline={'stats':{'CombinedDPS':100,'FutureMetric':5},'main_skill':'fixture-main','main_skill_name':'Fixture main','main_group':1,'config_values':{'native-scene':True},'engine_fingerprint':'fixture','input_xml_sha256':'before',
                       'active_skills':[{'id':'fixture-main','name':'Fixture main','skill_ref':'qualified-main','is_main':True,'actor':'player'}],
                       'nodes':[1,2],'equipped':[],
-                      'stat_metadata':{'CombinedDPS':[{'label':'Combined DPS','format':'.1f','actor':'player'}]}}
+                      'stat_metadata':{'CombinedDPS':[{'label':'Combined DPS','format':'.1f','actor':'player'}],'FutureMetric':[{'label':'Future metric','format':'.1f','actor':'player'}]}}
             candidate=copy.deepcopy(baseline);candidate.update(input_xml_sha256='after',points=1,ascendancy_points=0,secondary_ascendancy_points=0)
+            candidate['stats']['FutureMetric']=12
             record=(run,{'intent':{}},{'plan':{'mode':'refine'},'engine_fingerprint':'fixture','baseline':baseline},SAMPLE,run)
             def calculate(*pos,**kw):
                 if 'xml_batch' in kw:
                     return {'calculations':[{**candidate,'xml':xml,'request_id':engine.batch_id('xml',i,xml),'input_xml_sha256':bx.digest(xml)} for i,xml in enumerate(kw['xml_batch'])]}
                 return baseline
             with patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'materialize_items',side_effect=lambda plan,root:(plan,[])),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',return_value={'errors':[],'pending':[],'warnings':[]}):
-                response=poe.probe(args(run=str(run),name='fixture',variants=str(variant_file)))
-            observation=response['alternatives'][0]['damage_observation']
-            self.assertEqual(response['alternatives'][0]['dps_delta'],0)
+                response=poe.probe(args(run=str(run),name='fixture',variants=str(variant_file),metrics='FutureMetric,CombinedDPS',out=str(run/'comparison.json')))
+            observation=response['alternatives'][0]['metric_observation']
+            self.assertEqual(response['alternatives'][0]['stats']['FutureMetric'],12)
+            self.assertEqual(response['alternatives'][0]['comparison']['FutureMetric']['delta'],7)
+            self.assertEqual(response['alternatives'][0]['comparison']['CombinedDPS']['delta'],0)
+            self.assertEqual(response['alternatives'][0]['observed_delta'],7)
+            self.assertEqual((observation['locator'],observation['value']),('/stats/FutureMetric',12))
+            self.assertEqual(response['baseline_metric_observation']['value'],5)
+            text=next(row['text'] for row in response['publication']['statements'] if row['kind']=='experiment')
+            self.assertIn('Future metric',text)
             self.assertEqual(observation['context']['main_skill_ref'],'qualified-main')
             self.assertEqual(observation['context']['main_group'],1)
             self.assertEqual(observation['meaning']['actor'],'player')
             self.assertEqual(observation['context']['config_values'],{'native-scene':True})
-            self.assertEqual(response['baseline_damage_observation']['context']['xml_sha256'],'before')
+            self.assertEqual(response['baseline_metric_observation']['context']['xml_sha256'],'before')
             self.assertIn('actual_changes',response['alternatives'][0])
             self.assertEqual(response['alternatives'][0]['configuration_changes'],{})
             # A display panel can belong to the player while another actor executes
@@ -2874,18 +2882,22 @@ class WorkflowInterfaceTests(unittest.TestCase):
             observed=poe.publication('scoped_result',[],[],{'status':'not_requested'},{'current':baseline},
                 experiments=[{'id':'different-native-actor','status':'screened','measurement':measured,'comparison':{}}])
             text=next(row['text'] for row in observed['statements'] if row['kind']=='experiment')
-            self.assertEqual(measured['damage_observation']['meaning']['actor'],'player')
+            self.assertEqual(measured['metric_observation']['meaning']['actor'],'player')
             self.assertEqual(other['active_skills'][0]['actor'],'mirage')
             self.assertIn('面板归属 player',text)
             self.assertIn('qualified-other-actor',text)
 
-    def test_damage_observation_selects_current_minion_metric_and_keeps_missing_unknown(self):
+    def test_metric_observation_selects_current_minion_metric_and_keeps_missing_unknown(self):
         calculation={'stats':{'CombinedDPS':0,'MinionCombinedDPS':230},'main_skill':'native-minion','active_skills':[{'skill_ref':'current-minion','is_main':True,'minion':True,'actor':'minion'}]}
-        observed=poe.damage_observation(calculation,'candidate')
+        observed=poe.metric_observation(calculation,'candidate')
         self.assertEqual((observed['locator'],observed['value']),('/stats/MinionCombinedDPS',230))
         self.assertEqual(observed['context']['main_skill_ref'],'current-minion')
         calculation['stats'].pop('MinionCombinedDPS')
-        self.assertIsNone(poe.damage_observation(calculation,'candidate')['value'])
+        missing=poe.metric_observation(calculation,'candidate')
+        self.assertIsNone(missing['value'])
+        self.assertEqual(missing['status'],'unknown')
+        explicit=poe.metric_observation(calculation,'candidate','FutureMetric')
+        self.assertEqual((explicit['locator'],explicit['value'],explicit['status']),('/stats/FutureMetric',None,'unknown'))
 
     def test_probe_preserves_native_diagnostic_and_maps_variant_source(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -6686,9 +6698,9 @@ class RealEngineTests(unittest.TestCase):
                                 ids="SupportIronGrip,SupportBrutality,SupportSpellEcho", level=19, quality=0))
         self.assertEqual(result["status"], "screened")
         rows = result["alternatives"]
-        self.assertAlmostEqual(rows[1]["dps_delta"], 0, places=6)
-        self.assertEqual(rows[1]["damage_observation"]["context"]["main_group"],1)
-        self.assertEqual(rows[1]["damage_observation"]["value"],rows[1]["stats"]["CombinedDPS"])
+        self.assertAlmostEqual(rows[1]["observed_delta"], 0, places=6)
+        self.assertEqual(rows[1]["metric_observation"]["context"]["main_group"],1)
+        self.assertEqual(rows[1]["metric_observation"]["value"],rows[1]["stats"]["CombinedDPS"])
         self.assertTrue(any("未辅助" in error for error in rows[2]["warnings"]), rows[2]["warnings"])
         changed = bx.apply_plan(bx.read_document(folder / "candidate.xml"), {"mode": "refine", "summary": "comparison", "operations": {"gems": [{"group": 1, "index": 2, "skill_id": "SupportIronGrip", "level": 19, "quality": 0}]}})
         standalone = engine.calculate(self.pob, bx.serialise(changed))
@@ -6792,10 +6804,10 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(any(row["name"] == "Summon Raging Spirit" for row in result["damage_sources"]))
         result = poe.probe(args(run=str(self.run_dir), name="minion-context", group=1, index=2,
                                 ids="SupportMinionDamage,SupportMeleePhysicalDamage", level=19, quality=0))
-        self.assertEqual(result["alternatives"][0]["dps_metric"], "MinionCombinedDPS")
-        self.assertEqual(result["alternatives"][0]["damage_observation"]["meaning"]["actor"],"minion")
-        self.assertAlmostEqual(result["alternatives"][0]["dps_delta"], 0)
-        self.assertNotEqual(result["alternatives"][1]["dps_delta"], 0)
+        self.assertEqual(result["alternatives"][0]["observed_metric"], "MinionCombinedDPS")
+        self.assertEqual(result["alternatives"][0]["metric_observation"]["meaning"]["actor"],"minion")
+        self.assertAlmostEqual(result["alternatives"][0]["observed_delta"], 0)
+        self.assertNotEqual(result["alternatives"][1]["observed_delta"], 0)
         exported = poe.export(args(run=str(self.run_dir), name="minion-context"))
         observed=next(m for m in exported["publication"]["measurements"] if m["metric"]=="MinionCombinedDPS")
         self.assertEqual(observed["meaning"]["actor"],"minion")

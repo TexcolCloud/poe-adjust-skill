@@ -39,9 +39,9 @@ intent登记原目标、场景、许可、预算、保留项及真实user_statem
 
 用户场景落实到scenario/measurement，回读config/effect_state和窗口；原件开启不说明目标时段有效。measurement的flasks_enabled:false及effects:[{skill_id,enabled:false}]在两侧改造后应用；effects设置该ID所有实例的全局效果，不改宝石enabled，关药不删实物。该判断可并入configuration:candidate。
 
-收益比较baseline/result；许可与保留核original及materialization.actual_changes。共同测量也进入交付XML，须计入真实改动。频率、短效增益及药剂使用与实际状态一致；启用自动技能的声明支付涵盖准备及战斗，按同一相位衔接。不用的技能说明关联当前阶段及判断，无事件仍保留未测。
+收益与代价读同口径baseline/result，区分操作名义量与最终属性；许可与保留核original及materialization.actual_changes。共同测量也进入交付XML，须计入真实改动。频率、短效增益及药剂使用与实际状态一致；启用自动技能的声明支付涵盖准备及战斗，按同一相位衔接。不用的技能说明关联当前阶段及判断，无事件仍保留未测。
 
-`inspect --metrics`沿当前skill_ref/actor和明细context；Calcs与MAIN上下文不同就分开。probe各variant独立，组合放同一项；单变量实验配合当次规则解释原因，零差分限本对象/场景。采用候选后保存plan、evaluate/export，补路沿[原生候选](commands.md#采用原生候选)。
+`inspect --metrics`沿skill_ref/actor与明细context，Calcs/MAIN不同则分开。`probe --metrics`首项为观察摘要，未指定则随主体用综合DPS。variant独立，组合放同项；解释对齐分项与本机规则，零差分限本对象/场景。采用后保存plan、evaluate/export，补路见[原生候选](commands.md#采用原生候选)。
 
 ## 复核已有交付
 

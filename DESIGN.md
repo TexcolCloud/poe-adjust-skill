@@ -70,7 +70,7 @@ links只检查传入的主动/辅助配对，并返回实际输入、实测配�
 
 原角色到候选的状态差分与probe共用character_changes；每条对象变化携带两侧当前组号、位置、槽位、ID与名称，宝石变化还携带当前granted_effects的ID、类型、operation_field和实际开关，publication直接呈现。模型据具体效果核对解释，身份映射不认证持续效果。测量写入不自动获得改装许可。只读probe可在已有--out上指定--report，复用同一report_html及publication显示原生比较、真实输入、对象与未测范围；未指定说明时原有轻量查询保留，不增加渲染器或配装认证路径。
 
-实验的摘要与HTML正文共用publication的简要文字，数值旁分别显示原生指标面板归属和选定技能引用；面板归属不能代替技能执行主体。完整actual_changes、context及共同条件保留在原measurement续读位置。各变体的重复资源说明在摘要后段保留，具体错误和未测状态仍随该变体展示。程序不因被改对象与数值差同时出现就认定贡献归属。
+probe的--metrics首项选定baseline/variant的metric_observation及observed_metric/observed_delta；未指定按当前主体用综合DPS。每个变体复用同一measurement观察，publication和HTML沿该记录显示原生指标面板归属及选定技能引用；面板归属不能代替执行主体。原damage_observation、baseline_damage_observation与dps_metric/dps_delta输出键已迁移，意图/计划仍为schema2；旧结果可view，外部旧键调用兼容未证，新观察重算。完整actual_changes、context及共同条件保留在原measurement续读位置。各变体的重复资源说明在摘要后段保留，具体错误和未测状态仍随该变体展示。程序不因被改对象与数值差同时出现就认定贡献归属。
 
 只读说明可在 inspect 指定 --report；同一 publication 和 report_html 直接呈现当前事实、完整本机技能名称、配置原文、关联条件和原生枚举标签。config_input_origin 复用当前 XML 启用方案和类型读取，分开原文件 Input、Placeholder、原生运行时值与保存默认值；单次、批次和 catalog 当前控件使用各自输入，保存回读后更新到实际保存文件来源。完整 JSON 复用 reference_contract/current 根，当前值未知时不由默认值补齐。模型继续解释机制与取舍，程序不认证其文字语义。既有无报告 inspect 查询保留；已保存 JSON 或不需要说明文件的调用方沿用它，避免无关文件副作用。
 

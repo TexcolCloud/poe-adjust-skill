@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.57"
+VERSION = "2.8.58"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1389,14 +1389,14 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
     statements=[{"kind":"delivery","status":status,"text":brief["message"]},
                 {"kind":"budget","status":"supported" if within is True else "refuted" if within is False else "unknown","text":budget_text}]
     for index,variant in enumerate(experiments or []):
-        measurement={key:variant.get('measurement',{}).get(key) for key in ('requested_operations','requested_config_controls','request_selections_verified','actual_changes','changed_state_fields','observation_scope','observed_subject','common_conditions','damage_observation','individual_contributions_measured','scope')}
+        measurement={key:variant.get('measurement',{}).get(key) for key in ('requested_operations','requested_config_controls','request_selections_verified','actual_changes','changed_state_fields','observation_scope','observed_subject','common_conditions','metric_observation','individual_contributions_measured','scope')}
         comparison=variant.get('comparison',{})
         notes=variant.get('errors',[])+variant.get('pending',[])
         pointer='/alternatives/'+str(index)
         has_measurement=isinstance(variant.get('measurement'),dict)
-        observation=measurement['damage_observation'] or {}
+        observation=measurement['metric_observation'] or {}
         context=observation.get('context',{});meaning=observation.get('meaning',{})
-        text='变体 '+str(variant.get('id'))+' ['+variant['status']+'] · '+pointer+'；测量 '+str(observation.get('formatted_fact') or '伤害未测得')
+        text='变体 '+str(variant.get('id'))+' ['+variant['status']+'] · '+pointer+'；测量 '+str(observation.get('formatted_fact') or '指标未测得')
         text+='；指标面板归属 '+str(meaning.get('actor') or '未知')+'，选定技能引用 '+str(context.get('main_skill_ref') or '未知')
         text+='；请求 '+json.dumps(measurement['requested_operations'],ensure_ascii=False)+'；实际差异字段 '+(str(measurement['changed_state_fields']) if measurement['changed_state_fields'] is not None else '未测得')
         if measurement['requested_config_controls']:
@@ -2348,16 +2348,17 @@ def read_candidate(args):
     bx.require(engine.check(root)["engine_fingerprint"]==outcome["engine_fingerprint"],"引擎、数据或适配器变化，请重新 evaluate。")
     return run,state,outcome,xml,root
 
-def damage_observation(calculation, name):
-    metric="MinionCombinedDPS" if any(s.get("is_main") and not s.get("disabled") and s.get("minion") for s in calculation.get("active_skills",[])) else "CombinedDPS"
+def metric_observation(calculation, name, metric=None):
+    if metric is None:
+        metric="MinionCombinedDPS" if any(s.get("is_main") and not s.get("disabled") and s.get("minion") for s in calculation.get("active_skills",[])) else "CombinedDPS"
     observed={**calculation,"stats":{**calculation.get("stats",{}),metric:calculation.get("stats",{}).get(metric)}}
     record=facts.resolve_reference("native:"+name+"#/stats/"+metric,{}, {name:observed})
     if record["value"] is None: record["status"]="unknown"
-    record["scope"]="当前选定主技能/主体、XML 与实际场景的伤害快照；其他组变化下此值不变，不证明被改技能无收益、增益未触发或机制无效。"
+    record["scope"]="当前所选指标、主体、XML 与实际场景的快照；其他对象变化下此值不变，不证明该对象无收益、增益未触发或机制无效。"
     return record
 
 
-def measurement_facts(before, after, operations):
+def measurement_facts(before, after, operations, metric=None):
     """Report the verified intervention and observed actor, not causal attribution."""
     old,new=engine.character_state(before),engine.character_state(after)
     changed=engine.character_changes(before,after)
@@ -2373,7 +2374,7 @@ def measurement_facts(before, after, operations):
                                  "engine_fingerprint":after.get("engine_fingerprint")},
             "observed_subject":{key:after.get(key) for key in ("main_skill","main_skill_name","main_group")},
             "verification_scope":"本次请求经过原生输入选择核对；requested_config_controls并列所选控件的原生含义与读数，null为未观测。actual_changes单列实际输入；效果适用与因果由模型另审。",
-            "damage_observation":damage_observation(after,"variant"),"individual_contributions_measured":False,
+            "metric_observation":metric_observation(after,"variant",metric),"individual_contributions_measured":False,
             "observation_scope":"native_state_difference","changed_state_fields":len(changed),
             "scope":"actual_changes 的 locator 相对 before_state/after_state，保留全部实际状态变化；changed_state_fields 仅计差异字段，含派生状态，不代表独立变量数。由模型结合请求、实际变化、作用主体和共同条件判断实验能区分哪些假设。联合变化只支持联合观察，没有独立测量的单项贡献未证明；零差分不能推出普遍规则。"}
 
@@ -2425,6 +2426,7 @@ def probe(args):
         seen.add(variant["id"])
     metrics=getattr(args,"metrics",None)
     metrics=metrics.split(",") if metrics else list(METRICS)
+    primary_metric=metrics[0] if getattr(args,"metrics",None) else None
     bx.require(all(k and isinstance(k,str) for k in metrics),"metrics 使用本次数值输出中的指标名。")
     original_native=engine.calculate(root,bx.serialise(original)) if state['intent'].get('keep_skill_groups') else None
     if original_native is not None:
@@ -2466,16 +2468,17 @@ def probe(args):
             context=comparison_context(baseline,result)
             context_changes=context['changes']
             comparison=compare(baseline,result,not context_changes)
-            damage=damage_observation(result,"variant")
-            dps_metric=damage["locator"].rsplit("/",1)[-1]
+            measurement=measurement_facts(baseline,result,variant["operations"],primary_metric)
+            observation=measurement["metric_observation"]
+            observed_metric=observation["locator"].rsplit("/",1)[-1]
             equipment=equipment_changes(source,document,baseline,result)
             rows.append({"id":variant["id"],**({"skill_id":variant["id"]} if not getattr(args,"variants",None) else {}),"status":"blocked" if errors+ce+audit["errors"] else "screened",
                          "engine_fingerprint":result["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"operations":variant["operations"],"crafted_items":crafts,
                          "stats":{k:result["stats"].get(k) for k in metrics},"comparison":{k:v for k,v in comparison.items() if k in metrics},"context_changes":context_changes,"comparison_context":context,
                          "actual_changes":actual_changes(baseline,result,equipment),"equipment_changes":equipment,
                          "configuration_changes":{key:{"before":baseline.get("config_values",{}).get(key),"after":result.get("config_values",{}).get(key)} for key in sorted(baseline.get("config_values",{}).keys()|result.get("config_values",{}).keys()) if not bx.same_scalar(baseline.get("config_values",{}).get(key),result.get("config_values",{}).get(key))},
-                         "effect_state":engine.effect_state(result),"measurement":measurement_facts(baseline,result,variant["operations"]),
-                         "dps_metric":dps_metric,"dps_delta":comparison.get(dps_metric,{}).get("delta"),"damage_observation":damage,"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
+                         "effect_state":engine.effect_state(result),"measurement":measurement,
+                         "observed_metric":observed_metric,"observed_delta":comparison.get(observed_metric,{}).get("delta"),"metric_observation":observation,"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
                          "errors":errors+ce+audit["errors"],"pending":pending+cp+audit["pending"],"warnings":warnings+audit["warnings"],"readiness":audit})
     computed=sum('stats' in row for row in rows)
     status='screened' if computed==len(variants) else 'partial' if computed else 'failed' if any(row['status']=='failed' for row in rows) else 'blocked'
@@ -2485,7 +2488,7 @@ def probe(args):
             **({'input_sha256':input_sha256} if input_file else {}),
             "comparison_basis":{"source_xml_sha256":bx.digest(xml),"source_character":baseline.get('character_identity'),
                                 "scope":"所有 delta 均是相对本次传入 XML 的局部或组合差分；不是自动相对玩家原角色的整套收益。整体代价另比较原角色与最终角色的实际条件。因果归属须在其余输入一致时观测对应组件。"},
-            "requested_variants":len(variants),"calculated_variants":computed,"baseline_effect_state":engine.effect_state(baseline),"baseline_damage_observation":damage_observation(baseline,"baseline"),"alternatives":rows,"next":"逐变体列出结果或明确失败；有 stats 的变体才通过本次原生实算及请求选择核对。比较前核对实际效果开关、damage_observation 的技能/主体、XML、场景与目标。组合必须单列变体，不能相加单项收益。--input 仅观察已有角色，不建立交付认证。未继承旧操作/证据判断，不改输入或候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
+            "requested_variants":len(variants),"calculated_variants":computed,"baseline_effect_state":engine.effect_state(baseline),"baseline_metric_observation":metric_observation(baseline,"baseline",primary_metric),"alternatives":rows,"next":"逐变体列出结果或明确失败；有 stats 的变体才通过本次原生实算及请求选择核对。比较前核对实际效果开关、metric_observation 的指标/主体、XML、场景与目标。组合必须单列变体，不能相加单项收益。--input 仅观察已有角色，不建立交付认证。未继承旧操作/证据判断，不改输入或候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
     if getattr(args,'out',None):
         response['baseline_calculation']={key:value for key,value in baseline.items() if key not in ('xml','config_keys','config_lists')}
         response['publication']=publication('scoped_result',[],[],{'status':'not_requested'},{'current':baseline},keys=metrics,
@@ -3171,7 +3174,7 @@ def parser():
             variant.add_argument("--node-ids", help="逗号分隔 ID，仅快速比较未分配节点词缀")
             cmd.add_argument("--level", type=int)
             cmd.add_argument("--quality", type=int)
-            cmd.add_argument("--metrics", help="按需返回的原生数值指标，以逗号分隔")
+            cmd.add_argument("--metrics", help="原生数值指标，以逗号分隔；首项为观察摘要，未指定则随主体用默认综合DPS")
             cmd.add_argument("--out", help="完整比较矩阵保存到工作区 JSON")
             cmd.add_argument("--report",help="可选只读变体HTML；需要 --out，复用当前publication与report_html，不用于 --node-ids 词缀筛选")
         if name == "decode": cmd.add_argument("--out", required=True)
