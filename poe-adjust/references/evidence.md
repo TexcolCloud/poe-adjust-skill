@@ -57,6 +57,6 @@ requirements/material_specs取实际差异，含停用/备用宝石、加工和�
 
 已审未测范围留scope/conditions；完整否定/未知可完成readonly，规划目标未知或被反驳仍未完成。
 
-condition_reviews用{subjects,claim_ids,conditions,fallback,evidence_refs}：subjects取当前facts.pending，关联supported/partial判断。退路须在条件失败时仍可执行，或保留已有可用前段待条件满足再切换；来源、计算、合法性或许可缺口回源修复。
+condition_reviews沿condition_review_contract，关联supported/partial判断。迁移、验证和退路的各分支、阶段均守原限制；未来恢复不抵消越界。核条件失败时的资源与取得，或保留可用对象待条件满足；缺口先修源。
 
 用edit --review-from关联当前计算，再重算、正式发布。build/build_plan交XML与HTML，readonly只报告，route交路线和实际关键XML；只取成功files。短答沿当前publication/facts_summary/HTML写给玩家的选择、用法和限制，恢复见[命令](commands.md#恢复与交付完整性)。

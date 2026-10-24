@@ -976,7 +976,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
               "condition_reviews":rendered_conditions,
               "condition_review_contract":{"subjects_pointer":"/facts/pending","claim_ids_pointer":"/claims",
                   "fields":{"subjects":"本次待办精确键数组；同一原因可以分组，每键只出现一次。","claim_ids":"当前逐项复核中 supported/partial 判断的 claim_id 数组。",
-                            "conditions":"用户实际执行前要满足的明确条件数组。","fallback":"在该条件确实失败的状态下核对可执行的退路：当时能否行动、所需资源是否可用、能否在那里取得缺少的物资；或明确已有可用阶段并满足条件后才切换。","evidence_refs":"当次可解析的条件与退路依据。"},
+                            "conditions":"用户实际执行前要满足的明确条件数组。","fallback":"在条件失败的当时，逐分支核迁移、验证和退路：各阶段均可执行、资源与取得可行，并遵守原请求限制；否则保留已有可用对象待条件满足。未来恢复不抵消越界。","evidence_refs":"当次可解析的条件与退路依据。"},
                   "scope":"映射完整性不证明条件合理或退路可用；已知错误、失效引用与未完成的必要工作不能改称执行条件。"},
               "coverage":{"required_claim_ids":required,"missing_claim_ids":missing,"unknown_claim_ids":unexpected,
                           "required_objective_ids":required_objectives,"missing_objective_ids":missing_objectives,"unknown_objective_ids":unexpected_objectives},
