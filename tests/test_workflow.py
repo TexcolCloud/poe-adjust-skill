@@ -2144,7 +2144,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertFalse(any(row['action']=='export' for row in poe.delivery_actions(outcome,'route.json','route.json','review.json','/checked_route')))
 
     def test_readonly_report_uses_current_publication_and_preserves_unknown_controls(self):
-        native={'class':'New Class','class_id':17,'points':2,'ascendancy_points':0,'stats':{'CombinedDPS':91},
+        native={'class':'New Class','class_id':17,'points':2,'ascendancy_points':0,'stats':{'CombinedDPS':91,'GuardSkillActive':True},
                 'config_values':{'new-scene':'boss'},'config_placeholders':{'new-mode':3},
                 'config_loader_source':{'source':'engine/Classes/CurrentLoader.lua','line':21,'count':4,'total_lines':4},
                 'main_group':1,'config_labels':{},'gems':[
@@ -2153,10 +2153,12 @@ class WorkflowInterfaceTests(unittest.TestCase):
                                         {'id':'OtherEffect','global_enabled':True,'active_skill_present':True}]},
                     {'group':1,'index':2,'id':'NewSupport','name':'New native support','display_name':'当次辅助（New native support）','slot':'Current Slot','group_enabled':True,'slot_enabled':False,'enabled':False,'support':True,'support_applied':False}],
                 'active_skills':[{'group':1,'index':1,'id':'NewSkill','name':'New native skill','skill_ref':'1:1:NewSkill:mirage:gem:1','actor':'mirage','is_main':True,
+                    'description':'Current native main definition <guard & effect>.',
                     'supports':[{'id':'FutureExtraSupport','name':'Future current native support','level':None,'quality':None,'effective_level':8,'effective_quality':3}],
                     'supports_source':'Current native applied effect list',
                     'usage_rate':{'value':3.75,'metric':'CurrentRate','basis':'native_action_rate','scope':'Current native rate only'},'costs':{'LifeCost':2.5,'LifePerSecondCost':9.375,'ManaCost':0},'cost_scope':'Current actor costs only'},
                     {'group':1,'index':1,'id':'OtherEffect','name':'Other native effect','skill_ref':'1:1:OtherEffect:minion:gem:1','actor':'minion','is_main':False,
+                     'description':'Current native secondary definition: expires after its observed duration.','trigger':'CurrentNativeTrigger',
                      'benefit_excluded':True,
                      'usage_rate':{'value':None,'metric':None},'costs':{'ManaCost':4,'ManaPerSecondCost':None},'cost_scope':'Native player output only',
                      'native_timing':{'cooldown_seconds':2,'duration_seconds':None,'source':'Native player output only'}}],
@@ -2204,6 +2206,8 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertIs(group['values']['gems'][0]['slot_enabled'],False)
             self.assertEqual(main['values']['usage_rate'],native['active_skills'][0]['usage_rate'])
             self.assertEqual(main['values']['costs'],native['active_skills'][0]['costs'])
+            self.assertEqual(main['values']['description'],native['active_skills'][0]['description'])
+            self.assertIn(native['active_skills'][0]['description'],receipt['publication']['facts_summary'])
             self.assertEqual(main['values']['supports'],native['active_skills'][0]['supports'])
             self.assertIn('Future current native support',main['text'])
             self.assertIn('3.75',main['text']);self.assertIn('mirage',main['text'])
@@ -2212,6 +2216,12 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(secondary['skill_ref'],native['active_skills'][1]['skill_ref'])
             self.assertEqual(secondary['values']['costs'],{'ManaCost':4,'ManaPerSecondCost':None})
             self.assertEqual(secondary['actor'],'minion')
+            self.assertEqual(secondary['values']['description'],native['active_skills'][1]['description'])
+            self.assertIn(native['active_skills'][1]['description'],secondary['text'])
+            self.assertEqual(secondary['values']['trigger'],'CurrentNativeTrigger')
+            effect=next(row for row in saved['publication']['statements'] if row['kind']=='effect_state')
+            self.assertIs(effect['values']['guard_active'],True)
+            self.assertIn('GuardSkillActive',effect['text']);self.assertIn('守护技能',effect['text'])
             self.assertIs(secondary['values']['benefit_excluded'],True)
             self.assertIn('条件审计',secondary['text'])
             self.assertEqual(group['values']['gems'][0]['granted_effects'],native['gems'][0]['granted_effects'])

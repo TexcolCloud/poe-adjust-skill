@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.59"
+VERSION = "2.8.60"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1258,7 +1258,7 @@ def effect_statement(calculation, name, *, compact=False):
     controls=(f"开启 {counts['on']}、关闭 {counts['off']}、未知 {counts['unknown']}；具体值见 config_controls" if compact else "、".join(sorted(switches)) or "见 config_controls")
     effect_text=f"{len(effects)} 项，明细见 effect_state.global_effects" if compact else "、".join(effects) or "无原生条目"
     text=(name+" · 当前原生对象纳入="+json.dumps(state['equipment_inclusion'],ensure_ascii=False)+
-          "；药剂槽输入开关="+json.dumps(state['flasks'],ensure_ascii=False)+"；护卫="+json.dumps(state['guard_active'])+
+          "；药剂槽输入开关="+json.dumps(state['flasks'],ensure_ascii=False)+"；守护技能快照（GuardSkillActive）="+json.dumps(state['guard_active'])+
           "；技能全局开关/存在="+effect_text+"；当前 check 控件集合="+controls+
           f"。另有 {len(state['config_values_not_in_controls'])} 项输入仅见 config_values_not_in_controls；省略不等于关闭。null 未知；输入、启用或可见不证明效果适用或持续。")
     return {"kind":"effect_state","subject":name,"status":"observed" if state['config_controls_available'] else "unknown","values":state,"text":text}
@@ -1300,19 +1300,20 @@ def skill_statements(calculation, name, *, compact=False):
             ' ['+str(row.get('id'))+'] 保存等级/品质 '+('/'.join(str(row[key]) if row.get(key) is not None else '未知' for key in ('level','quality')))+
             '；有效等级/品质 '+('/'.join(str(row[key]) if row.get(key) is not None else '未知' for key in ('effective_level','effective_quality')))
             for row in supports) or '无已计入辅助')
-        values={key:skill.get(key) for key in ('id','group','index','slot','usage_rate','costs','cost_scope','disabled','trigger','no_cost','benefit_excluded','supports','supports_source')}
+        values={key:skill.get(key) for key in ('id','group','index','slot','description','usage_rate','costs','cost_scope','disabled','trigger','no_cost','benefit_excluded','supports','supports_source')}
         rows.append({'kind':'damage_subject' if skill.get('is_main') else 'native_skill_observation','subject':name,
             'reference':f'native:{name}#/active_skills/{index}','skill_ref':skill.get('skill_ref'),'actor':skill.get('actor'),'status':'observed','values':values,
             'text':name+(' · 当前主技能 ' if skill.get('is_main') else ' · 当前技能 ')+str(label)+' ['+str(skill.get('skill_ref') or '引用未测得')+
                    ']'+('；条件审计观察，原快照未计此技能收益' if skill.get('benefit_excluded') is True else '')+
-                   '；伤害主体 '+str(skill.get('actor') or '未知')+'；停用='+json.dumps(skill.get('disabled'))+'；触发='+str(skill.get('trigger') or '未提供')+'；原生频率 '+rate_text+
+                   '；伤害主体 '+str(skill.get('actor') or '未知')+'；停用='+json.dumps(skill.get('disabled'))+'；触发='+str(skill.get('trigger') or '未提供')+
+                   '；原生定义 '+str(skill.get('description') or '未提供')+'；原生频率 '+rate_text+
                    '（'+str(rate.get('metric') or '来源未测得')+'）。费用原值 '+json.dumps(skill.get('costs',{}),ensure_ascii=False,sort_keys=True)+
                    '；费用来源 '+str(skill.get('cost_scope') or '未测得')+'；所列原生计算的已应用辅助 '+support_text+
                    '（来源 '+str(skill.get('supports_source') or '未测得')+'）。'+str(rate.get('scope') or '频率适用范围未测得。')+
                    ' 伤害、吸取与回复按主体和资源分别读取；频率不认证动作互斥、支付可行或效果持续。'})
     if compact:
         rows.append({'kind':'native_skill_index','subject':name,'status':'observed',
-            'text':f"{name} · 已保存 {len(calculation.get('active_skills',[]))} 个原生技能及 {len(calculation.get('gems',[]))} 个宝石条目；逐技能费用、频率、主体、时长及完整原生辅助链 supports 见 /calculation/active_skills，实体宝石规格与授予效果见 /calculation/gems。使用 --report 时，publication 与正式事实页另列完整技能观察。"})
+            'text':f"{name} · 已保存 {len(calculation.get('active_skills',[]))} 个原生技能及 {len(calculation.get('gems',[]))} 个宝石条目；逐技能名称、定义、触发、费用、频率、主体、时长及完整原生辅助链 supports 见 /calculation/active_skills，实体宝石规格与授予效果见 /calculation/gems。使用 --report 时，publication 与正式事实页另列完整技能观察。"})
         return rows
     groups={}
     fields=('group','index','id','name','name_cn','display_name','name_source','slot','level','quality','effective_level','effective_quality',

@@ -15,7 +15,7 @@
 
 claims按同一理由合并适用对象，含claim_id、text、subjects及实际evidence_refs/conditions/uncertainties/checks。目标用objective:<id>关联，总体由assessment.goal_claim_ids选；其它subject沿当前pending/required_subject。comparison需非空checks，以当次reference及eq/ge/le核所选阈值；普通解释用judgment。未知不填0。
 
-解释先尝试推翻原句：对齐来源与本次对象的主体、效果分项和条件；持续时间只约束所属效果，数值与文字用同一指标和计算层级，核已计因子、上限和持续依据。findings写支持与反证如何改变原句，反例修正必要、唯一或排他判断。实验取能区分解释的最小变化，联合变化仅支持联合结果。scope限已证范围，未证前提留条件或未知，再从原目标反查缺口。数值、开关、来源各限其实际范围，自审绑定不补足因果。
+解释先试反例：按本次原生定义核触发、作用主体和效果起止；静态纳入不证明常驻或在场。数值与文字对齐效果分项、条件、指标与计算层级，核已计因子、上限与持续依据。findings写支持与反证如何改变原句，反例修正必要、唯一或排他判断。实验取能区分解释的最小变化，联合变化仅支持联合结果。scope限已证范围，未证前提留条件或未知，再从原目标反查缺口。数值、开关、来源各限其实际范围，自审绑定不补足因果。
 
 ## 当前文字与数字
 
@@ -45,7 +45,7 @@ requirements/material_specs取实际差异，含停用/备用宝石、加工和�
 
 ## 最终复核与交付
 
-读本次review包facts.user_goal_sources，对照最终实物和完整必要操作：每项目标由什么承担？核实际变化、费用/频率、槽位、效果、取得与切换，矛盾先修源重算。
+读本次review包facts.user_goal_sources，对照最终实物与必要操作，逐目标核变化、触发/费用/频率、槽位、效果起止、取得与切换；分类/数量/正文同据，矛盾先修源重算。
 
 沿review_template/check审全部objectives/conclusions。scope限实际对象/窗口，findings写支持、反例及未知；evidence_refs/counter_evidence_refs放实际依据。原话只证明要求/持有，目标达成据当前对象、观测或适用规则判断。
 
