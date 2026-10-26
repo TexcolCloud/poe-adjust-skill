@@ -15,7 +15,7 @@
 
 claims按同一理由合并适用对象，含claim_id、text、subjects及实际evidence_refs/conditions/uncertainties/checks。目标用objective:<id>关联，总体由assessment.goal_claim_ids选；其它subject沿当前pending/required_subject。comparison需非空checks，以当次reference及eq/ge/le核所选阈值；普通解释用judgment。未知不填0。
 
-解释先试反例：按本次原生定义核触发、作用主体和效果起止；静态纳入不证明常驻或在场。数值与文字对齐效果分项、条件、指标与计算层级，核已计因子、上限与持续依据。findings写支持与反证如何改变原句，反例修正必要、唯一或排他判断。实验取能区分解释的最小变化，联合变化仅支持联合结果。scope限已证范围，未证前提留条件或未知，再从原目标反查缺口。数值、开关、来源各限其实际范围，自审绑定不补足因果。
+解释先试反例：按本次原生定义核施放对象/必要物资、触发、作用主体、效果起止和冷却何时恢复；静态纳入不证明常驻或在场。数值与文字对齐效果分项、条件、指标与计算层级，核已计因子、上限与持续依据。findings写支持与反证如何改变原句，反例修正必要、唯一或排他判断。实验取能区分解释的最小变化，联合变化仅支持联合结果。scope限已证范围，未证前提留条件或未知，再从原目标反查缺口。数值、开关、来源各限其实际范围，自审绑定不补足因果。
 
 ## 当前文字与数字
 
@@ -31,7 +31,7 @@ claims按同一理由合并适用对象，含claim_id、text、subjects及实际
 - 简单同窗usage用{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}，单位次/秒及秒；未知省略。claim关联skill:<ref>，每技能用自己的窗口。
 - 准备接战斗或混合动作用timeline:{duration_seconds,repeat,events:[{skill_ref,at}]}；at只付一次，repeat:true核接缝。preparation:{duration_seconds,events}只准备一次，等待耗时、实际余额带入战斗；需补放的效果在战斗重列。此时usage只关联skill_ref/claim_id及必要phase。
 
-核payment_schedule/skill_schedules实际次数、首末时点及费用，final在duration_seconds，trace末项仅末次动作。主攻、位移及手动技能共用时间，按native_timing核到期/补放，未知自动频率不凭名字猜。
+核payment_schedule/skill_schedules的native_action、实际次数、首末时点及费用；按native_timing和timing_conditions核冷却恢复与到期/补放，计费频率不等于完整重开周期。主攻、位移及手动技能共用时间，未知自动频率不凭名字猜。两阶段的native_snapshot是实际固定状态；换状态须分别实算并衔接余额/上限，叙述不会应用开关。final在duration_seconds，trace末项仅末次动作，短答取最终窗口值。
 
 时间线只重放费用与固定净回复；execution_coverage保留敌伤、动作互斥、事件恢复等未测，DPS未按节奏重算。解释实际已算安排及其伤害范围；目标依赖未算部分时，设计有据的降频、补给、退出或可用前段。保留未知不能代替必要操作设计。药剂参数见[资料](data.md#技能配置与明细)。
 

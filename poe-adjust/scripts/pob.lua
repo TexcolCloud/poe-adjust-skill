@@ -322,6 +322,7 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   end
   local actor = computed.skillData.triggeredByGeneralsCry and "mirage" or computed.skillFlags.minion and "minion" or "player"
   local nativeOutput = cached and cached.Env.player.output or {}
+  local cooldownPaused = computed.skillModList and not not computed.skillModList:Flag(computed.skillCfg, "NoCooldownRecoveryInDuration")
   local rateKey = computed.skillFlags.trap and "TrapThrowingSpeed" or computed.skillFlags.mine and "MineLayingSpeed" or computed.skillFlags.totem and "TotemPlacementSpeed" or "Speed"
   local rate = nativeOutput.SkillTriggerRate or nativeOutput[rateKey]
   local rateMetric = nativeOutput.SkillTriggerRate and "SkillTriggerRate" or rateKey
@@ -353,8 +354,11 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     info = computed.infoMessage, info_secondary = computed.infoMessage2,
     generals_cry = computed.skillData.triggeredByGeneralsCry or false,
     native_timing = {duration_seconds = nativeOutput.Duration or json.null, cooldown_seconds = nativeOutput.Cooldown or json.null,
-      source = "Current skill's native player output", scope = "Duration and cooldown observations, not measured effect coverage or cross-skill action exclusion"},
-    usage_rate = {value = rate, metric = rateMetric, basis = rateBasis, repeats = repeats, scope = "Actions per second from native rate or inverse native cooldown, divided by repeats; cost projection additionally checks the full native per-second cost. Dynamic effects and cross-skill action exclusion are not measured."},
+      cooldown_paused_during_effect = cooldownPaused == nil and json.null or cooldownPaused,
+      duration_uptime_percent = nativeOutput.DurationUptime or json.null,
+      source = "Current skill's native player output and skillModList:Flag(skillCfg, NoCooldownRecoveryInDuration)",
+      scope = "Native duration, cooldown recovery and full-duration uptime calculation; early effect termination, existing charges, actual coverage and cross-skill action exclusion are not measured"},
+    usage_rate = {value = rate, metric = rateMetric, basis = rateBasis, repeats = repeats, scope = "Native action or nominal cooldown-based payment rate, divided by repeats; cost projection checks the native per-second cost. This rate is not a complete recast interval: read native_timing for cooldown recovery during the effect. Dynamic effects and cross-skill action exclusion are not measured."},
     costs = scalarTable(costs)})
 end
 result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet

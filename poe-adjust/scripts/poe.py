@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.60"
+VERSION = "2.8.61"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1458,7 +1458,8 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                                "text":name+" · 资源快照范围："+" ".join(snapshot_scopes)})
         if audit.get("timeline"):
             statements.append({"kind":"timeline_scope","subject":name,"status":"observed",
-                               "text":name+" · 时间线测量范围："+audit["timeline"]["scope"]})
+                               "values":{"native_snapshot":audit["timeline"].get('native_snapshot')},
+                               "text":name+" · 时间线测量范围："+audit["timeline"]["scope"]+" 准备和战斗使用同一个 native_snapshot；文字中的保留、药剂或其他开关变化不会改变这些支付与回复。换状态须分别实算并核对衔接余额及储量上限。"})
         execution=audit.get("execution_coverage")
         if execution:
             statements.append({"kind":"execution_coverage","subject":name,**execution,
@@ -1487,6 +1488,11 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         timeline=audit.get("timeline") or {}
         phases=[("preparation",timeline.get("preparation") or {}),("combat",timeline)]
         for phase,phase_timeline in phases:
+            for condition in phase_timeline.get('timing_conditions',[]):
+                statements.append({'kind':'native_timing_condition','subject':name,'phase':phase,'status':'unknown','values':condition,
+                    'text':name+' · '+phase+' · '+condition['skill_ref']+'：原生标志为增益期间不恢复冷却；完整增益后的一次重新充能需 '+
+                        f"{condition['full_duration_recast_seconds']:g} 秒，当前最短安排间隔 {condition['observed_minimum_interval_seconds']:g} 秒。"+
+                        f"若没有已储存次数或其他重置，上次增益须在施放后 {condition['required_early_end_within_seconds']:g} 秒内提前结束才可能衔接；这些条件未测。支付通过不认证动作或持续覆盖。"})
             skills={skill.get("skill_ref"):skill for skill in calculations.get(name,{}).get("active_skills",[])}
             for ref,schedule in phase_timeline.get("skill_schedules",{}).items():
                 skill=skills.get(ref,{})
@@ -1499,7 +1505,7 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                 times='；首次 '+(f"{schedule['first_at']:g} 秒" if bx.finite_number(schedule.get('first_at')) else '未安排')+'，末次 '+(f"{schedule['last_at']:g} 秒" if bx.finite_number(schedule.get('last_at')) else '未安排')
                 relation='；关联判断 '+str(schedule['claim_id']) if schedule.get('claim_id') else ''
                 statements.append({"kind":"skill_schedule","calculation":name,"phase":phase,"skill_ref":ref,"status":"observed","values":values,
-                                   "text":f"{name} · {phase} · {label} [{ref}]：{duration:g} 秒内安排 {count} 次，窗口平均 {count/duration:.10g} 次/秒；当前原生频率 "+(f"{native_rate:.10g} 次/秒" if bx.finite_number(native_rate) else "未知")+times+fees+relation+"。每次事件只是一笔所列支付，不能代替持续施放、实际执行或效果持续证明。"})
+                                   "text":f"{name} · {phase} · {label} [{ref}]：{duration:g} 秒内安排 {count} 次，窗口平均 {count/duration:.10g} 次/秒；当前原生计费频率 "+(f"{native_rate:.10g} 次/秒" if bx.finite_number(native_rate) else "未知")+times+fees+relation+'；本次动作定义 '+str(skill.get('description') or '未提供')+"。每次事件只是一笔所列支付，不能代替持续施放、实际执行或效果持续证明。"})
             for resource in phase_timeline.get("resources",[]):
                 state=resource["status"]
                 window={"at":resource["duration_seconds"],"initial":resource["initial"],"final":resource.get("final"),"last_event_at":resource["trace"][-1]["at"] if resource["trace"] else None,"gaps":resource["gaps"],
@@ -1512,7 +1518,7 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                 statements.append({"kind":"resource","calculation":name,"phase":phase,"subject":resource["resource_id"],"status":state,
                                    "window":window,"text":name+" · "+{"preparation":"战前准备","combat":"战斗"}[phase]+" · "+resource["resource_id"]+"："+resource_messages[state]+values})
     primary={'delivery','budget','objective_review','declared_checks','native_identity','native_build','damage_subject','experiment'}
-    headline={'delivery','budget','execution_coverage','sustained_use','timeline_scope'}
+    headline={'delivery','budget','execution_coverage','sustained_use','timeline_scope','native_timing_condition'}
     current=[row['text'] for row in statements if row['kind'] in {'delivery','budget'}]
     current += [effect_statement(calculation,name,compact=True)['text'] for name,calculation in calculations.items()]
     variant_subjects={'variant:'+row['id'] for row in experiments or []}

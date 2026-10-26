@@ -2,6 +2,7 @@
 import math
 import buildxml as bx
 import facts
+import engine
 
 
 def number(data, key):
@@ -179,6 +180,29 @@ def timeline_assessment(result, timeline, usage=None):
     return outcome
 
 
+def timing_conditions(skills, events, duration, repeating, prior_window):
+    """Keep conditional action timing separate from arithmetic payment results."""
+    conditions=[]
+    for ref,skill in skills.items():
+        timing=skill.get('native_timing') or {}
+        if timing.get('cooldown_paused_during_effect') is not True: continue
+        effect,cooldown=number(timing,'duration_seconds'),number(timing,'cooldown_seconds')
+        if effect is None or cooldown is None or effect<=0 or cooldown<=0: continue
+        times=[event['at'] for event in events if event['skill_ref']==ref]
+        gaps=[after-before for before,after in zip(times,times[1:])]
+        if times and repeating: gaps.append(duration-times[-1]+times[0])
+        previous=(prior_window or {}).get('skill_schedules',{}).get(ref,{})
+        if times and previous.get('last_at') is not None:
+            gaps.append(prior_window['duration_seconds']+times[0]-previous['last_at'])
+        if not gaps or min(gaps)>=effect+cooldown-1e-8: continue
+        gap=min(gaps)
+        conditions.append({'skill_ref':ref,'status':'unknown','native_timing':timing,
+            'observed_minimum_interval_seconds':gap,'full_duration_recast_seconds':effect+cooldown,
+            'required_early_end_within_seconds':max(0,gap-cooldown),
+            'scope':'One recharge after a full effect duration. Earlier termination, existing charges and other timing resets are unmeasured; a supported payment projection does not certify this action interval.'})
+    return conditions
+
+
 def _timeline_window(result, timeline, skills, *, initial=None, location='/timeline', prior_window=None, next_window=None):
     """Replay discrete payments on one clock using constant native net regen.
 
@@ -305,8 +329,13 @@ def _timeline_window(result, timeline, skills, *, initial=None, location='/timel
                     'first_at':next((event['at'] for event in rows if event['skill_ref']==ref),None),
                     'last_at':previous.get(ref),'native_rate':native_trigger_rate(skill) if skill.get('trigger') else native_rate(skill),
                     'window_average_rate':sum(event['skill_ref']==ref for event in rows)/duration,
-                    'scheduled_payments':{record['resource_id']:record['scheduled_payments_by_skill'][ref] for record in records}} for ref,skill in skills.items()}
+                    'scheduled_payments':{record['resource_id']:record['scheduled_payments_by_skill'][ref] for record in records},
+                    'native_action':{key:skill.get(key) for key in ('id','name','display_name','description','skill_types','actor','cost_scope','native_timing')}} for ref,skill in skills.items()}
     return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"skill_schedules":schedules,"automatic_schedules":automatic_schedules,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
+            "timing_conditions":timing_conditions(skills,rows,duration,repeating,prior_window),
+            "native_snapshot":{"xml_sha256":result.get('xml_sha256') or result.get('input_xml_sha256'),
+                "engine_fingerprint":result.get('engine_fingerprint'),"effect_state":engine.effect_state(result),
+                "scope":"Both preparation and combat use this one fixed native snapshot; narrative reservation, flask or other condition switches are not applied by these payment events."},
             "scope":capabilities()["timeline"]["scope"]}
 
 

@@ -3559,6 +3559,42 @@ class ResourceRegressionTests(unittest.TestCase):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_native_effect_end_condition_does_not_relabel_the_payment_projection(self):
+        result,timeline=self.fixture()
+        result['active_skills'][0]['native_timing']={'duration_seconds':.75,'cooldown_seconds':.5,
+            'cooldown_paused_during_effect':True,'source':'Current native skill modifier and output'}
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit['resources'][0]['status'],'supported')
+        condition=next(row for row in audit['timing_conditions'] if row['skill_ref']=='main')
+        self.assertEqual(condition['status'],'unknown')
+        self.assertEqual(condition['full_duration_recast_seconds'],1.25)
+        self.assertEqual(condition['required_early_end_within_seconds'],.5)
+        readiness=resources.assess(result,{}, {'timeline':timeline})
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},readiness=readiness,keys=[])
+        statement=next(row for row in published['statements'] if row['kind']=='native_timing_condition')
+        self.assertIn(statement['text'],published['facts_summary'])
+        self.assertEqual(statement['status'],'unknown')
+        timeline['events'][-1]['at']=1.5
+        self.assertFalse(resources.timeline_assessment(result,timeline)['timing_conditions'])
+        timeline['events'][-1]['at']=1
+        result['active_skills'][0]['native_timing']['cooldown_paused_during_effect']=False
+        self.assertFalse(resources.timeline_assessment(result,timeline)['timing_conditions'])
+
+    def test_timeline_exposes_actual_fixed_snapshot_and_action_definition(self):
+        result,timeline=self.fixture()
+        result.update(xml_sha256='a'*64,engine_fingerprint='b'*64,
+            config_controls={'future_switch':{'type':'check','value':False}})
+        result['active_skills'][0].update(description='Uses an identified material, not another created entity.',
+            skill_types=['Spell'],native_timing={'cooldown_seconds':.5,'duration_seconds':None})
+        timeline['preparation']={'duration_seconds':1,'events':[{'skill_ref':'move','at':0}]}
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit['native_snapshot']['xml_sha256'],result['xml_sha256'])
+        self.assertEqual(audit['native_snapshot']['effect_state'],engine.effect_state(result))
+        self.assertEqual(audit['preparation']['native_snapshot'],audit['native_snapshot'])
+        action=audit['skill_schedules']['main']['native_action']
+        self.assertEqual(action['description'],result['active_skills'][0]['description'])
+        self.assertEqual(action['native_timing'],result['active_skills'][0]['native_timing'])
+
     def test_preparation_phase_with_invalid_timeline_is_a_located_input_error(self):
         for value in (None,[],{},'invalid'):
             with self.subTest(value=value):
@@ -6555,11 +6591,18 @@ class RealEngineTests(unittest.TestCase):
         self.assertFalse(skill.get("trigger"));self.assertEqual(skill["costs"]["Speed"],0)
         cooldown=skill["costs"]["Cooldown"]
         self.assertGreater(cooldown,0)
+        self.assertTrue(all(type(s['native_timing']['cooldown_paused_during_effect']) is bool for s in result['active_skills']))
+        self.assertTrue(any(s['native_timing']['cooldown_paused_during_effect'] is False for s in result['active_skills']))
+        self.assertTrue(skill['native_timing']['cooldown_paused_during_effect'])
+        self.assertGreater(skill['native_timing']['duration_seconds'],0)
         self.assertAlmostEqual(resources.native_rate(skill),1/cooldown/skill["costs"].get("Repeats",1))
         focused={**result,"active_skills":[skill]}
         timeline={"duration_seconds":cooldown*1.5,"repeat":False,"events":[{"skill_ref":skill["skill_ref"],"at":0},{"skill_ref":skill["skill_ref"],"at":cooldown}]}
         audit=resources.timeline_assessment(focused,timeline)
         self.assertFalse(audit["errors"]);self.assertFalse(audit["pending"])
+        condition=next(row for row in audit['timing_conditions'] if row['skill_ref']==skill['skill_ref'])
+        self.assertAlmostEqual(condition['full_duration_recast_seconds'],cooldown+skill['native_timing']['duration_seconds'])
+        self.assertEqual(condition['status'],'unknown')
         row=next(r for r in audit["resources"] if r["resource_id"]=="Mana")
         self.assertEqual([t["payment"] for t in row["trace"]],[skill["costs"]["ManaCost"]]*2)
         timeline["events"][1]["at"]=cooldown/2
