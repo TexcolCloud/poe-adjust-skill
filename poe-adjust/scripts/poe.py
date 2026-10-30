@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.61"
+VERSION = "2.8.62"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1487,12 +1487,16 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                            "refuted":"时间线中有无法支付或耗尽的时点。","unknown":"所列窗口支付尚未证实，具体费用/窗口缺口见时间线。"}
         timeline=audit.get("timeline") or {}
         phases=[("preparation",timeline.get("preparation") or {}),("combat",timeline)]
+        for condition in audit.get('timing_conditions',[]):
+            mean=condition['interval_basis']=='declared_mean_rate'
+            interval_label='声明均频折算的平均间隔' if mean else '所列事件最短间隔'
+            termination=('平均间隔不证明实际最短间隔或单次结束时点；提前结束、已有次数或重置未测。' if mean else
+                f"若没有已储存次数或其他重置，上次增益须在施放后 {condition['required_early_end_within_seconds']:g} 秒内提前结束才可能衔接。")
+            statements.append({'kind':'native_timing_condition','subject':name,'phase':condition['phase'],'status':'unknown','values':condition,
+                'text':name+' · '+condition['phase']+' · '+condition['skill_ref']+'：原生标志为增益期间不恢复冷却；完整增益后的一次重新充能需 '+
+                    f"{condition['full_duration_recast_seconds']:g} 秒（完整持续分支最多 {condition['full_duration_recast_rate']:.10g} 次/秒），{interval_label} {condition['interval_seconds']:g} 秒。"+
+                    termination+'这些条件进入实际待办，须调整安排或复核条件及退路。支付通过不认证动作或持续覆盖。'})
         for phase,phase_timeline in phases:
-            for condition in phase_timeline.get('timing_conditions',[]):
-                statements.append({'kind':'native_timing_condition','subject':name,'phase':phase,'status':'unknown','values':condition,
-                    'text':name+' · '+phase+' · '+condition['skill_ref']+'：原生标志为增益期间不恢复冷却；完整增益后的一次重新充能需 '+
-                        f"{condition['full_duration_recast_seconds']:g} 秒，当前最短安排间隔 {condition['observed_minimum_interval_seconds']:g} 秒。"+
-                        f"若没有已储存次数或其他重置，上次增益须在施放后 {condition['required_early_end_within_seconds']:g} 秒内提前结束才可能衔接；这些条件未测。支付通过不认证动作或持续覆盖。"})
             skills={skill.get("skill_ref"):skill for skill in calculations.get(name,{}).get("active_skills",[])}
             for ref,schedule in phase_timeline.get("skill_schedules",{}).items():
                 skill=skills.get(ref,{})

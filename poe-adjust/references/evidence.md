@@ -29,9 +29,9 @@ claims按同一理由合并适用对象，含claim_id、text、subjects及实际
 
 - single_payments各从满可用储量独立支付；mean_use为单技能满速费用减固定净回复，正值为消耗、负值为余量，mean_pool_depletion_seconds为同口径投影。publication按当前及各实验变体呈现，吸取、充能、药剂补充、额外损失及动态变化未含；平均余量不证明持续，固定回复与事件回复也不能合并成同一个必要条件。
 - 简单同窗usage用{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}，单位次/秒及秒；未知省略。claim关联skill:<ref>，每技能用自己的窗口。
-- 准备接战斗或混合动作用timeline:{duration_seconds,repeat,events:[{skill_ref,at}]}；at只付一次，repeat:true核接缝。preparation:{duration_seconds,events}只准备一次，等待耗时、实际余额带入战斗；需补放的效果在战斗重列。此时usage只关联skill_ref/claim_id及必要phase。
+- 准备接战斗或混合动作用timeline:{duration_seconds,repeat,events:[{skill_ref,at}]}；at只付一次，repeat:true核接缝。preparation:{duration_seconds,events}只准备一次，等待耗时、实际余额带入战斗；需补放的效果在战斗重列。此时usage只关联skill_ref/claim_id及必要phase。平均频率不能证明准备终点或入场余额。
 
-核payment_schedule/skill_schedules的native_action、实际次数、首末时点及费用；按native_timing和timing_conditions核冷却恢复与到期/补放，计费频率不等于完整重开周期。主攻、位移及手动技能共用时间，未知自动频率不凭名字猜。两阶段的native_snapshot是实际固定状态；换状态须分别实算并衔接余额/上限，叙述不会应用开关。final在duration_seconds，trace末项仅末次动作，短答取最终窗口值。
+核payment_schedule/skill_schedules的native_action、实际次数、首末时点及费用；timing_conditions同时核频率和时间线。计费频率不等于完整重开周期：可按完整持续分支安排；采用提前结束/次数/重置则复核真实条件与退路，不能同时保留完整持续覆盖。主攻、位移及手动技能共用时间，未知自动频率不凭名字猜。两阶段的native_snapshot是实际固定状态；药剂覆盖也随声明窗口进入待办，换状态须分别实算并衔接余额/上限，叙述不会应用开关。final在duration_seconds，trace末项仅末次动作，短答取最终窗口值。
 
 时间线只重放费用与固定净回复；execution_coverage保留敌伤、动作互斥、事件恢复等未测，DPS未按节奏重算。解释实际已算安排及其伤害范围；目标依赖未算部分时，设计有据的降频、补给、退出或可用前段。保留未知不能代替必要操作设计。药剂参数见[资料](data.md#技能配置与明细)。
 

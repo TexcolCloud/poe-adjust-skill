@@ -3567,9 +3567,12 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(audit['resources'][0]['status'],'supported')
         condition=next(row for row in audit['timing_conditions'] if row['skill_ref']=='main')
         self.assertEqual(condition['status'],'unknown')
+        self.assertEqual(condition['interval_basis'],'scheduled_event_minimum_gap')
         self.assertEqual(condition['full_duration_recast_seconds'],1.25)
         self.assertEqual(condition['required_early_end_within_seconds'],.5)
         readiness=resources.assess(result,{}, {'timeline':timeline})
+        self.assertIn('capability:action_timing:main',readiness['pending'])
+        self.assertEqual(readiness['timeline']['status'],'supported')
         published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},readiness=readiness,keys=[])
         statement=next(row for row in published['statements'] if row['kind']=='native_timing_condition')
         self.assertIn(statement['text'],published['facts_summary'])
@@ -3579,6 +3582,79 @@ class TimelineTests(unittest.TestCase):
         timeline['events'][-1]['at']=1
         result['active_skills'][0]['native_timing']['cooldown_paused_during_effect']=False
         self.assertFalse(resources.timeline_assessment(result,timeline)['timing_conditions'])
+
+    def test_nominal_payment_rates_and_timeline_gaps_share_the_native_recast_check(self):
+        result,timeline=self.fixture()
+        result['active_skills'][0]['native_timing']={'duration_seconds':.75,'cooldown_seconds':.5,
+            'cooldown_paused_during_effect':True}
+        timed=resources.assess(result,{}, {'timeline':timeline})
+        plan={'usage':[{'skill_ref':'main','casts_per_second':1}]}
+        averaged=resources.assess(result,{},plan)
+        condition=averaged['timing_conditions'][0]
+        self.assertEqual(condition['phase'],'usage')
+        self.assertEqual(condition['native_timing'],timed['timing_conditions'][0]['native_timing'])
+        self.assertEqual(condition['full_duration_recast_rate'],.8)
+        self.assertEqual(condition['interval_basis'],'declared_mean_rate')
+        self.assertEqual(condition['declared_mean_interval_seconds'],timed['timing_conditions'][0]['observed_minimum_interval_seconds'])
+        self.assertNotIn('observed_minimum_interval_seconds',condition)
+        self.assertNotIn('required_early_end_within_seconds',condition)
+        self.assertIn('capability:action_timing:main',averaged['pending'])
+        self.assertEqual(resources.native_rate(result['active_skills'][0]),2)
+        self.assertEqual(averaged['resources'][0]['cost_per_second'],20)
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},readiness=averaged,keys=[])
+        statement=next(row for row in published['statements'] if row['kind']=='native_timing_condition')
+        self.assertEqual(statement['phase'],'usage');self.assertIn(statement['text'],published['facts_summary'])
+        self.assertIn('平均间隔不证明实际最短间隔',statement['text'])
+        plan['usage'][0]['casts_per_second']=.8
+        self.assertFalse(resources.assess(result,{},plan)['timing_conditions'])
+        plan['usage'][0]['casts_per_second']=0
+        self.assertFalse(resources.assess(result,{},plan)['timing_conditions'])
+        result['active_skills'][0]['native_timing']['cooldown_paused_during_effect']=False
+        plan['usage'][0]['casts_per_second']=1
+        self.assertFalse(resources.assess(result,{},plan)['timing_conditions'])
+
+    def test_action_timing_uses_existing_current_condition_review_without_refuting_payments(self):
+        result,timeline=self.fixture()
+        result['active_skills'][0]['native_timing']={'duration_seconds':.75,'cooldown_seconds':.5,
+            'cooldown_paused_during_effect':True}
+        claim={'claim_id':'current','subjects':['skill:main','skill:move','objective:requested'],
+               'evidence_refs':['native:resources#/timing_conditions/0'],'missing_evidence':[],
+               'check_status':'not_requested','status':'model_assessed','diagnostics':[]}
+        usage=[{'skill_ref':ref,'claim_id':'current'} for ref in ('main','move')]
+        audit=resources.assess(result,{}, {'timeline':timeline,'usage':usage},[claim])
+        subject='capability:action_timing:main'
+        self.assertEqual(audit['pending'],[subject]);self.assertEqual(audit['errors'],[])
+        self.assertEqual(audit['timeline']['status'],'supported')
+        reviewed={'reference_status':'resolved','verdict':'supported','conditions':[],'unimplemented':[]}
+        review={'completion_pending':[],'conclusions':[{'claim_id':'current',**reviewed}],
+                'objectives':[{'objective_id':'requested',**reviewed}],'condition_reviews':[],'facts':{},'diagnostics':[]}
+        coverage=[{'objective_id':'requested','basis_status':'user_declared','claim_ids':['current']}]
+        def completion():return poe.plan_completion('build_plan',audit['errors'],audit['pending'],audit['diagnostics'],coverage,[claim],review)
+        self.assertEqual(completion()['status'],'draft')
+        review['condition_reviews']=[{'subjects':[subject],'claim_ids':['current'],'reference_status':'resolved',
+            'conditions':['Use the shorter interval only after verifying the actual early termination.'],
+            'fallback':'Otherwise use the full-duration recast branch.','evidence_refs':claim['evidence_refs']}]
+        completed=completion()
+        self.assertEqual(completed['status'],'scoped_result',completed)
+        self.assertEqual(completed['conditions'][0]['subjects'],[subject])
+        self.assertEqual(audit['pending'],[subject])
+        review['condition_reviews'][0]['fallback']=''
+        self.assertEqual(completion()['status'],'draft')
+
+    def test_active_flask_snapshot_needs_coverage_for_finite_declared_windows_too(self):
+        result,timeline=self.fixture()
+        result['equipped']=[{'slot':'Flask 1','active':True,'flask_local':{'duration':4}}]
+        subject='capability:flask_coverage:Flask 1'
+        finite=resources.assess(result,{}, {'timeline':timeline})
+        self.assertIn(subject,finite['pending'])
+        self.assertEqual(finite['timeline']['status'],'supported')
+        averaged=resources.assess(result,{}, {'usage':[{'skill_ref':'main','casts_per_second':1,'active_seconds':10}]})
+        self.assertIn(subject,averaged['pending'])
+        empty=resources.assess(result,{}, {'usage':[{'skill_ref':'main','casts_per_second':1,'active_seconds':0}]})
+        self.assertNotIn(subject,empty['pending'])
+        self.assertNotIn(subject,resources.assess(result,{}, {})['pending'])
+        result['equipped'][0]['active']=False
+        self.assertNotIn(subject,resources.assess(result,{}, {'timeline':timeline})['pending'])
 
     def test_timeline_exposes_actual_fixed_snapshot_and_action_definition(self):
         result,timeline=self.fixture()

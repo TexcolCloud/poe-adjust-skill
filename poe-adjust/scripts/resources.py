@@ -180,26 +180,36 @@ def timeline_assessment(result, timeline, usage=None):
     return outcome
 
 
+def timing_condition(skill, interval, *, mean_rate=False):
+    """Separate a native nominal payment rate from a full-effect recast interval."""
+    timing=skill.get('native_timing') or {}
+    effect,cooldown=number(timing,'duration_seconds'),number(timing,'cooldown_seconds')
+    if (timing.get('cooldown_paused_during_effect') is not True or effect is None or cooldown is None
+            or effect<=0 or cooldown<=0 or interval>=effect+cooldown-1e-8): return None
+    condition={'skill_ref':skill['skill_ref'],'status':'unknown','native_timing':timing,
+        'interval_seconds':interval,'full_duration_recast_seconds':effect+cooldown,
+        'full_duration_recast_rate':1/(effect+cooldown),
+        'scope':'One recharge after a full effect duration. Earlier termination, existing charges and other timing resets are unmeasured; a supported payment projection does not certify this action interval.'}
+    if mean_rate:
+        condition.update(interval_basis='declared_mean_rate',declared_mean_interval_seconds=interval)
+    else:
+        condition.update(interval_basis='scheduled_event_minimum_gap',observed_minimum_interval_seconds=interval,
+                         required_early_end_within_seconds=max(0,interval-cooldown))
+    return condition
+
+
 def timing_conditions(skills, events, duration, repeating, prior_window):
-    """Keep conditional action timing separate from arithmetic payment results."""
+    """Use the same native recast check for adjacent, wrap and preparation gaps."""
     conditions=[]
     for ref,skill in skills.items():
-        timing=skill.get('native_timing') or {}
-        if timing.get('cooldown_paused_during_effect') is not True: continue
-        effect,cooldown=number(timing,'duration_seconds'),number(timing,'cooldown_seconds')
-        if effect is None or cooldown is None or effect<=0 or cooldown<=0: continue
         times=[event['at'] for event in events if event['skill_ref']==ref]
         gaps=[after-before for before,after in zip(times,times[1:])]
         if times and repeating: gaps.append(duration-times[-1]+times[0])
         previous=(prior_window or {}).get('skill_schedules',{}).get(ref,{})
         if times and previous.get('last_at') is not None:
             gaps.append(prior_window['duration_seconds']+times[0]-previous['last_at'])
-        if not gaps or min(gaps)>=effect+cooldown-1e-8: continue
-        gap=min(gaps)
-        conditions.append({'skill_ref':ref,'status':'unknown','native_timing':timing,
-            'observed_minimum_interval_seconds':gap,'full_duration_recast_seconds':effect+cooldown,
-            'required_early_end_within_seconds':max(0,gap-cooldown),
-            'scope':'One recharge after a full effect duration. Earlier termination, existing charges and other timing resets are unmeasured; a supported payment projection does not certify this action interval.'})
+        condition=timing_condition(skill,min(gaps)) if gaps else None
+        if condition: conditions.append(condition)
     return conditions
 
 
@@ -427,7 +437,7 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
     eb = result.get("resource_rules",{}).get("energy_shield_protects_mana")
     main_usage = usages.get(main.get("skill_ref") if main else None,{})
     flask_facts=[{k:item[k] for k in ("slot","id","flask_base","flask_local","flask_local_source","flask_scope") if k in item} for item in result.get("equipped",[]) if item["slot"] in flasks]
-    if any(row.get("continuous") is True for row in usage):
+    if "timeline" in plan or any(row.get("continuous") is True or (row.get("active_seconds") or 0)>0 for row in usage):
         pending += ["capability:flask_coverage:"+slot for slot in flasks]
     for resource, cost_key, label in (("Mana","Mana","魔力"),("Life","Life","生命"),("EnergyShield","ES","能量护盾")):
         single, native_cost = payment(stats,cost_key,eb,main and main.get("no_cost") is True), number(stats,cost_key+"PerSecondCost")
@@ -562,6 +572,22 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
                 diagnostic["payment_schedule"]={**schedule,"phase":phase,"duration_seconds":window["duration_seconds"],"repeat":window["repeat"],
                     "reference":"native:"+reference_name+"#"+pointer,"window_payment_status":window["status"],
                     "scope":capabilities()["timeline"]["event_semantics"]+" 所列支付不认证动作实际执行、效果持续或关联目标达成。"}
+    action_conditions=[]
+    if timeline is not None:
+        for phase,window in (("preparation",timeline.get("preparation") or {}),("combat",timeline)):
+            action_conditions += [{**row,"phase":phase} for row in window.get("timing_conditions",[])]
+    else:
+        for row in usage:
+            rate=row.get("casts_per_second")
+            condition=timing_condition(by_ref[row["skill_ref"]],1/rate,mean_rate=True) if rate is not None and rate>0 else None
+            if condition: action_conditions.append({**condition,"phase":"usage"})
+    for index,condition in enumerate(action_conditions):
+        subject="capability:action_timing:"+condition["skill_ref"]
+        pending.append(subject)
+        diagnostics.append({"code":"native_action_timing_unmeasured","required_subject":subject,"status":"unknown",
+            "location":"/timeline" if timeline is not None else "/usage","actual":condition,
+            "reference":"native:"+reference_name+"#/timing_conditions/"+str(index),
+            "message":"当前间隔短于原生完整增益后的重新充能周期。可按 full_duration_recast_seconds 调整安排；若采用提前结束、已有次数或重置，沿现有 condition_reviews 核对本次条件和可用退路。支付结果不认证动作或效果覆盖。"})
     for row in payments:
         if row["status"]=="refuted":
             message=f"技能 {row['skill_ref']} 的 {row['resource_id']} 单次支付 {row['payment']:g} 超出可用储量 {row['pool']:g}（生命须支付后存活）。"
@@ -581,5 +607,5 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
         linked=[claim for claim in claims or [] if any(subject==required or subject.startswith(required+":") for subject in claim.get("subjects",[]) for required in row["affected_subjects"])]
         row["affected_claim_ids"]=[claim["claim_id"] for claim in linked]
         row["affected_objective_ids"]=sorted({subject[len("objective:"):] for claim in linked for subject in claim.get("subjects",[]) if subject.startswith("objective:")})
-    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"point_budgets":point_budgets,"timeline":timeline,"single_payments":payments,"sustained_use":sustained,"execution_coverage":execution,"unscheduled_skills":unscheduled,
+    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"point_budgets":point_budgets,"timeline":timeline,"timing_conditions":action_conditions,"single_payments":payments,"sustained_use":sustained,"execution_coverage":execution,"unscheduled_skills":unscheduled,
             "conditions":{"guard_active":guard,"active_flasks":flasks,"flask_facts":flask_facts,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。药剂局部数据不证明持续补充，无持续覆盖测量时保留 capability 缺口。"},"resources":resources,"additional_native_costs":extra_costs,"diagnostics":diagnostics}
