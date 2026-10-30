@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.63"
+VERSION = "2.8.64"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1516,15 +1516,19 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                 totals=schedule.get('scheduled_payments',{})
                 fees='；按声明动作的费用合计 '+ '、'.join(resource+' '+(f'{total:g}' if bx.finite_number(total) else '未测得') for resource,total in totals.items()) if totals else ''
                 times='；首次 '+(f"{schedule['first_at']:g} 秒" if bx.finite_number(schedule.get('first_at')) else '未安排')+'，末次 '+(f"{schedule['last_at']:g} 秒" if bx.finite_number(schedule.get('last_at')) else '未安排')
+                position=schedule.get('native_duration_at_window_end')
+                if position:
+                    times+=f"；窗口终点距末次声明事件 {position['elapsed_seconds']:g} 秒，以该事件为原生时长起点的名义剩余 {position['nominal_remaining_seconds']:g} 秒（仅时点算术，不证明效果实际启动或覆盖）"
                 relation='；关联判断 '+str(schedule['claim_id']) if schedule.get('claim_id') else ''
                 statements.append({"kind":"skill_schedule","calculation":name,"phase":phase,"skill_ref":ref,"status":"observed","values":values,
                                    "text":f"{name} · {phase} · {label} [{ref}]：{duration:g} 秒内安排 {count} 次，窗口平均 {count/duration:.10g} 次/秒；当前原生计费频率 "+(f"{native_rate:.10g} 次/秒" if bx.finite_number(native_rate) else "未知")+times+fees+relation+'；本次动作定义 '+str(skill.get('description') or '未提供')+"。每次事件只是一笔所列支付，不能代替持续施放、实际执行或效果持续证明。"})
             for resource in phase_timeline.get("resources",[]):
                 state=resource["status"]
-                window={"at":resource["duration_seconds"],"initial":resource["initial"],"final":resource.get("final"),"last_event_at":resource["trace"][-1]["at"] if resource["trace"] else None,"gaps":resource["gaps"],
+                window={"at":resource["duration_seconds"],"initial":resource["initial"],"minimum_balance":resource.get("minimum_balance"),"final":resource.get("final"),"last_event_at":resource["trace"][-1]["at"] if resource["trace"] else None,"gaps":resource["gaps"],
                         "repeat":phase_timeline.get("repeat"),"event_count":len(phase_timeline["events"]) if isinstance(phase_timeline.get("events"),list) else None,
                         "scheduled_payment_total":resource.get('scheduled_payment_total')}
                 values=f" 窗口起点 {window['initial']:g}，{window['at']:g} 秒终点 {window['final']:g}；终点包含最后动作后的固定净回复。" if bx.finite_number(window["initial"]) and bx.finite_number(window["final"]) else " 未测得完整窗口终点；不能用最后一次动作储量替代。"
+                values+=f" 最低余额 {window['minimum_balance']:g}。" if bx.finite_number(window['minimum_balance']) else " 最低余额未测得。"
                 if window["event_count"] is not None: values+=f" 本阶段记录 {window['event_count']} 次动作。"
                 if bx.finite_number(window["last_event_at"]): values+=f" 最后动作在 {window['last_event_at']:g} 秒。"
                 values+=f" 按声明动作的费用合计 {window['scheduled_payment_total']:g}。" if bx.finite_number(window['scheduled_payment_total']) else " 动作费用合计未测得。"
@@ -1536,8 +1540,13 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
     current += [effect_statement(calculation,name,compact=True)['text'] for name,calculation in calculations.items()]
     variant_subjects={'variant:'+row['id'] for row in experiments or []}
     current += [row['text'] for row in statements if row['kind'] in headline-{'delivery','budget'} and row.get('subject') not in variant_subjects]
+    phase_facts=[row for row in statements if row.get('calculation') not in variant_subjects and
+                 (row['kind']=='resource' or row['kind']=='skill_schedule' and row['values'].get('native_duration_at_window_end'))]
+    phase_facts.sort(key=lambda row:row['kind']!='resource')
+    current += [row['text'] for row in phase_facts]
+    phase_ids={id(row) for row in phase_facts}
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
-            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+[m['text'] for m in measurements]+[s['text'] for s in statements if s['kind'] in headline and s.get('subject') in variant_subjects]+[s['text'] for s in statements if s['kind'] not in primary|headline]),
+            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+[m['text'] for m in measurements]+[s['text'] for s in statements if s['kind'] in headline and s.get('subject') in variant_subjects]+[s['text'] for s in statements if s['kind'] not in primary|headline and id(s) not in phase_ids]),
             "scope":scope if scope is not None else "仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
 
 

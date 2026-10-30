@@ -411,6 +411,16 @@ def _timeline_window(result, timeline, skills, *, initial=None, location='/timel
                     'window_average_rate':sum(event['skill_ref']==ref for event in rows)/duration,
                     'scheduled_payments':{record['resource_id']:record['scheduled_payments_by_skill'][ref] for record in records},
                     'native_action':{key:skill.get(key) for key in ('id','name','display_name','description','skill_types','actor','cost_scope','native_timing')}} for ref,skill in skills.items()}
+    for ref,schedule in schedules.items():
+        native_duration=number(skills[ref].get('native_timing') or {},'duration_seconds')
+        last=schedule['last_at']
+        if native_duration is not None and native_duration>0 and last is not None:
+            elapsed=duration-last
+            schedule['native_duration_at_window_end']={
+                'native_duration_seconds':native_duration,'last_event_at':last,'window_end_at':duration,
+                'elapsed_seconds':elapsed,'nominal_remaining_seconds':max(0,native_duration-elapsed),
+                'effect_coverage_status':'unmeasured',
+                'scope':'Arithmetic assuming the last declared payment event is the native timer origin; actual activation, onset, early termination, targets and effect coverage remain unmeasured.'}
     return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"skill_schedules":schedules,"automatic_schedules":automatic_schedules,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
             "manual_actions":manual_timeline(skills,rows,duration,repeating,prior_window,location),
             "timing_conditions":timing_conditions(skills,rows,duration,repeating,prior_window),

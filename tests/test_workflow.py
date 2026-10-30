@@ -3632,6 +3632,46 @@ class ResourceRegressionTests(unittest.TestCase):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_native_duration_at_window_end_is_event_relative_arithmetic_not_coverage(self):
+        result,timeline=self.fixture()
+        result['active_skills'][0]['description']='长原生说明 '*1200
+        result['active_skills'][0]['native_timing']['duration_seconds']=3
+        timeline.update(repeat=False,preparation={'duration_seconds':5.25,'events':[{'skill_ref':'main','at':4}]})
+        audit=resources.timeline_assessment(result,timeline)
+        position=audit['preparation']['skill_schedules']['main']['native_duration_at_window_end']
+        self.assertEqual(position['last_event_at'],4)
+        self.assertEqual(position['window_end_at'],5.25)
+        self.assertEqual(position['elapsed_seconds'],1.25)
+        self.assertEqual(position['nominal_remaining_seconds'],1.75)
+        self.assertEqual(position['effect_coverage_status'],'unmeasured')
+        self.assertEqual(audit['native_snapshot'],audit['preparation']['native_snapshot'])
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},resource_audits={'candidate':{'timeline':audit}})
+        statement=next(row for row in published['statements'] if row['kind']=='skill_schedule' and row['phase']=='preparation' and row['skill_ref']=='main')
+        self.assertEqual(statement['values']['native_duration_at_window_end'],position)
+        self.assertIn('1.75',statement['text'])
+        self.assertIn('名义剩余',statement['text'])
+        self.assertIn('不证明效果',statement['text'])
+        summary=published['facts_summary']
+        self.assertIn('最低余额',summary[:5000])
+        self.assertIn('名义剩余',summary[:5000])
+        self.assertLess(summary.index('时间线测量范围'),summary.index('最低余额'))
+        self.assertEqual(summary.count(statement['text']),1)
+
+    def test_native_duration_end_position_keeps_missing_unknown_and_expired_zero(self):
+        result,timeline=self.fixture();timeline['repeat']=False
+        timing=result['active_skills'][0]['native_timing']
+        for value in (None,0):
+            timing['duration_seconds']=value
+            with self.subTest(duration=value):
+                audit=resources.timeline_assessment(result,timeline)
+                self.assertIsNone(audit['skill_schedules']['main'].get('native_duration_at_window_end'))
+        timing['duration_seconds']=.75
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit['skill_schedules']['main']['native_duration_at_window_end']['nominal_remaining_seconds'],0)
+        timeline['events']=[row for row in timeline['events'] if row['skill_ref']!='main']
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertIsNone(audit['skill_schedules']['main'].get('native_duration_at_window_end'))
+
     def test_native_effect_end_condition_does_not_relabel_the_payment_projection(self):
         result,timeline=self.fixture()
         result['active_skills'][0]['native_timing']={**result['active_skills'][0]['native_timing'],'duration_seconds':.75,'cooldown_seconds':.5,
@@ -4018,6 +4058,10 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(execution['status'],'unknown')
         resource=next(row for row in packet['statements'] if row['kind']=='resource' and row['subject']=='Mana')
         self.assertEqual(resource['window']['final'],audit['timeline']['resources'][0]['final'])
+        self.assertEqual(resource['window']['minimum_balance'],20)
+        self.assertLess(resource['window']['minimum_balance'],resource['window']['initial'])
+        self.assertEqual(resource['window']['initial'],resource['window']['final'])
+        self.assertIn('最低余额 20',resource['text'])
         self.assertEqual(resource['window']['at'],timeline['duration_seconds'])
         scopes=[row for row in packet['statements'] if row['kind']=='timeline_scope']
         self.assertEqual(len(scopes),1)
