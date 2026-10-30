@@ -3474,6 +3474,79 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 self.assertEqual(result['next_actions'][0]['action'],'resume_route')
 
 
+class ManualActionWindowTests(unittest.TestCase):
+    def fixture(self, modes=(('a','manual',.5,'player'),('b','manual',.5,'player'))):
+        result=resource_fixture();result['resource_rules']={'energy_shield_protects_mana':False}
+        costs={key:0 for key in ('ManaCost','LifeCost','ESCost','ManaPerSecondCost','LifePerSecondCost','ESPerSecondCost')};costs['Speed']=2
+        result['stats'].update(costs)
+        result['active_skills']=[{'id':ref,'skill_ref':ref,'is_main':i==0,'actor':actor,'costs':dict(costs),
+            'native_timing':{'action_mode':mode,'action_time_seconds':seconds,'action_time_source':'current native player output'}}
+            for i,(ref,mode,seconds,actor) in enumerate(modes)]
+        return result
+
+    def audit(self, result, timeline=None, usage=None):
+        usage=usage or [{'skill_ref':s['skill_ref'],'claim_id':s['skill_ref']} for s in result['active_skills']]
+        claims=[{'claim_id':s['skill_ref'],'subjects':['skill:'+s['skill_ref']],'status':'model_assessed'} for s in result['active_skills']]
+        return resources.assess(result,{}, {'usage':usage,**({'timeline':timeline} if timeline else {})},claims)
+
+    def test_cross_skill_overlap_blocks_completion_without_refuting_payments(self):
+        result=self.fixture();timeline={'duration_seconds':2,'repeat':False,'events':[{'skill_ref':'a','at':0},{'skill_ref':'b','at':.25}]}
+        audit=self.audit(result,timeline)
+        self.assertTrue(audit['errors'])
+        self.assertEqual(audit['timeline']['status'],'supported')
+        self.assertTrue(all(r['status']=='supported' for r in audit['timeline']['resources']))
+        self.assertEqual(audit['manual_actions']['status'],'refuted')
+        timeline['events'][1]['at']=.5
+        self.assertFalse(self.audit(result,timeline)['errors'])
+        timeline['events'].pop()
+        self.assertFalse(self.audit(result,timeline)['errors'])
+
+    def test_native_mode_not_damage_actor_controls_shared_time(self):
+        result=self.fixture((('a','instant',0,'player'),('b','automatic',0,'player'),('c','manual',.5,'minion'),('d','manual',.5,'player')))
+        timeline={'duration_seconds':2,'repeat':False,'events':[{'skill_ref':ref,'at':0} for ref in ('a','b','c')]}
+        self.assertFalse(self.audit(result,timeline)['errors'])
+        timeline['events'].append({'skill_ref':'d','at':.25})
+        self.assertTrue(self.audit(result,timeline)['errors'])
+
+    def test_repeat_and_preparation_seams_share_the_same_action_clock(self):
+        result=self.fixture();timeline={'duration_seconds':1,'repeat':True,'events':[{'skill_ref':'a','at':.1},{'skill_ref':'b','at':.9}]}
+        self.assertTrue(self.audit(result,timeline)['errors'])
+        timeline['repeat']=False
+        self.assertFalse(self.audit(result,timeline)['errors'])  # payment window may end during its final action
+        timeline={'duration_seconds':1,'repeat':False,'events':[{'skill_ref':'b','at':0}],
+                  'preparation':{'duration_seconds':1,'events':[{'skill_ref':'a','at':.8}]}}
+        self.assertTrue(self.audit(result,timeline)['errors'])
+        timeline['events'][0]['at']=.3
+        self.assertFalse(self.audit(result,timeline)['errors'])
+
+    def test_unknown_action_duration_is_not_free_or_a_gameplay_failure(self):
+        result=self.fixture((('a','manual',None,'player'),))
+        audit=self.audit(result,{'duration_seconds':2,'repeat':False,'events':[{'skill_ref':'a','at':0}]})
+        self.assertFalse(audit['errors'])
+        self.assertEqual(audit['manual_actions']['status'],'unknown')
+        self.assertTrue(any(x.startswith('capability:manual_action:') for x in audit['pending']))
+        self.assertEqual(audit['timeline']['status'],'supported')
+
+    def test_continuous_mean_capacity_is_checked_without_inventing_exact_events(self):
+        result=self.fixture((('a','manual',.6,'player'),('b','manual',.6,'player')))
+        usage=[{'skill_ref':ref,'claim_id':ref,'casts_per_second':1,'continuous':True} for ref in ('a','b')]
+        audit=self.audit(result,usage=usage)
+        self.assertTrue(audit['errors'])
+        self.assertEqual(audit['manual_actions']['status'],'refuted')
+        usage[1]['casts_per_second']=.5
+        audit=self.audit(result,usage=usage)
+        self.assertFalse(audit['errors'])
+        self.assertEqual(audit['manual_actions']['status'],'supported')
+        self.assertEqual(audit['manual_actions']['basis'],'declared_mean_capacity_only')
+
+    def test_different_mean_windows_are_not_assumed_concurrent(self):
+        result=self.fixture((('a','manual',.6,'player'),('b','manual',.6,'player')))
+        usage=[{'skill_ref':ref,'claim_id':ref,'casts_per_second':1,'active_seconds':seconds} for ref,seconds in (('a',1),('b',2))]
+        audit=self.audit(result,usage=usage)
+        self.assertFalse(audit['errors'])
+        self.assertEqual(audit['manual_actions']['status'],'unknown')
+
+
 class ResourceRegressionTests(unittest.TestCase):
     def test_declared_points_cannot_override_observed_native_global_limits(self):
         result=resource_fixture()
@@ -3561,7 +3634,7 @@ class ResourceRegressionTests(unittest.TestCase):
 class TimelineTests(unittest.TestCase):
     def test_native_effect_end_condition_does_not_relabel_the_payment_projection(self):
         result,timeline=self.fixture()
-        result['active_skills'][0]['native_timing']={'duration_seconds':.75,'cooldown_seconds':.5,
+        result['active_skills'][0]['native_timing']={**result['active_skills'][0]['native_timing'],'duration_seconds':.75,'cooldown_seconds':.5,
             'cooldown_paused_during_effect':True,'source':'Current native skill modifier and output'}
         audit=resources.timeline_assessment(result,timeline)
         self.assertEqual(audit['resources'][0]['status'],'supported')
@@ -3615,7 +3688,7 @@ class TimelineTests(unittest.TestCase):
 
     def test_action_timing_uses_existing_current_condition_review_without_refuting_payments(self):
         result,timeline=self.fixture()
-        result['active_skills'][0]['native_timing']={'duration_seconds':.75,'cooldown_seconds':.5,
+        result['active_skills'][0]['native_timing']={**result['active_skills'][0]['native_timing'],'duration_seconds':.75,'cooldown_seconds':.5,
             'cooldown_paused_during_effect':True}
         claim={'claim_id':'current','subjects':['skill:main','skill:move','objective:requested'],
                'evidence_refs':['native:resources#/timing_conditions/0'],'missing_evidence':[],
@@ -3973,7 +4046,8 @@ class TimelineTests(unittest.TestCase):
         for index,cost in enumerate((20,10)):
             ref="main" if index==0 else "move"
             costs={"ManaCost":cost,"ManaPerSecondCost":cost*2,"LifeCost":0,"LifePerSecondCost":0,"ESCost":0,"ESPerSecondCost":0,"Speed":2}
-            skill={"skill_ref":ref,"is_main":index==0,"actor":"player","costs":costs}
+            skill={"skill_ref":ref,"is_main":index==0,"actor":"player","costs":costs,
+                   "native_timing":{"action_mode":"manual","action_time_seconds":.5,"action_time_source":"fixture native duration"}}
             if index==0:result["active_skills"][0]=skill;result["stats"].update(costs)
             else:result["active_skills"].append(skill)
         result["stats"].update(Mana=50,ManaRegenRecovery=20)
@@ -5866,6 +5940,22 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
 
 
 class RealEngineTests(unittest.TestCase):
+    def test_native_action_metadata_distinguishes_self_cast_fallback_from_instant(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        instants=[s for s in current['active_skills'] if s.get('native_timing',{}).get('action_mode')=='instant']
+        self.assertTrue(instants)
+        self.assertTrue(all(s['base_cast_time_seconds']==0 for s in instants))
+        plan={'mode':'rebuild','summary':'Native trigger source unavailable; preserve its self-cast fallback',
+              'operations':{'replace_skills':[{'gems':[{'skill_id':'Fireball','level':1},
+                                                     {'skill_id':'SupportCastOnCriticalStrike','level':1}]}],'main_group':1}}
+        document=bx.apply_plan(self.original,plan,native=current)
+        native=engine.calculate(self.pob,bx.serialise(document),cache=False)
+        skill=next(s for s in native['active_skills'] if s['id']=='Fireball')
+        self.assertEqual(skill['trigger'],'')
+        self.assertIn('Self-Cast',skill['info_secondary'])
+        self.assertEqual(skill['native_timing']['action_mode'],'unknown')
+        self.assertIsNone(skill['native_timing']['action_time_seconds'])
+
     def test_catalog_preserves_current_gem_effect_identity_without_character_switches(self):
         current=engine.calculate(self.pob,bx.serialise(self.original))
         multi=[gem for gem in current['gems'] if len(gem.get('granted_effects',[]))>1]

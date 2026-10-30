@@ -134,13 +134,13 @@ def timing(rows):
 
 def capabilities():
     """Describe the projection this adapter actually implements."""
-    return {"timeline":{"supported":["discrete_native_skill_payments","constant_native_net_regeneration","declared_fixed_native_trigger_payments"],
+    return {"timeline":{"supported":["discrete_native_skill_payments","constant_native_net_regeneration","declared_fixed_native_trigger_payments","known_native_manual_intervals"],
             "schedule_modes":{"finite_window":"repeat=false","repeating_cycle":"repeat=true (default)"},
             "excluded_recovery":["leech","recharge","flask"],
             "unsupported":["action_exclusion","changing_conditions","non_discrete_payments","trigger_realization"],
             "event_reference":"current active_skills[].skill_ref",
-            "event_semantics":"每个 {skill_ref,at} 只声明该时点的一次支付；不是开始持续施放的指令。模型选择真实动作安排，次数、频率和首末时点由同一时间线计算。",
-            "scope":"当前配置固定净回复下的离散费用时间线；未计敌人伤害、额外资源损失、命中吸取、充能、药剂补充、动作互斥或条件变化，也不改变原生 DPS。未测量部分可能使实际结果更好或更差。"}}
+            "event_semantics":"每个 {skill_ref,at} 声明该时点一次支付，不是持续施放。已识别手动事件按at为完整原生激活区间起点检查；此固定模型不认证未支持的取消或效果时点。模型选择真实安排，次数、均频和首末沿同一时间线计算。",
+            "scope":"当前固定净回复的离散费用时间线，原生手动区间检查另列，不互相认证；敌伤、额外损失、命中吸取、充能、药剂补充、完整动作实现及条件变化未模拟，也不改变原生 DPS。未测量部分可能使实际结果更好或更差。"}}
 
 
 def timeline_assessment(result, timeline, usage=None):
@@ -211,6 +211,76 @@ def timing_conditions(skills, events, duration, repeating, prior_window):
         condition=timing_condition(skill,min(gaps)) if gaps else None
         if condition: conditions.append(condition)
     return conditions
+
+
+def manual_action_time(skill):
+    """Use native execution metadata, never damage actor or payment frequency."""
+    timing=skill.get('native_timing') or {}
+    mode=timing.get('action_mode')
+    if mode in ('automatic','instant') or mode is None and (skill.get('trigger') or skill.get('generals_cry')): return 0
+    value=number(timing,'action_time_seconds')
+    return value if timing.get('action_mode')=='manual' and value is not None and value>0 else None
+
+
+def manual_timeline(skills, events, duration, repeating, prior_window, location):
+    """Check known fixed-snapshot manual intervals; do not rearrange the plan."""
+    known=[];unknown=set();errors=[];diagnostics=[];conflicts=[]
+    for event in events:
+        ref=event['skill_ref'];seconds=manual_action_time(skills[ref])
+        if seconds is None: unknown.add(ref)
+        elif seconds>0: known.append({'skill_ref':ref,'at':event['at'],'end':event['at']+seconds,'source_index':event['source_index']})
+    previous=(prior_window or {}).get('manual_actions',{}).get('last_action')
+    busy={**previous,'end':previous['end']-prior_window['duration_seconds'],'phase':'preparation'} if previous else None
+    for event in known:
+        if busy and event['at']<busy['end']-1e-8: conflicts.append({'first':busy,'second':event})
+        if busy is None or event['end']>busy['end']: busy=event
+    if repeating and known and busy['end']>duration+known[0]['at']+1e-8:
+        conflicts.append({'first':busy,'second':{**known[0],'at':known[0]['at']+duration,'phase':'next_cycle'}})
+    if conflicts:
+        message='本次声明的完整原生手动区间重叠；调整实际时点或频率后重算，逐笔支付通过不能消除此模型冲突。'
+        errors.append(message)
+        diagnostics.append({'code':'timeline_manual_actions_overlap','location':location+'/events','action':'edit_input',
+                            'expected':'nonoverlapping current native manual action intervals','actual':{'conflict_count':len(conflicts),'first_conflict':conflicts[0]},'message':message})
+    pending=['capability:manual_action:'+ref for ref in sorted(unknown)]
+    for ref,subject in zip(sorted(unknown),pending):
+        diagnostics.append({'code':'native_manual_action_time_unavailable','location':location+'/events','required_subject':subject,
+                            'skill_ref':ref,'action':'inspect_capability','message':'当前原生动作占用未测得，不能按零秒处理；核对本次施放模式和最低可用操作，沿现有条件复核保留范围。'})
+    return {'status':'refuted' if errors else 'unknown' if pending else 'supported','basis':'fixed_native_manual_intervals',
+            'known_occupied_seconds':sum(event['end']-event['at'] for event in known),'conflict_count':len(conflicts),
+            'first_conflict':conflicts[0] if conflicts else None,'last_action':max(known,key=lambda event:event['end']) if known else None,
+            'unknown_skill_refs':sorted(unknown),'errors':errors,'pending':pending,'diagnostics':diagnostics,
+            'scope':'Known unrepeated native manual model, taking payment at as activation start; not proof of all gameplay locks. Automatic/instant actions do not occupy this clock. Finite payments may end during their last action. Placement, channel/repeat cancellation, travel, changing states and actual trigger/effect realization are unmeasured.'}
+
+
+def manual_mean(skills, usages):
+    """Mean capacity is not an exact event schedule or simultaneous-use proof."""
+    rows=[];unknown=[];load=0;errors=[];pending=[];diagnostics=[]
+    for row in usages:
+        ref=row['skill_ref'];skill=skills[ref];seconds=manual_action_time(skill);rate=row.get('casts_per_second')
+        if seconds==0 or rate==0 or row.get('active_seconds')==0: continue
+        if rate is None and not (row.get('continuous') or (row.get('active_seconds') or 0)>0): continue
+        if rate is None and skill.get('is_main'): rate=native_rate(skill)
+        rows.append(row)
+        if seconds is None or rate is None: unknown.append(ref)
+        else: load+=seconds*rate
+    window,mixed=timing(rows)
+    common=not mixed and (window.get('continuous') is True or (window.get('active_seconds') or 0)>0)
+    pending=['capability:manual_action:'+ref for ref in unknown]
+    if rows and not common: pending.append('capability:manual_action:mean_window')
+    if common and load>1+1e-8:
+        if window.get('continuous') is True:
+            message='声明同窗连续动作所需原生手动时间超过每秒一秒；降低所选频率或改实际方案后重算。'
+            errors.append(message)
+            diagnostics.append({'code':'continuous_manual_actions_overbooked','location':'/usage','action':'edit_input',
+                                'expected':{'maximum_manual_seconds_per_second':1},'actual':load,'message':message})
+        else: pending.append('capability:manual_action:finite_mean_window')
+    for subject in pending:
+        diagnostics.append({'code':'manual_mean_schedule_unmeasured','location':'/usage','required_subject':subject,'action':'inspect_capability',
+                            'message':'平均频率未证明实际共同行动安排；核对原生占用及窗口，必要时选择完整时间线，不从平均值编造逐次时点。'})
+    return {'status':'refuted' if errors else 'unknown' if pending else 'supported' if rows else 'not_requested',
+            'basis':'declared_mean_capacity_only','known_manual_seconds_per_second':load,'common_window':common,
+            'unknown_skill_refs':unknown,'errors':errors,'pending':pending,'diagnostics':diagnostics,
+            'scope':'Known duration times declared mean rate in an explicit common window; capacity alone does not certify exact ordering, starts, finite-window completion, effects or DPS.'}
 
 
 def _timeline_window(result, timeline, skills, *, initial=None, location='/timeline', prior_window=None, next_window=None):
@@ -342,6 +412,7 @@ def _timeline_window(result, timeline, skills, *, initial=None, location='/timel
                     'scheduled_payments':{record['resource_id']:record['scheduled_payments_by_skill'][ref] for record in records},
                     'native_action':{key:skill.get(key) for key in ('id','name','display_name','description','skill_types','actor','cost_scope','native_timing')}} for ref,skill in skills.items()}
     return {"status":"refuted" if errors else "unknown" if pending else "supported","duration_seconds":duration,"repeat":repeating,"events":rows,"skill_schedules":schedules,"automatic_schedules":automatic_schedules,"resources":records,"errors":errors,"pending":list(dict.fromkeys(pending)),"diagnostics":diagnostics,
+            "manual_actions":manual_timeline(skills,rows,duration,repeating,prior_window,location),
             "timing_conditions":timing_conditions(skills,rows,duration,repeating,prior_window),
             "native_snapshot":{"xml_sha256":result.get('xml_sha256') or result.get('input_xml_sha256'),
                 "engine_fingerprint":result.get('engine_fingerprint'),"effect_state":engine.effect_state(result),
@@ -572,6 +643,15 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
                 diagnostic["payment_schedule"]={**schedule,"phase":phase,"duration_seconds":window["duration_seconds"],"repeat":window["repeat"],
                     "reference":"native:"+reference_name+"#"+pointer,"window_payment_status":window["status"],
                     "scope":capabilities()["timeline"]["event_semantics"]+" 所列支付不认证动作实际执行、效果持续或关联目标达成。"}
+    if timeline is not None:
+        action_windows={phase:window['manual_actions'] for phase,window in (('preparation',timeline.get('preparation')),('combat',timeline)) if window is not None}
+        manual={'status':'refuted' if any(row['status']=='refuted' for row in action_windows.values()) else 'unknown' if any(row['status']=='unknown' for row in action_windows.values()) else 'supported',
+                'basis':'fixed_native_manual_intervals','windows':action_windows}
+        action_audits=list(action_windows.values())
+    else:
+        manual=manual_mean(by_ref,usage);action_audits=[manual]
+    for audit in action_audits:
+        errors+=audit['errors'];pending+=audit['pending'];diagnostics+=audit['diagnostics']
     action_conditions=[]
     if timeline is not None:
         for phase,window in (("preparation",timeline.get("preparation") or {}),("combat",timeline)):
@@ -597,7 +677,9 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
     finite=timeline is not None and not timeline["repeat"]
     execution={"status":"unknown","scope":"未测得整套动作实际可执行；逐次支付、同技能间隔与跨技能动作互斥、触发实现、效果覆盖分别判断。",
                "payment_schedule_status":timeline["status"] if timeline else "not_requested",
-               "cross_skill_action_exclusion":"unmeasured","trigger_realization":"unmeasured","effect_coverage":"unmeasured"}
+                "cross_skill_action_exclusion":"unmeasured","native_manual_interval_status":manual['status'] if timeline is not None else "not_requested",
+                "manual_action_capacity_status":manual['status'],
+                "trigger_realization":"unmeasured","effect_coverage":"unmeasured"}
     sustained={"status":timeline["status"] if timeline and (not finite or timeline["status"]=="refuted") else "unknown",
                "basis":"finite_window_only" if finite else "discrete_timeline_at_native_net_regen" if timeline else "no_common_timeline",
                "scope":"本次仅检查所列有限窗口；没有核对重复接缝，窗口支付通过不证明持续重复。" if finite else capabilities()["timeline"]["scope"] if timeline else "仅有资源快照与独立支付事实；连续动作、启动/中断和效果覆盖未测得。"}
@@ -607,5 +689,5 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
         linked=[claim for claim in claims or [] if any(subject==required or subject.startswith(required+":") for subject in claim.get("subjects",[]) for required in row["affected_subjects"])]
         row["affected_claim_ids"]=[claim["claim_id"] for claim in linked]
         row["affected_objective_ids"]=sorted({subject[len("objective:"):] for claim in linked for subject in claim.get("subjects",[]) if subject.startswith("objective:")})
-    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"point_budgets":point_budgets,"timeline":timeline,"timing_conditions":action_conditions,"single_payments":payments,"sustained_use":sustained,"execution_coverage":execution,"unscheduled_skills":unscheduled,
+    return {"errors":list(dict.fromkeys(errors)),"warnings":list(dict.fromkeys(warnings)),"pending":list(dict.fromkeys(pending)),"unused_points":unused,"point_budgets":point_budgets,"timeline":timeline,"manual_actions":manual,"timing_conditions":action_conditions,"single_payments":payments,"sustained_use":sustained,"execution_coverage":execution,"unscheduled_skills":unscheduled,
             "conditions":{"guard_active":guard,"active_flasks":flasks,"flask_facts":flask_facts,"config_values":result.get("config_values",{}),"scope":"实际原生配置；效果覆盖由具体 claims 说明。药剂局部数据不证明持续补充，无持续覆盖测量时保留 capability 缺口。"},"resources":resources,"additional_native_costs":extra_costs,"diagnostics":diagnostics}

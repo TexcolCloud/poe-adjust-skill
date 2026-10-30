@@ -333,6 +333,27 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   end
   local repeats = nativeOutput.Repeats or 1
   if type(rate) == "number" and type(repeats) == "number" and repeats > 0 then rate = rate / repeats else rate = nil end
+  -- Damage actor and cooldown-limited payment rate are not player action time.
+  local actionMode, actionTime, actionSource = "unknown", nil, nil
+  if computed.skillFlags.trap or computed.skillFlags.mine or computed.skillFlags.totem then
+    -- Placement and the placed entity's own actions require separate attribution.
+  elseif (type(computed.infoTrigger) == "string" and computed.infoTrigger ~= "") or computed.skillData.triggeredByGeneralsCry then
+    actionMode, actionTime = "automatic", 0
+  elseif computed.infoTrigger == "" then
+    -- Native self-cast fallback is not a measured activation mode.
+    actionSource = "native missing-trigger-source fallback (activation unmeasured)"
+  elseif computed.skillFlags.selfCast then
+    if nativeOutput.Time == 0 and computed.activeEffect.grantedEffect.castTime == 0 and not computed.skillData.castTimeOverride and not computed.skillData.triggered then
+      actionMode, actionTime, actionSource = "instant", 0, "native player output.Time"
+    elseif repeats == 1 and not computed.skillTypes[SkillType.Channel] and not computed.skillData.triggered then
+      actionMode = "manual"
+      if (nativeOutput.Cooldown == nil or nativeOutput.Cooldown == 0) and type(nativeOutput.Time) == "number" and nativeOutput.Time > 0 then
+        actionTime, actionSource = nativeOutput.Time, "native player output.Time (no cooldown)"
+      elseif type(nativeOutput.CastRate) == "number" and nativeOutput.CastRate > 0 and type(data.misc.ServerTickRate) == "number" and data.misc.ServerTickRate > 0 then
+        actionTime, actionSource = math.max(1 / nativeOutput.CastRate, 1 / data.misc.ServerTickRate), "native CastRate before cooldown cap, bounded by current ServerTickRate"
+      end
+    end
+  end
   local requiredLevel = limit and instance and instance.gemData and assert(instance.reqLevel, "Native trigger target requirement is unavailable")
   table.insert(result.active_skills, {id = skill.activeEffect.grantedEffect.id, name = skill.activeEffect.grantedEffect.name,
     description = skill.activeEffect.grantedEffect.description or json.null,
@@ -354,10 +375,11 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     info = computed.infoMessage, info_secondary = computed.infoMessage2,
     generals_cry = computed.skillData.triggeredByGeneralsCry or false,
     native_timing = {duration_seconds = nativeOutput.Duration or json.null, cooldown_seconds = nativeOutput.Cooldown or json.null,
+      action_mode = actionMode, action_time_seconds = actionTime or json.null, action_time_source = actionSource or json.null,
       cooldown_paused_during_effect = cooldownPaused == nil and json.null or cooldownPaused,
       duration_uptime_percent = nativeOutput.DurationUptime or json.null,
       source = "Current skill's native player output and skillModList:Flag(skillCfg, NoCooldownRecoveryInDuration)",
-      scope = "Native duration, cooldown recovery and full-duration uptime calculation; early effect termination, existing charges, actual coverage and cross-skill action exclusion are not measured"},
+      scope = "Native timing and known unrepeated self-cast duration; damage actor does not identify the caster. Placement, channels/repeat cancellation, early termination, existing charges, changing states and actual gameplay coverage are unmeasured"},
     usage_rate = {value = rate, metric = rateMetric, basis = rateBasis, repeats = repeats, scope = "Native action or nominal cooldown-based payment rate, divided by repeats; cost projection checks the native per-second cost. This rate is not a complete recast interval: read native_timing for cooldown recovery during the effect. Dynamic effects and cross-skill action exclusion are not measured."},
     costs = scalarTable(costs)})
 end

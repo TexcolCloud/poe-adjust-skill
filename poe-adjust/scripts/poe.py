@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.62"
+VERSION = "2.8.63"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1334,7 +1334,7 @@ def skill_statements(calculation, name, *, compact=False):
         rows.append({'kind':'native_skill_group','subject':name,'status':'observed','values':{'group':group,'gems':gems},'text':text})
     for skill in calculation.get('active_skills',[]):
         timing=skill.get('native_timing',{})
-        if any(bx.finite_number(timing.get(key)) for key in ('duration_seconds','cooldown_seconds')):
+        if any(bx.finite_number(timing.get(key)) for key in ('duration_seconds','cooldown_seconds','action_time_seconds')):
             rows.append({'kind':'native_skill_timing','subject':name,'status':'observed','skill_ref':skill.get('skill_ref'),'actor':skill.get('actor'),'values':timing,
                 'text':name+' · '+str(skill.get('display_name') or skill.get('name') or skill.get('id'))+' ['+str(skill.get('skill_ref') or '引用未测得')+
                        '] 原生时长/冷却：'+json.dumps(timing,ensure_ascii=False)+'。此为所列source的观测；召唤物自身动作另按主体读取，按实际使用时点核对覆盖。'})
@@ -1487,6 +1487,15 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                            "refuted":"时间线中有无法支付或耗尽的时点。","unknown":"所列窗口支付尚未证实，具体费用/窗口缺口见时间线。"}
         timeline=audit.get("timeline") or {}
         phases=[("preparation",timeline.get("preparation") or {}),("combat",timeline)]
+        manual=audit.get('manual_actions') or {}
+        for phase,actions in (manual.get('windows') or {'usage':manual}).items():
+            if not actions or actions.get('status')=='not_requested': continue
+            details=({key:actions.get(key) for key in ('known_occupied_seconds','conflict_count','first_conflict','unknown_skill_refs')}
+                     if actions.get('basis')=='fixed_native_manual_intervals' else
+                     {key:actions.get(key) for key in ('known_manual_seconds_per_second','common_window','unknown_skill_refs')})
+            statements.append({'kind':'native_manual_actions','subject':name,'phase':phase,'status':actions['status'],'values':actions,
+                'text':name+' · '+phase+' · 原生手动动作检查 '+actions['status']+'：'+json.dumps(details,ensure_ascii=False)+
+                       '。支付与动作占用分别判断；只核本次固定原生动作模型，均频容量不证明逐次排程，未模拟完整实战或据此重算DPS。'})
         for condition in audit.get('timing_conditions',[]):
             mean=condition['interval_basis']=='declared_mean_rate'
             interval_label='声明均频折算的平均间隔' if mean else '所列事件最短间隔'
@@ -1522,7 +1531,7 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                 statements.append({"kind":"resource","calculation":name,"phase":phase,"subject":resource["resource_id"],"status":state,
                                    "window":window,"text":name+" · "+{"preparation":"战前准备","combat":"战斗"}[phase]+" · "+resource["resource_id"]+"："+resource_messages[state]+values})
     primary={'delivery','budget','objective_review','declared_checks','native_identity','native_build','damage_subject','experiment'}
-    headline={'delivery','budget','execution_coverage','sustained_use','timeline_scope','native_timing_condition'}
+    headline={'delivery','budget','execution_coverage','sustained_use','timeline_scope','native_timing_condition','native_manual_actions'}
     current=[row['text'] for row in statements if row['kind'] in {'delivery','budget'}]
     current += [effect_statement(calculation,name,compact=True)['text'] for name,calculation in calculations.items()]
     variant_subjects={'variant:'+row['id'] for row in experiments or []}
