@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.65"
+VERSION = "2.8.66"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1504,7 +1504,8 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
             statements.append({'kind':'native_timing_condition','subject':name,'phase':condition['phase'],'status':'unknown','values':condition,
                 'text':name+' · '+condition['phase']+' · '+condition['skill_ref']+'：原生标志为增益期间不恢复冷却；完整增益后的一次重新充能需 '+
                     f"{condition['full_duration_recast_seconds']:g} 秒（完整持续分支最多 {condition['full_duration_recast_rate']:.10g} 次/秒），{interval_label} {condition['interval_seconds']:g} 秒。"+
-                    termination+'这些条件进入实际待办，须调整安排或复核条件及退路。支付通过不认证动作或持续覆盖。'})
+                    f"单次完整持续 {condition['native_timing']['duration_seconds']:g} 秒后仍有 {condition['native_timing']['cooldown_seconds']:g} 秒冷却空窗；完整周期内名义覆盖 {100*condition['native_timing']['duration_seconds']/condition['full_duration_recast_seconds']:.10g}%，可再次施放不表示无缝覆盖。"+
+                    termination+'先落实已核分支并重算；条件复核记录实际可用退路，未完成操作保留缺口。支付通过不认证动作或持续覆盖。'})
         for phase,phase_timeline in phases:
             skills={skill.get("skill_ref"):skill for skill in calculations.get(name,{}).get("active_skills",[])}
             for ref,schedule in phase_timeline.get("skill_schedules",{}).items():

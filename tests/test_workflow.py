@@ -3708,6 +3708,9 @@ class TimelineTests(unittest.TestCase):
         statement=next(row for row in published['statements'] if row['kind']=='native_timing_condition')
         self.assertIn(statement['text'],published['facts_summary'])
         self.assertEqual(statement['status'],'unknown')
+        self.assertIn('完整持续 0.75 秒后仍有 0.5 秒冷却空窗',statement['text'])
+        self.assertIn('完整周期内名义覆盖 60%',statement['text'])
+        self.assertIn('可再次施放不表示无缝覆盖',statement['text'])
         timeline['events'][-1]['at']=1.5
         self.assertFalse(resources.timeline_assessment(result,timeline)['timing_conditions'])
         timeline['events'][-1]['at']=1

@@ -677,7 +677,7 @@ def assess(result, intent, plan, claims=None, *, reference_name="resources"):
         diagnostics.append({"code":"native_action_timing_unmeasured","required_subject":subject,"status":"unknown",
             "location":"/timeline" if timeline is not None else "/usage","actual":condition,
             "reference":"native:"+reference_name+"#/timing_conditions/"+str(index),
-            "message":"当前间隔短于原生完整增益后的重新充能周期。可按 full_duration_recast_seconds 调整安排；若采用提前结束、已有次数或重置，沿现有 condition_reviews 核对本次条件和可用退路。支付结果不认证动作或效果覆盖。"})
+            "message":"当前间隔不支持完整增益分支。先按 full_duration_recast_seconds 落实可执行安排并重算；若选提前结束、已有次数或重置，核其真实触发时点及条件失败时已实算的退路。非必要效果可在许可内不用；尚待设计或验证的操作保留缺口。condition_reviews 记录已设计分支，支付通过不认证动作或覆盖。"})
     for row in payments:
         if row["status"]=="refuted":
             message=f"技能 {row['skill_ref']} 的 {row['resource_id']} 单次支付 {row['payment']:g} 超出可用储量 {row['pool']:g}（生命须支付后存活）。"
