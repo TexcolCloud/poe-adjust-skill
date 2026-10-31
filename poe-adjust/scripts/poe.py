@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.66"
+VERSION = "2.8.67"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1539,16 +1539,35 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
     headline={'delivery','budget','execution_coverage','sustained_use','timeline_scope','native_timing_condition','native_manual_actions'}
     current=[row['text'] for row in statements if row['kind'] in {'delivery','budget'}]
     current += [effect_statement(calculation,name,compact=True)['text'] for name,calculation in calculations.items()]
+    timed_subjects={name for name,audit in audits.items() if audit.get('timeline')}
+    for name,audit in audits.items():
+        timeline=audit.get('timeline') or {}
+        for phase,window in (('preparation',timeline.get('preparation') or {}),('combat',timeline)):
+            if not window: continue
+            actions=[]
+            for ref,schedule in window.get('skill_schedules',{}).items():
+                native=schedule.get('native_action') or {}
+                label=native.get('display_name') or native.get('name') or native.get('id') or ref
+                mode=(native.get('native_timing') or {}).get('action_mode') or 'unknown'
+                actions.append(f"{label} [{ref}] {schedule['event_count']} 次，动作 {mode}")
+            current.append(f"{name} · {phase} · {window['duration_seconds']:g} 秒声明支付："+'；'.join(actions)+
+                           '。次数是所列支付，不是召唤产出或效果覆盖；instant 是瞬发，自动触发须有实际来源。完整定义、时点与费用见本次 publication.statements。')
     variant_subjects={'variant:'+row['id'] for row in experiments or []}
     current += [row['text'] for row in statements if row['kind'] in headline-{'delivery','budget'} and row.get('subject') not in variant_subjects]
     current += [row['text'] for row in measurements] if keys is not None else []
     phase_facts=[row for row in statements if row.get('calculation') not in variant_subjects and
                  (row['kind']=='resource' or row['kind']=='skill_schedule' and row['values'].get('native_duration_at_window_end'))]
     phase_facts.sort(key=lambda row:row['kind']!='resource')
-    current += [row['text'] for row in phase_facts]
+    for row in phase_facts:
+        if row['kind']=='resource': current.append(row['text']);continue
+        position=row['values']['native_duration_at_window_end']
+        current.append(row['calculation']+' · '+row['phase']+' · '+row['skill_ref']+
+            f"：末次声明支付 {position['last_event_at']:g} 秒；原生持续 {position['native_duration_seconds']:g} 秒；窗口终点距该事件 {position['elapsed_seconds']:g} 秒，假设该事件为时长起点的名义剩余 {position['nominal_remaining_seconds']:g} 秒。仅时点算术，实际启动与效果覆盖未测。")
     phase_ids={id(row) for row in phase_facts}
+    detailed={'damage_subject','native_skill_observation','native_skill_group','native_skill_timing','native_flask_parameters','single_skill_mean','skill_schedule'}
+    details=[s for s in statements if not (s['kind'] in detailed and s.get('calculation',s.get('subject')) in timed_subjects)]
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
-            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+([m['text'] for m in measurements] if keys is None else [])+[s['text'] for s in statements if s['kind'] in headline and s.get('subject') in variant_subjects]+[s['text'] for s in statements if s['kind'] not in primary|headline and id(s) not in phase_ids]),
+            "facts_summary":"\n\n".join(current+[s['text'] for s in details if s['kind'] in primary-headline]+([m['text'] for m in measurements] if keys is None else [])+[s['text'] for s in details if s['kind'] in headline and s.get('subject') in variant_subjects]+[s['text'] for s in details if s['kind'] not in primary|headline and id(s) not in phase_ids]),
             "scope":scope if scope is not None else "仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
 
 
