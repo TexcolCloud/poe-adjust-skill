@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.64"
+VERSION = "2.8.65"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -1540,13 +1540,14 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
     current += [effect_statement(calculation,name,compact=True)['text'] for name,calculation in calculations.items()]
     variant_subjects={'variant:'+row['id'] for row in experiments or []}
     current += [row['text'] for row in statements if row['kind'] in headline-{'delivery','budget'} and row.get('subject') not in variant_subjects]
+    current += [row['text'] for row in measurements] if keys is not None else []
     phase_facts=[row for row in statements if row.get('calculation') not in variant_subjects and
                  (row['kind']=='resource' or row['kind']=='skill_schedule' and row['values'].get('native_duration_at_window_end'))]
     phase_facts.sort(key=lambda row:row['kind']!='resource')
     current += [row['text'] for row in phase_facts]
     phase_ids={id(row) for row in phase_facts}
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
-            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+[m['text'] for m in measurements]+[s['text'] for s in statements if s['kind'] in headline and s.get('subject') in variant_subjects]+[s['text'] for s in statements if s['kind'] not in primary|headline and id(s) not in phase_ids]),
+            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+([m['text'] for m in measurements] if keys is None else [])+[s['text'] for s in statements if s['kind'] in headline and s.get('subject') in variant_subjects]+[s['text'] for s in statements if s['kind'] not in primary|headline and id(s) not in phase_ids]),
             "scope":scope if scope is not None else "仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
 
 
@@ -2575,11 +2576,11 @@ def export(args):
               "facts_summary":summary,"publication":outcome["publication"],"facts":outcome["review_packet"]["facts"],
               "objective_coverage":outcome["objective_coverage"],"errors":outcome["task_completion"]["errors"],"pending":outcome["task_completion"]["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
               "judgments":[facts.claim_display(c,review=outcome["review_packet"] if outcome["task_completion"]["kind"] in {"read_only_review","build_plan"} else None) for c in outcome["claims"]],"next_actions":outcome["next_actions"],
-              "reply_policy":"仅交付返回的 files。最终答复沿用 delivery_brief 的状态与范围，数值、当前名称和比较明细引用同一 HTML，简述已证明收益、代价、全部缺口类别及进入条件。机制和取舍按当前 judgments 的状态、text、条件与诊断核对；revision_pending 的文字尚待重审。平均收支只支持该投影，不能证明动作执行或效果持续；复核token或回读不证明机制、预算或目标达成。"}
+              "reply_policy":"交付 files；按 task_completion/delivery_brief 说明当前状态、范围、全部缺口类别及进入条件。数值和名称取本次 facts_summary/HTML事实表；持久文字用当前 text_templates（见 details_file 的 /publication/measurements）。解释所选收益、代价、主体条件与退路；revision_pending 先重审。引用、token、回读或平均收支不证明机制、执行、效果覆盖、预算或目标达成。"}
     if read_only:
-        response["reply_policy"]="交付 files 中的只读报告和证据，沿 task_completion 与 delivery_brief 说明本次评审完成情况；character_readiness 的完整原角色错误与未测项继续保留。反驳或证据不足可以完成评审，但不表示作者方案通过、原角色可执行或实战保证。没有改进 XML。"
+        response["reply_policy"]+=" 只读评审不导出改进 XML；反驳或证据不足可完成原问题，character_readiness 的原角色错误与未测项继续保留，不表示作者方案通过或原角色可执行。"
     elif outcome["task_completion"]["kind"]=="build_plan":
-        response["reply_policy"]="交付 files 中的 XML、HTML 与当前核验文件；按 task_completion 与 delivery_brief 说明具体方案交付是否完成，按 character_readiness 保留全部未就绪项。逐项说明执行条件、取得/训练及退路；合法条件快照不表示现实物资已取得、效果持续或实战目标已经达到。"
+        response["reply_policy"]+=" 按 character_readiness 保留全部未就绪项，逐项说明执行、取得与训练条件及退路；规划交付不表示现实物资已取得或实战效果成立。"
     if not deliverable:
         response.update(next="内部诊断已保存；按 task_completion 和 next_actions 修源、登记当前判断、复核并重算。",reply_policy="自检未通过，files 为空，不提供最终附件或声称交付完成。读取 details_file 的 task_completion 与 next_actions 继续返修；确实无法完成时如实说明失败原因与缺口，内部诊断不作为最终交付。")
     outcome["response"]=response
@@ -3274,6 +3275,7 @@ def bound_reply(value, args):
     saved=read_json(details)
     result=dict(value)
     result.update(details_file=str(details),output_scope="终端摘要；存在 *_total 时为全量数量，*_is_preview 标识预览。continuations 用 view 读完整字段，无须重算。",continuations=[])
+    parent_reply={'action':'view','file':str(details),'pointer':prefix,'keys':True,'offset':0,'limit':20}
     if args.command=="edit":
         result["next_actions"]=[row for row in value.get('next_actions',[]) if row['action']=='calculate_current_input']+[{"action":"view","file":str(details),"pointer":"/handles","keys":True}]+([{"action":"view","file":str(details),"pointer":"/stage_instances","limit":10}] if result["kind"]=="route" else [])+[{"action":"view","file":str(details),"pointer":"/input_contract"}]
     protected={"entrypoint","runtime","status","file_exported","xml_exported","files","files_total","files_is_preview","kind","file","revision","receipt_file","details_file","output_scope","continuations","inspection","probe_file","report","report_sha256","reply_policy"}
@@ -3308,6 +3310,11 @@ def bound_reply(value, args):
     while size(result)>11200:
         options=[key for key in result if key not in protected and key not in trimmed]
         if not options:
+            direct={prefix+'/'+key for key in protected|{'next_actions'}}|{row[2] for row in text_fields}
+            index=[row for row in result['continuations'] if not row.get('purpose') and row['pointer'] not in direct and isinstance(facts.pointer(saved,row['pointer']),dict)]
+            if len(index)>1:
+                result['continuations']=[row for row in result['continuations'] if row not in index]+[dict(parent_reply)]
+                continue
             texts=[row for row in text_fields if len(row[0][row[1]])>160]
             if texts:
                 owner,key,pointer=max(texts,key=lambda row:len(row[0][row[1]]))
@@ -3337,8 +3344,7 @@ def bound_reply(value, args):
             if len(result['continuations'])>1:
                 # The complete saved parent also recovers every omitted child;
                 # enumerating all child pointers/counts can exceed the envelope.
-                result['continuations']=[{'action':'view','file':str(details),'pointer':prefix,'offset':0,'limit':20,
-                                          'purpose':'read_complete_saved_reply'}]
+                result['continuations']=[{**parent_reply,'purpose':'read_complete_saved_reply'}]
                 for key in trimmed-{'errors','pending','next_actions'}:
                     result.pop(key,None);result.pop(key+'_total',None)
                 continue

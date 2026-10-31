@@ -3657,6 +3657,24 @@ class TimelineTests(unittest.TestCase):
         self.assertLess(summary.index('时间线测量范围'),summary.index('最低余额'))
         self.assertEqual(summary.count(statement['text']),1)
 
+        result['stats']['CurrentScopedMetric']=23
+        selected=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},
+                                 resource_audits={'candidate':{'timeline':audit}},keys=['CurrentScopedMetric'])
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);details=run/'candidates/current/evaluation.json'
+            response={'status':'draft','file_exported':False,'files':[],
+                      'publication':selected,'facts_summary':selected['facts_summary'],
+                      **{'detail_'+str(index):'Unrelated saved observation. '*1000 for index in range(16)}}
+            poe.write_json(details,{'response':response});original=details.read_bytes()
+            bounded=poe.bound_reply(response,args(command='evaluate',run=str(run),name='current'))
+            self.assertIn(selected['measurements'][0]['text'],bounded['facts_summary'])
+            self.assertIn('时间线测量范围',bounded['facts_summary'])
+            self.assertIn('最低余额',bounded['facts_summary'])
+            self.assertLessEqual(len(json.dumps({'ok':True,**bounded},ensure_ascii=False))+1,12000)
+            self.assertEqual(details.read_bytes(),original)
+            for continuation in bounded['continuations']:
+                facts.pointer(poe.read_json(details),continuation['pointer'])
+
     def test_native_duration_end_position_keeps_missing_unknown_and_expired_zero(self):
         result,timeline=self.fixture();timeline['repeat']=False
         timing=result['active_skills'][0]['native_timing']
