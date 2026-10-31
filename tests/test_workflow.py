@@ -1676,7 +1676,10 @@ class FinalReviewTests(unittest.TestCase):
 
     def test_current_timeline_publication_reports_native_name_per_skill_count_and_window_rate(self):
         result=resource_fixture();result.update({'class':'FutureClass','ascendancy':'FutureAsc','ascendancy_cn':'本机升华'})
-        result['active_skills'][0].update(name='FutureSkill',display_name='本机技能',costs={'ManaCost':0,'ManaPerSecondCost':0,'LifeCost':7,'LifePerSecondCost':14,'ESCost':0,'ESPerSecondCost':0},usage_rate={'value':2})
+        definition='Current native definition with independently available full detail. '*1000
+        result['active_skills'][0].update(name='FutureSkill',display_name='本机技能',description=definition,
+            native_timing={'action_mode':'manual','action_time_seconds':.1},
+            costs={'ManaCost':0,'ManaPerSecondCost':0,'LifeCost':7,'LifePerSecondCost':14,'ESCost':0,'ESPerSecondCost':0},usage_rate={'value':2})
         result['resource_rules']={'energy_shield_protects_mana':False}
         audit=resources.assess(result,{}, {'timeline':{'duration_seconds':3,'repeat':False,'events':[{'at':0,'skill_ref':'main'},{'at':0.5,'skill_ref':'main'}]}})
         packet=poe.publication('draft',[],['future'],{'status':'unknown','limit':None},{'candidate':result},readiness=audit,keys=[])
@@ -1689,6 +1692,14 @@ class FinalReviewTests(unittest.TestCase):
         self.assertEqual(life['window']['scheduled_payment_total'],14)
         self.assertIn('本机技能',schedule['text'])
         self.assertIn('本机升华',packet['facts_summary'])
+        self.assertRegex(packet['facts_summary'][:5000],r'\[main\][^\n]{0,80}2 次[^\n]{0,40}manual')
+        self.assertFalse(definition in packet['facts_summary'],'Long native definitions remain available in full detail, outside the timeline summary.')
+        self.assertIn(definition,schedule['text'])
+        result['active_skills'][0]['native_timing']['duration_seconds']=.2
+        audit=resources.assess(result,{}, {'timeline':{'duration_seconds':3,'repeat':False,'events':[{'at':0,'skill_ref':'main'},{'at':.5,'skill_ref':'main'}]}})
+        duration_packet=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},readiness=audit,keys=[])
+        self.assertFalse(definition in duration_packet['facts_summary'],'Duration observations retain compact endpoint arithmetic, not a full repeated definition.')
+        self.assertTrue(any(s['values'].get('native_duration_at_window_end') for s in duration_packet['statements'] if s['kind']=='skill_schedule'))
 
     def test_character_identity_tracks_effects_specs_and_real_config_but_not_transport(self):
         value={'class':'fixture','ascendancy':'fixture','level':12,'tree_version':'future',
@@ -3655,7 +3666,9 @@ class TimelineTests(unittest.TestCase):
         self.assertIn('最低余额',summary[:5000])
         self.assertIn('名义剩余',summary[:5000])
         self.assertLess(summary.index('时间线测量范围'),summary.index('最低余额'))
-        self.assertEqual(summary.count(statement['text']),1)
+        self.assertEqual(summary.count('名义剩余 1.75 秒'),1)
+        self.assertFalse(result['active_skills'][0]['description'] in summary,'Summary preserves endpoint arithmetic while the full native definition remains in the statement.')
+        self.assertIn(result['active_skills'][0]['description'],statement['text'])
 
         result['stats']['CurrentScopedMetric']=23
         selected=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},
@@ -3937,6 +3950,10 @@ class TimelineTests(unittest.TestCase):
         stage_setup=next(s for s in staged['statements'] if s['kind']=='resource' and s['phase']=='preparation' and s['subject']=='Mana')
         self.assertEqual(stage_setup['window'],setup['window'])
         self.assertEqual(stage_setup['calculation'],'stage:future')
+        untimed=copy.deepcopy(result);untimed['active_skills'][0]['description']='UNTIMED_NATIVE_DEFINITION'
+        mixed=poe.publication('draft',[],[],{'status':'unknown'},{'stage:future':result,'stage:other':untimed},
+            resource_audits={'stage:future':resources.assess(result,{}, {'timeline':timeline,'usage':usage})},keys=[])
+        self.assertIn('UNTIMED_NATIVE_DEFINITION',mixed['facts_summary'])
         del result['stats']['ManaRegenRecovery']
         unknown=publish()
         row=next(s for s in unknown['statements'] if s['kind']=='resource' and s['phase']=='combat' and s['subject']=='Mana')
