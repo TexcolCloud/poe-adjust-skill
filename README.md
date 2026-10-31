@@ -2,11 +2,11 @@
 
 Windows 上的 PoE1 配装 skill。用户明确调用后，一个 agent 复用本机 PoECharm 的数据和计算、联网核实外部事实，完成查询、复核、调整或开荒规划，交付中文 HTML 和适用 XML。
 
-目标环境为 **Windows TeleAgent 极速、单 agent**。本机候选仍在分模块验证，尚未整体放行或发布；当前结果、验收门槛及限制只以[验证报告](TEST-REPORT.md)为准。开荒入口与回归保留，开发和自然任务验收按用户要求暂停。既有发布包与历史评分保持原样。
+目标环境为 **Windows TeleAgent 极速、单 agent**。本机候选仍在分模块验证，尚未整体放行或发布；测试报告和工作日志仅保留在维护者本地。开荒入口与回归保留，开发和自然任务验收按用户要求暂停。既有发布包保持原样。
 
 ## 使用
 
-从[2.8.17精简实验版发布页](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.17)取得原样包 `poe-adjust-2.8.17-lean003.zip`；验收范围见[验证报告](TEST-REPORT.md)。仓库保持私有，需要有访问权限的GitHub账号。该发布版通过普通单agent离线样本验收；TeleAgent极速当前尚未通过。旧[2.8.16发布](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16)保留。在TeleAgent的“技能·专家·应用连接 → 我的 → 导入技能”中选择ZIP的步骤已实际使用。
+从[2.8.17精简实验版发布页](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.17)取得原样包 `poe-adjust-2.8.17-lean003.zip`。仓库保持私有，需要有访问权限的GitHub账号。该发布版通过普通单agent离线样本验收；TeleAgent极速当前尚未通过。旧[2.8.16发布](https://github.com/TexcolCloud/poe-adjust-skill/releases/tag/v2.8.16)保留。在TeleAgent的“技能·专家·应用连接 → 我的 → 导入技能”中选择ZIP的步骤已实际使用。
 
 准备能在 PoECharm 打开的 XML，作为 TeleAgent 附件，并发送：
 
@@ -28,7 +28,6 @@ Windows 上的 PoE1 配装 skill。用户明确调用后，一个 agent 复用�
 | [tests/test_workflow.py](tests/test_workflow.py) | 接口与原生行为回归，不是配装答案评测集 |
 | [package.py](package.py) | 只打包 15 个交付文件 |
 | [DESIGN.md](DESIGN.md) | 当前职责、证据与恢复边界 |
-| [WORKLOG.md](WORKLOG.md) | 本轮交接与历史检索 |
 
 只使用 Python 标准库；本轮单执行者验证需要Windows、可用Python及PoECharm。仓库不包含原生软件、游戏数据和私人角色文件；下列TeleAgent安装说明对应既有发布路径。
 
@@ -40,7 +39,7 @@ python -B -m unittest discover -s tests -v
 python -B package.py
 ```
 
-完整原生测试依赖约定的盾牌角色样本；跨机直接运行可能失败或跳过，具体输入要求见[测试报告](TEST-REPORT.md#如何复现程序检查)。不能将跳过说成通过。打包文件生成于 `dist/`，各冻结包的大小、SHA256和验收范围见测试报告；重新打包的ZIP容器时间可能变化，应同时核对内部文件。
+完整原生测试依赖约定的盾牌角色样本，私人样本与验收过程记录仅保留本地；跨机直接运行可能失败或跳过，不能将跳过说成通过。打包文件生成于 `dist/`；重新打包的ZIP容器时间可能变化，应同时核对内部文件。
 
 本轮在主对话按模块、衔接、完整自然任务顺序验证。无限期 heartbeat 不自动恢复，不自动覆盖既有 GitHub 发布；当前本机测试版不等于已发布版本。
 

@@ -1,6 +1,6 @@
 # 当前设计：POE 配装助手
 
-单入口 `poe-adjust/scripts/poe.py`，六个 Python 模块、两个 Lua 适配文件，Python 标准库、schema 2、15 个产品文件。本文只描述现役职责和合同；安装版本、评分、放行及限制以 [TEST-REPORT.md](TEST-REPORT.md) 为准，逐轮记录见 [WORKLOG.md](WORKLOG.md)，整理前文档在 Git `c8e7eff` 保留。
+单入口 `poe-adjust/scripts/poe.py`，六个 Python 模块、两个 Lua 适配文件，Python 标准库、schema 2、15 个产品文件。本文描述现役职责和合同，使用范围见[使用说明](使用说明.md)；测试报告与工作日志仅保留在维护者本地。
 
 ## 职责
 
