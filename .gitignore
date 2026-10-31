@@ -4,3 +4,5 @@ __pycache__/
 .poe-evidence/
 test-output/
 dist/
+/TEST-REPORT.md
+/WORKLOG.md
