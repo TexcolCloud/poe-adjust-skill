@@ -1,6 +1,6 @@
 # 命令、保存与恢复
 
-单入口 `scripts/poe.py`；参数取当前 `--help`，字段取 `input_contract`。首次定位用 `doctor`，沿返回的 Python/entrypoint/pob_path。原件与本机安装只读，所有新文件、缓存和临时目录落本任务获准目录。
+单入口 `scripts/poe.py`；参数取当前 `--help`，字段取 `input_contract`。首次定位用 `doctor`，沿返回的 Python/entrypoint/pob_path。原件与本机安装只读。下文`<工作区>`是本任务获准写入目录，`<run>`置于其内；保留方案与恢复凭证。
 
 ## 增量保存方案
 
