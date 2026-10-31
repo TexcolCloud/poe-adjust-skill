@@ -1,66 +1,62 @@
 # 判断、操作与自审（schema_version 2）
 
-配装、只读解释和路线共用；任务范围见[配装](build.md)。程序核对字段、事实、引用与版本，你判断文字含义、原因、覆盖和目标。
+原生引用根取本次reference_contract，判断与复核沿[命令](commands.md#增量保存方案)保存。
 
 ## 来源与判断
 
-evidence 必需 evidence_id/kind/subject，ID 在 intent 与 plan 合并后唯一，不以 native: 开头。status/digest/origin 由程序生成。
-
-| kind | 真实内容与边界 |
+| kind | 引用 |
 |---|---|
-| user_statement | text 为实际表达；库存仍是用户声明，不是独立盘点 |
-| web | url/excerpt 为公开官方或 PoEDB 页面实际正文；其他网站用可用联网工具存 artifact |
-| artifact | path 相对声明源 JSON 目录，仅该目录/子目录的文本；JSON 用 view.evidence_template 的实际 pointer，文本用真实 excerpt，二者选一。记录 URL/查阅时间；越界按 source_diagnostic 修源 |
-| local_data | data read 的 source/line/count/content_sha256 模板，补 ID/subject；由程序重读，不拿自由 text 替代 |
+| user_statement | 真实原话，只证明用户方向/持有声明 |
+| web | 已读官方或PoEDB正文的url/excerpt；其它网站存artifact |
+| artifact | 获准准确路径；JSON用view模板pointer，UTF-8文本用view模板excerpt，保留URL/查阅时间 |
+| local_data | data read模板source/line/count/content_sha256，加ID/subject，程序重读 |
 
-原生事实无需声明 evidence，沿当前 reference_contract/view 复制 native_references。阶段根属于各自 evaluation，未算阶段没有该根。检查实际对象、数组索引、XML/引擎与 source_revision；引用失效先读诊断的真实父对象/合法引用再修，不猜根名。artifact/local_data 可追溯不证明含义、真实性、当前相关性或游戏内效果。
+原生引用核XML/引擎/配置/source_revision及真实指针；阶段根限其evaluation。失效先读实际父对象/合法引用。来源可追溯仍要核内容是否支持本句；取得表不证明装备或机制。
 
-claim 字段由 input_contract 给出；基本格式：`{claim_id,text,subjects,evidence_refs,conditions,uncertainties,checks}`。claim_type 默认为 judgment；比较用 comparison 且 checks 非空，例如 `{reference:"当前原生引用",op:"ge",value:本次阈值}`。op 为 eq/ge/le，按原始值比较，eq 也支持同类型布尔/字符串。缺值、null、异类型为 unknown，不能当0；检查只证明所列命题。
+claims按同一理由合并适用对象，含claim_id、text、subjects及实际evidence_refs/conditions/uncertainties/checks。目标用objective:<id>关联，总体由assessment.goal_claim_ids选；其它subject沿当前pending/required_subject。comparison需非空checks，以当次reference及eq/ge/le核所选阈值；普通解释用judgment。未知不填0。
 
-subjects 关联对象，claim_id 是记录身份。每项目标用 `objective:<objective_id>`；总体用 goal，assessment.goal_claim_ids 只选含 goal 的当前判断。同一 claim 可关联多个适用对象，不必重复正文。依赖以当前 pending/required_subject 为索引：配置用 configuration:candidate 或 configuration:stage:<id>，测量用 measurement，技能用 skill:<skill_ref>，阶段用 stage:<id>，快照用 snapshot:<id>，取得用 acquisition:<instance_id>，训练用 training:<stage>:<instance>，进度用实际 progress subject，物品合法性用 legality:item:<ID>。
-
-`assessment:{goal_claim_ids:["总体判断ID"],scope:"实际用户范围",unresolved:[]}`。每项目标写实际实现、依据、条件、代价与未做部分，不能用旧计划或局部数字代替。条件未证实且影响目标时保留 uncertainty；因果、状态覆盖与用户目标不能由“测到一个值”直接推出。联合实验只解释联合变化，零差分只说明该对象/主体/场景/指标的观察。固定状态账目不证明动态效果或敌人死亡时间。
-
-“只有/全部/不存在”等断言需核同一条件下的相关实际对象与机制，主动查支持和反例；已分配节点、装备或技能的事件效果不能因未进入固定每秒账目而被排除。局部观察不足以证明唯一，覆盖未核就限定为已观察范围。改变条件的实验另列，不能代替原状态下的裁决；发现反证时修正源判断与结论。
+先说明为原目标选了什么及代价；额外收益按本次定义核必要物资、触发、作用主体和起止，未核前提留条件或不计收益。必要、唯一或只能等结论先试可区分的反例，未排除就按选择表述。数值对齐效果分项、条件、指标与计算层级，核已计因子、上限与持续依据；静态纳入不证明在场、启动或常驻。findings写支持与反证如何改变原句，联合变化仅支持联合结果。scope限已证范围，再从原目标反查缺口；自审绑定不补足因果。
 
 ## 当前文字与数字
 
-持久 claims 与 review 用返回 text_templates：`{{fact:当前引用}}` 带对象、显示比例和单位，是完整事实句；`{{value:当前引用}}` 仅原始标量，单位/换算自行有据说明。meaning/context 标明 actor、限定对象、XML、配置与引擎；同名指标不能互换。旧手写数字不会随计算刷新。
+持久文字沿当前模板：{{fact:引用}}为完整事实句，{{value:引用}}为原始值。数值先取最终对象已有事实，换算核共同时间原点和公式；名称、状态、槽位同据。依赖变化先修文字再review_claims；最终token只关联当前材料。
 
-edit 生成 bindings；对象/来源改变出现 invalidated_claims。读新事实，改源正文、条件、操作与关联，再 review_claims 刷新所选绑定。最终复核写对新数字不能修正仍错误的源 claim。程序投影的 judgments 与 HTML 同源，revision_pending 的旧文不作操作建议；有效绑定仍不认证语义。
-
-配置判断引用当前 config_values/controls、原文与实际进度；需要某控制时写 checks 比较实际 value。装备存在不证明配置开启或效果覆盖，false/默认/null 语义见[资料](data.md)。不能借用户声明认证计算或因果。
+配置用configuration:candidate（路线configuration:stage:<id>）判断覆盖实际config_values/controls、目标及进度；需特定控制时checks核实际value。效果开启、装备存在与持续覆盖分别核，细节见[资料](data.md)。
 
 ## 动作与资源
 
-usage 简单同窗格式为 `{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}`，技能来自当前 active_skills；claim.subjects 含对应 skill:<ref>。频率次/秒、时间秒，未知省略。原生满速、声明降频与实际 DPS 范围分开；不同窗口不借主技能窗口放行。
+按原目标选择单次、平均或完整窗口：
 
-独立 single_payments 从每项满可用储量单独检查，不证明连续动作或任意时点。mean_use 是单技能满速费用减固定净回复；mean_pool_depletion_seconds 只是平均耗尽投影，不含混合动作、吸取、充能、药剂、额外损失或动态状态，不认证无限续航。
+- single_payments各从满可用储量独立支付；mean_use为单技能满速费用减固定净回复，正值为消耗、负值为余量，mean_pool_depletion_seconds为同口径投影。publication按当前及各实验变体呈现，吸取、充能、药剂补充、额外损失及动态变化未含；平均余量不证明持续，固定回复与事件回复也不能合并成同一个必要条件。
+- 简单同窗usage用{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}，单位次/秒及秒；未知省略。claim关联skill:<ref>，每技能用自己的窗口。
+- 准备接战斗或混合动作用timeline:{duration_seconds,repeat,events:[{skill_ref,at}]}；at只付一次，repeat:true核接缝。preparation:{duration_seconds,events}只准备一次，等待耗时、实际余额带入战斗；需补放的效果在战斗重列。此时usage只关联skill_ref/claim_id及必要phase。平均频率不能证明准备终点或入场余额。
 
-混合动作使用 `timeline:{duration_seconds:秒数,repeat:false,events:[{skill_ref:"当前引用",at:秒数}]}`。一个 at 只支付一次，不是开始持续施放。事件处于窗口内，按顺序支付；重复周期用 repeat:true，检查接缝及终点恢复初始储量。有限窗口支付通过仍只证明该窗口，sustained_use 不能升级成无限使用。
+核payment_schedule/skill_schedules的native_action、次数、首末时点及费用；timing_conditions同时核频率和时间线。计费频率不等于完整重开周期；提前结束/次数/重置须核真实条件与退路，不同时保留完整覆盖。manual_actions另核原生手动占用及接缝，冲突改实际安排；均频容量不证明排程，伤害主体不等于施法者，冷却不当作施法占用，未知模式留范围及退路。两阶段native_snapshot固定，药剂覆盖随窗口进入待办；换状态分别实算并衔接余额/上限，叙述不应用开关。终点在duration_seconds，trace末项仅末次动作；minimum_balance不是终点，native_duration_at_window_end只按末次声明事件换算名义剩余，不证明效果启动或覆盖。正文和短答同取最终事实。
 
-战前准备在同一 timeline 增加 `preparation:{duration_seconds:秒数,events:[...]}`，对应 usage.phase 为 preparation，其余为 combat。准备一次，等待计时，完整结束余额带入战斗，不自动回满；战斗再使用仍需事件。使用 timeline 时 usage 仅关联 `{skill_ref,claim_id}`（需要时加 phase），不再定义另一组频率/窗口。
-
-自动技能按当前 SkillTriggerRate/费用安排完整窗口，缺实际触发频率或支付规则保留 unknown；零费用不用虚构支付。手动频率按 usage_rate.basis/metric/repeats，不按技能名猜。payment_schedule/skill_schedules 定位当前实际次数、首末时点、费用与关联，修返时同步源 claim。完整窗口 final 在 duration_seconds，trace 最后一项只是末次动作；准备 final 对接战斗 initial。
-
-时间线只重放离散费用与固定净回复，不测敌伤、额外损失、吸取、能盾充能、药剂补充、动作互斥、实际触发或效果变化。execution_coverage 保留这些范围。资源支付成功不能替它背书，平均次数不能变成持续 DPS。药剂开启且声明 continuous 仍保留当前 flask_coverage 能力缺口。按目标选择有限窗口即可，不强求所有任务证明无限循环。
+费用与原生手动区间分别检查；execution_coverage保留敌伤、完整动作实现、事件恢复等未测，DPS未按节奏重算。解释实际已算安排及其伤害范围；目标依赖未算部分时，设计有据的降频、补给、退出或可用前段。保留未知不能代替必要操作设计。药剂参数见[资料](data.md#技能配置与明细)。
 
 ## 物资与价格
 
-requirements/material_specs 来自实际差异，包括仍插着的禁用/备用宝石、加工和退点；原 XML 没有不证明用户没有。inventory/shopping 公共字段 kind、quantity、evidence_refs：gem 用 skill_id/level/quality，item 用当前 spec_sha256，service 用 service_id。item_id 只属某个 XML，跨阶段身份用规格与物理实例。
+requirements/material_specs取实际差异，含停用/备用宝石、加工和退点；原XML没有不推出用户没有。inventory/shopping共用kind/quantity/evidence_refs，gem取skill_id/level/quality，item取spec_sha256，service取service_id；同规格合并数量，来源不重复占用。
 
-库存来源 subject 沿 requirement_id，用户实际 context.quantity，装备匹配 spec_sha256；同规格合并，不重复使用同份数量依据。报价 low/high 为整条 quantity 总价，来源 context 匹配 realm:cn、league、currency、quantity、low/high、装备规格和实际 checked_at；quote:<物资引用> 判断关联同一来源与规格。国际服价无汇率/国服依据不算国服已核实价格。
+库存据真实user_statement的requirement_id、规格及context.quantity。报价low/high为整条quantity总价，context对应realm:cn、league、currency、quantity、low/high、规格与checked_at；quote:<引用>判断关联同条来源。国际价无国服/汇率依据不冒充国服已核价。
 
-预算 true 需完整来源及总上界在限额内；已知必要下界超限为 false，其他 null。totals_complete=false 金额仅部分。未知、估算、条件交易与已核实分别说明，来源有链接也不等于成交或拥有。
+预算true需完整来源及总上界不超限，已知必要下界超限false，其余null；totals_complete:false只算部分金额。未设预算可保留价格未知，取得步骤仍需设计。
 
 ## 最终复核与交付
 
-方案/claims 修订后计算，沿 next_actions.review_current_result 读取真实 user_goal_sources、objective_coverage、pending 与当前 check 方法。对照用户原话，不只看已拆目标。自己按 review_template 逐项填写所有 objectives/conclusions 的 scope/findings、支持/反证引用、conditions、unimplemented 与 verdict(supported/partial/refuted/unknown)。空数组也明确保存；supported 需支持，refuted 需反证。
+读本次review包facts.user_goal_sources，对照最终实物与必要操作，逐目标核变化、触发/费用/频率、槽位、效果起止、取得与切换；分类/数量/正文同据，矛盾先修源重算。
 
-发现偏离先改源并重算，再单独提交 assessment.review，之后 evaluate/export 或重跑 route。token 绑定本次意图、对象、文字、引用、XML/引擎与账目；改变后重审。不要用脚本自动生成语义复核或填 token 假称通过，引用/token 有效不证明文字因果正确。
+沿review_template/check审全部objectives/conclusions。scope限实际对象/窗口，findings写支持、反例及未知；evidence_refs/counter_evidence_refs放实际依据。原话只证明要求/持有，目标达成据当前对象、观测或适用规则判断。
 
-规划的真实未来依赖可用 condition_reviews：`{subjects,claim_ids,conditions,fallback,evidence_refs}`。subjects 原样取当前 facts.pending，关联本次 supported/partial conclusions，写具体进入条件与在条件失败时能执行的退路（或明确等待再开始）。review.unresolved 是当前复核工作未完成。必要设计/来源/计算仍缺、已知非法、矛盾、许可违反、过期复核不能包装成未来条件；普通生成缺口见[配装](build.md#普通目标生成)。
+| 状态 | 位置与处理 |
+|---|---|
+| 对象已完整设计，未来待取得、训练或执行 | conditions及condition_reviews，写具体条件及退路，可完成规划 |
+| 必要规格、操作或退路尚未设计 | unimplemented，继续设计实算 |
+| 本轮工作或评审未完成 | assessment.unresolved及assessment.review.unresolved；逐项完成，已审未来条件移至conditions/condition_reviews |
 
-完整 readonly 评审可否定/未知；规划的 unknown/refuted 目标不能说已完成。task_completion 与 character_readiness 各自说明交付和角色条件。export 冷算/保存回读并核当前来源：blocked 诊断 HTML；draft 草案及缺口；scoped_result 本次已评审范围。build/build_plan 落实际 XML 与 HTML；readonly 仅报告。route 的阶段 XML 以实际有效计算与文件为准。
+已审未测范围留scope/conditions；完整否定/未知可完成readonly，规划目标未知或被反驳仍未完成。
 
-publication、facts_summary、HTML 与核验共享事实，最终短答用真实状态、已核结果、代价、限制与下一步。源/输出完整性和恢复见[命令](commands.md#恢复与交付完整性)。已有有限支付、未知预算/覆盖、进入条件各保留；导出文件、自审和链接都不能替代目标依据。
+condition_reviews沿condition_review_contract，关联supported/partial判断。迁移、验证和退路的各分支、阶段均守原限制；未来恢复不抵消越界。核条件失败时的资源与取得，或保留可用对象待条件满足；缺口先修源。
+
+用edit --review-from关联当前计算，再重算、正式发布。build/build_plan交XML与HTML，readonly只报告，route交路线和实际关键XML；只取成功files。短答沿当前publication/facts_summary/HTML写给玩家的选择、用法和限制，恢复见[命令](commands.md#恢复与交付完整性)。

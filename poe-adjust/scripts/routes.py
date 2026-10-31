@@ -154,6 +154,7 @@ def validate_group(group,stage,gems,library,compatibility,capacity,warnings,pend
         gem["name"]=native.get("display_name",native["name"])
         gem["attribute_requirements"]={k:(row or {}).get(k) for k in ATTRIBUTES}
         gem["base_resources"]=copy.deepcopy((row or {}).get("base_resources",{}))
+        gem["base_resource_units"]=copy.deepcopy((row or {}).get("base_resource_units",{}))
         gem["naturally_trainable"]=(row or {}).get("naturally_trainable")
     checked=(compatibility or {}).get(",".join(g["skill_id"] for g in entries))
     if not checked: pending.append("native:links:"+stage["stage_id"]+":"+group["name"])
@@ -186,7 +187,7 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
     library=gem_ids(result)
     stages=result.get("stages")
     bx.require(isinstance(stages,list) and stages,"stages 至少一个阶段；同级切换可分阶段。")
-    stage_ids=set(); prior_level=None; instances={}; acquisitions={}; previous_nodes=set(); warnings=[]; pending=[]
+    stage_ids=set(); prior_level=None; instances={}; acquisitions={}; previous_nodes=set(); warnings=[]; pending=[]; diagnostics=[]
     native_slots={s["name"] for s in slots or []}
     coverage,coverage_pending=facts.objective_coverage(route.get("objectives",[]),evidence,claims)
     result["objective_coverage"]=coverage
@@ -206,8 +207,14 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             snap=stage["snapshot"]
             bx.require_keys(snap,SNAPSHOT_FIELDS,stage_path+"/snapshot")
             strings(snap.get("assumptions",[]),sid+" snapshot.assumptions",required=False)
-            valid={c["claim_id"] for c in claims if c["status"]=="model_assessed" and "snapshot:"+sid in c["subjects"]}
-            if not snap.get("assumptions") or not set(snap["assumptions"])<=valid: pending.append("snapshot_assumptions:"+sid)
+            valid={c["claim_id"] for c in claims if c["status"]=="model_assessed"}
+            if not snap.get("assumptions") or not set(snap["assumptions"])<=valid:
+                pending.append("snapshot_assumptions:"+sid)
+                available=sorted(c["claim_id"] for c in claims)
+                if not snap.get("assumptions") or not set(snap["assumptions"])<=set(available):
+                    diagnostics.append({"code":"snapshot_assumptions_unresolved","action":"edit_input","location":stage_path+"/snapshot/assumptions",
+                        "expected":{"claim_ids":available},"actual":snap.get("assumptions",[]),
+                        "message":"assumptions 填本次已有 claim_id 数组；判断正文留在 claims。阶段关联及依赖由这些实际引用确定。"})
         bx.require(isinstance(stage.get("name"),str) and stage["name"],sid+" 需要名称。")
         for key in ("level","act","completed_act","normal_points_available","ascendancy_points","secondary_ascendancy_points"):
             if stage.get(key) is not None: bx.require(type(stage[key]) is int and stage[key]>=(1 if key in {"level","act"} else 0),sid+" 的 "+key+" 无效。")
@@ -216,8 +223,14 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             prior_level=stage["level"]
         else: pending.append("level:"+sid)
         conditions=strings(stage.get("entry_conditions",[]),sid+" entry_conditions",required=False)
-        for key in conditions:
-            if not any(c["claim_id"]==key and c["status"]=="model_assessed" and "stage:"+sid in c["subjects"] for c in claims): pending.append("entry_condition:"+sid+":"+key)
+        stage_claims={c["claim_id"]:c for c in claims if "stage:"+sid in c["subjects"]}
+        for condition_index,key in enumerate(conditions):
+            if key not in stage_claims or stage_claims[key]["status"]!="model_assessed":
+                pending.append("entry_condition:"+sid+":"+key)
+            if key not in stage_claims:
+                diagnostics.append({"code":"entry_condition_claim_unresolved","action":"edit_input","location":stage_path+f"/entry_conditions/{condition_index}",
+                    "expected":{"claim_ids":sorted(stage_claims)},"actual":key,
+                    "message":"进入条件引用本阶段实际 claim_id；修正引用或阶段关联并复核后重算，引用缺口不是玩家未来执行条件。"})
         if stage.get("entry_checks") and not stage.get("snapshot"):
             _, gaps = facts.entry_checks(stage["entry_checks"], {}, claims, "stage:"+sid)
             pending += gaps
@@ -247,6 +260,12 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             bx.require(slot in native_slots,"不是当前原生槽位："+slot,location=base_path,expected=sorted(native_slots),actual=slot)
             base=(bases or {}).get(name)
             if name is not None: bx.require(base,"未知本机基底："+name,location=base_path,expected="current native base name",actual=name)
+            if base and "snapshot" not in stage:
+                requirements=base.get("requirements")
+                required=requirements.get("level") if isinstance(requirements,dict) else None
+                if type(required) in (int,float) and stage.get("level") is not None:
+                    bx.require(stage["level"]>=required,"本阶段等级不能装备所列普通基底；选择当前可用规格，特殊实物以完整快照核实际需求。",code="stage_base_level_unmet",location=base_path,
+                               expected={"base":name,"minimum_character_level":required},actual=stage["level"])
             check=layout.get("checks",{}).get(slot,{}) if layout.get("bases")==stage.get("bases",{}) else {}
             if check.get("base")!=name or type(check.get("valid_for_slot")) is not bool:
                 pending.append("native:equipment:"+sid+":"+slot)
@@ -259,8 +278,14 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
             bx.require(slot not in stage.get("bases",{}) or stage["bases"][slot] is not None,"明确空槽不能承载技能组。",location=stage_path+f"/skill_groups/{group_index}/slot",expected="occupied or unspecified slot",actual=slot)
             base=(bases or {}).get(stage.get("bases",{}).get(slot),{})
             capacity=base.get("sockets")
+            observed=layout.get('checks',{}).get(slot,{})
+            snapshot_capacity=('snapshot' in stage and layout.get('context',{}).get('basis')=='snapshot_xml'
+                and bool(layout.get('context',{}).get('xml_sha256')) and observed.get('valid_for_slot') is True
+                and type(observed.get('socket_capacity')) is int and observed['socket_capacity']>=0)
+            if snapshot_capacity: capacity=observed['socket_capacity']
             if slot and type(capacity) is not int: pending.append("native:socket_capacity:"+sid+":"+slot)
-            stage["socket_evidence"][slot]={"base":stage.get("bases",{}).get(slot),"capacity":capacity,"scope":"基底最大容量；实际孔色/连线/特殊装备效果需阶段 XML 实算。"}
+            stage["socket_evidence"][slot]={"base":observed.get('base') if snapshot_capacity else stage.get("bases",{}).get(slot),"capacity":capacity,
+                "scope":"本次原生阶段快照的实际孔数；连线与特殊孔仍核实际 XML。" if snapshot_capacity else "基底最大容量；实际孔色/连线/特殊装备效果需阶段 XML 实算。"}
             group_path=stage_path+f"/skill_groups/{group_index}"
             validate_group(group,stage,gems,library,compatibility,capacity,warnings,pending,group_path)
             usage[slot]=usage.get(slot,0)+len(group["gems"])
@@ -309,7 +334,7 @@ def validate(route,gems,data_version=None,classes=None,compatibility=None,nodes=
         if key in route and not facts.has_claim(claims,"preference:"+key): pending.append("preference:"+key)
     assessment=route.get("assessment",{})
     goal_diagnostics=facts.goal_review_diagnostics(assessment,claims)
-    result["diagnostics"]=goal_diagnostics+facts.claim_diagnostics(claims)
+    result["diagnostics"]=goal_diagnostics+diagnostics+facts.claim_diagnostics(claims)
     if goal_diagnostics: pending.append("goal_assessment")
     pending += ["assessment:"+v for v in assessment.get("unresolved",[])]
     result["pending"]=list(dict.fromkeys(pending))

@@ -1,60 +1,46 @@
-# 调用与恢复（schema_version 2）
+# 命令、保存与恢复
 
-## 命令入口
-
-入口是当前加载的 `scripts/poe.py`，使用可用 Python；doctor 返回实际解释器、脚本、本机安装与能力。恢复用这些真实路径，勿凭包名猜旧位置。`--help` 查当前参数，`input_contract` 查 JSON 字段和归属；本协议只说明容易误用的调用语义。
-
-PowerShell 路径分别加引号、用绝对路径调用；JSON 是 UTF-8 文件，优先用可靠序列化或 here-string 保存，不把复杂 JSON 拼进命令行。下面的占位路径替换成本次实际值：
-
-```powershell
-python '<skill>/scripts/poe.py' doctor --pob '<安装>'
-python '<skill>/scripts/poe.py' start --invoked --input '<原件.xml>' --run '<授权工作区>/run' --pob '<安装>'
-python '<skill>/scripts/poe.py' intent --run '<run>' --file '<工作区>/intent.json'
-python '<skill>/scripts/poe.py' evaluate --run '<run>' --name candidate-a --plan '<工作区>/plan.json'
-python '<skill>/scripts/poe.py' export --run '<run>' --name candidate-a
-python '<skill>/scripts/poe.py' route --invoked --file '<工作区>/route.json' --out '<工作区>/路线.html' --pob '<安装>'
-```
-
-start 的新 run 须为空，保留原件。只读查询直接 inspect/probe，具体见[资料](data.md)。路径缺失时沿 doctor 诊断定位；不写原生安装或扩展用户工作区授权。
+单入口 `scripts/poe.py`；参数取当前 `--help`，字段取 `input_contract`。首次定位用 `doctor`，沿返回的 Python/entrypoint/pob_path。原件与本机安装只读，所有新文件、缓存和临时目录落本任务获准目录。
 
 ## 增量保存方案
 
-可以直接保存完整源 JSON 后 evaluate/route，也可以用 edit 逐步维护长方案及判断绑定；不强制先建小头部或分几次补字段。plan/route 当前顶层、嵌套字段和 owner 在 `input_contract`，intent 字段不能搬进 plan。
+你编写独立 changes JSON，`edit --invoked --kind plan|route --file ... --changes ...` 创建或修改源文件；已有源带 `--if-sha256 '<当前revision>'`。返修直接取 next_actions.edit_arguments，输入变更后重算，最终复核单独提交。
+
+| changes | 用途 |
+|---|---|
+| set | 合并顶层；数组对象按稳定ID更新，未点名项保留 |
+| replace | JSON Pointer到新值，精确替换字段/数组 |
+| remove | 删除明确JSON指针；同次指针按同一源revision解释 |
+| review_claims | 核过当前正文与依据后，重登所列claim_id的程序绑定 |
+
+新增或改文由edit绑定。依赖变化先计算当前对象，再修正文并重登invalidated_claims；绑定不更新文字。intent字段在intent，plan/route字段沿各自契约。
+
+新方案先写 `{"set":{"mode":"refine","summary":"本次目的","operations":{}}}` 到 plan-changes.json，按需补实际方案字段，由首次 edit 创建 plan.json。沿以下顺序工作；review-changes仅写set.assessment.review，按当前review_template审原目标、对象和条件：
 
 ```powershell
-python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/changes.json'
+python '<entry>' start --invoked --input '<原件.xml>' --run '<run>' --pob '<安装>'
+python '<entry>' intent --run '<run>' --file '<工作区>/intent.json'
+python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/plan-changes.json'
+python '<entry>' evaluate --run '<run>' --name candidate-a --plan '<工作区>/plan.json'
+python '<entry>' edit --invoked --kind plan --file '<工作区>/plan.json' --changes '<工作区>/review-changes.json' --review-from '<本次details_file>'
+python '<entry>' evaluate --run '<run>' --name candidate-a --plan '<工作区>/plan.json'
+python '<entry>' export --run '<run>' --name candidate-a
 ```
 
-新文件直接创建；修订已有源在命令加 `--if-sha256 '<当前revision>'`。变更格式及合法字段由返回契约提供：
-
-| 变更 | 用法 |
-|---|---|
-| set | 顶层字段按契约合并；数组对象用稳定 ID，未点名项保留 |
-| replace | JSON Pointer 到新值的映射，替换指定位置 |
-| remove | JSON Pointer 数组，删除指定位置 |
-| review_claims | 已读当前证据、重新判断后的 claim_id 数组；刷新绑定 |
-
-同一 edit 的指针按同一源 revision 解释。stage_id、claim_id、宝石 instance_id 保持对象身份；新实物使用新实例。更新对象或来源后读 invalidated_claims/current facts，改正文、条件与关系，再 review_claims。assessment.review 在方案/claims 修订与当前计算完成后单独提交，接着重算和导出；token 由程序返回。
+路线两次edit用kind route；计算/发布均为 `route --invoked --file '<工作区>/route.json' --out '<工作区>/路线.html' --pob '<安装>'`。首次与重审整体替换复核；沿review_current_result.edit_arguments核源和凭证。
 
 ## 按需读取与修复
 
-将 `--out` 存在声明源 JSON 的目录或子目录，避开程序管理的候选/交付文件。先读 `delivery_brief/errors/stage_summary/next_actions`，按目标读取相关明细，不必每次倾倒全部目录或矩阵。
+`--out`选声明源目录/子目录，避开程序管理的候选和交付文件。先读delivery_brief、errors、stage_summary、next_actions；`view`沿pointer/fields/keys/query定位，按page_unit、continuations/deferred_values续读，无须重算来翻页。purpose指出分页动作，changes/edit_arguments可按当前正文复用。
 
-```powershell
-python '<entry>' view --file '<工作区>/evaluation.json' --pointer '/result/stats' --keys
-python '<entry>' view --file '<工作区>/review.json' --pointer '/facts/pending'
-```
-
-`view` 的 fields/keys/query、offset/limit 按返回 `page_unit` 分页；续页及过长字段在 continuations/deferred_values。复制当次 `native_references/evidence_template`，核对对象身份和 source_revision。零、false、null 分开。
-
-诊断给 location、expected/actual、source_diagnostic 与可选合法引用。先读真实节点再修源；revision 过期重读输入。`io_source_commit` 等保存中断沿状态收据核对当前源与 revision。只在输入、证据或能力有新信息时重试；能力缺口如实保留，拒绝的动作停止。
+location、expected/actual、source_diagnostic指向实际问题；先读源节点，证据沿source_base和真实路径。revision过期重读；有新输入、证据或能力才重试，缺能力保留未知。
 
 ## 采用原生候选
 
-补路或宝石延期建议的 preview 已对组合实算。先看实际点数、资源、数值和用户限制，再将 `review_native_proposal` 的 details_file、proposal_id、input_revision 分别传给现有 edit 的 `--proposal-file`、`--proposal-id`、`--if-sha256`（仍带 `--invoked`）；路线指定 route kind。无需抄路径或生成另一份 XML。已知超点先重设计，可用点数未知则保留进度条件。保存后 evaluate/route 重核全部目标，建议不保证最优、实物可得或效果覆盖。
+补路/延期的preview已对组合实算。先核点数、资源、目标与限制，再以review_native_proposal的details_file、proposal_id、input_revision调用edit的 `--proposal-file/--proposal-id/--if-sha256`，仍带invoked和对应kind。采用后重算核目标。自然可用等级不证明已训练，未知进度仍为条件。
 
 ## 恢复与交付完整性
 
-`status --run '<run>'` 或 `status --route-state '<路线.state.json>'` 查看当前源、候选和 last_operation，沿返回动作恢复。路线仅复用身份/文件一致的已完成阶段；失败后重跑原 route 命令。重算会取消旧导出身份，不能拿旧成功状态覆盖新失败。
+`status --run '<run>'` 或 `status --route-state '<路线.state.json>'`核源、候选与last_operation；大返回加新`--out`再view。已有run的start沿status恢复；路线仅复用身份/文件完整的已完成阶段。
 
-`file_exported` 结合当次任务状态、实际文件及摘要核对。原件、输入、候选、来源与引擎均受完整性检查；被改输出应修源再生成。XML、HTML 和核验文件直接交返回路径，避免手改生成页使其脱离当前证据。
+交付门槛见[正式交付](../SKILL.md#工作与完成)。失败files为空，JSON/阶段快照供恢复；export失败返回ok:false/退出2，route.ok只说明命令完成。变更后修源重新生成，交付只取本次成功files。

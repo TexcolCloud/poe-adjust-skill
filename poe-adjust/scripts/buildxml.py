@@ -503,7 +503,7 @@ def apply_plan(source, plan, native=None):
     build = root.find("Build")
     if "level" in operations:
         build.set("level", str(operations["level"]))
-    build.set("characterLevelAutoMode", "false")
+    if operations: build.set("characterLevelAutoMode", "false")
     if "replace_skills" in operations:
         new_groups = operations["replace_skills"]
         parent = active_set(root, "Skills", "SkillSet", "activeSkillSet")

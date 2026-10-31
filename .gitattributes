@@ -1,2 +1,3 @@
-# Preserve the verified skill bytes, including line endings.
+# Preserve the verified skill and test bytes, including line endings.
 poe-adjust/** -text whitespace=cr-at-eol
+tests/*.py -text whitespace=cr-at-eol

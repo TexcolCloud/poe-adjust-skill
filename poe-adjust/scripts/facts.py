@@ -22,6 +22,7 @@ import buildxml as bx
 import engine
 
 HOSTS = {"poedb.tw", "poe.qq.com", "www.pathofexile.com", "pathofexile.com"}
+JSON_ARTIFACT_LIMIT = 64 * 1024 * 1024
 
 
 class PageText(HTMLParser):
@@ -200,6 +201,7 @@ def load_evidence(declarations, folder, context, *, root=None):
         location=f"/evidence/{index}"
         key, kind = entry.get("evidence_id"), entry.get("kind")
         artifact_source=None
+        artifact_limit=2_000_000
         bx.require(kind == "local_data" or not set(entry) & {"source", "line", "count", "content_sha256"}, "source/line/count/content_sha256 仅用于 local_data。",location=location,expected="local_data for source fields",actual=kind)
         record = {"evidence_id": key, "kind": kind, "subject": entry["subject"], "context": entry.get("context", {}), "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         if entry.get("checked_at"):
@@ -226,18 +228,20 @@ def load_evidence(declarations, folder, context, *, root=None):
                 text = receipt["text"]
                 record.update({k: v for k, v in receipt.items() if k != "evidence_template"}, status="local_data_observed", origin="program_local_read")
             else:
-                path = (base / entry.get("path", "")).resolve()
+                declared = Path(entry.get("path", ""))
+                path = (base / declared).resolve()
                 record["source_base"]=str(base)
-                bx.require(path.is_relative_to(base),
-                           "资料须在声明源 JSON 所在目录及子目录内；按 source_base 保存所需记录。",
+                bx.require(declared.is_absolute() or path.is_relative_to(base),
+                           "相对资料路径须在声明目录内；获准原文件可填准确绝对路径，只读引用。",
                            location="/path",expected={"source_base":str(base)},actual=str(path))
                 bx.require(path.is_file(),"artifact.path 未找到文本文件；按 source_base 核对相对路径。",
                            location="/path",expected={"source_base":str(base),"type":"existing text file"},actual=str(path))
                 size=path.stat().st_size
-                bx.require(size<=2_000_000,"资料超过 artifact 读取上限。",
-                           location="/path",expected={"maximum_bytes":2_000_000},actual=size)
+                if "pointer" in entry and path.suffix.lower()=='.json': artifact_limit=JSON_ARTIFACT_LIMIT
+                bx.require(size<=artifact_limit,"资料超过 artifact 读取上限。",
+                           location="/path",expected={"maximum_bytes":artifact_limit},actual=size)
                 raw=path.read_bytes()
-                bx.require(len(raw)<=2_000_000,"资料超过 artifact 读取上限。",location="/path",expected={"maximum_bytes":2_000_000},actual=len(raw))
+                bx.require(len(raw)<=artifact_limit,"资料超过 artifact 读取上限。",location="/path",expected={"maximum_bytes":artifact_limit},actual=len(raw))
                 text=raw.decode("utf-8-sig")
                 artifact_source=(path,raw,text)
                 if "pointer" in entry:
@@ -257,9 +261,9 @@ def load_evidence(declarations, folder, context, *, root=None):
             record.update(status="unresolved", reason=str(exc))
             if hasattr(exc,"diagnostic"): record["diagnostic"]={**exc.diagnostic,"location":location+exc.diagnostic.get("location","")}
             if kind == "artifact":
-                record["repair"]={"source_base":str(base),"maximum_bytes":2_000_000,
+                record["repair"]={"source_base":str(base),"maximum_bytes":artifact_limit,
                                   "declaration":{k:entry[k] for k in ("evidence_id","kind","subject","path","excerpt","pointer") if k in entry},
-                                  "message":"保留证据 ID；在 source_base 内保存本次实际工具结果。JSON 用 view 返回的 evidence_template 选实际 pointer，文本填写真实 excerpt；原生计算优先沿用 native 引用。不要扩大目录权限或复制旧结果冒充新测量。"}
+                                  "message":"保留证据 ID；相对路径沿 source_base，获准原文件用准确绝对路径。JSON 沿 view 的 evidence_template 选实际 pointer，文本填真实 excerpt；原生计算沿 native 引用。不扩大授权范围或复制旧结果冒充新测量。"}
                 if artifact_source is not None and artifact_source[0].suffix.lower()=='.json':
                     path,raw,text=artifact_source
                     try: source=json_value(text)
@@ -268,6 +272,10 @@ def load_evidence(declarations, folder, context, *, root=None):
                         record['repair']['source_revision']=bx.digest(raw)
                         record['repair']['next_actions']=[{'action':'view','file':str(path),'pointer':'',
                             'keys':isinstance(source,dict),'offset':0,'limit':20}]
+                elif artifact_source is not None:
+                    path,raw,text=artifact_source
+                    record['repair']['source_revision']=bx.digest(raw)
+                    record['repair']['next_actions']=[{'action':'view','file':str(path),'pointer':'','offset':0,'limit':2000}]
         result[key] = record
     return result
 
@@ -360,8 +368,8 @@ def review_shape(review, *, complete=True, claim_ids=None, objective_ids=None):
             location=path+f"/{field}/{index}"
             bx.require_keys(row,{identity,"scope","findings","verdict","evidence_refs","counter_evidence_refs","conditions","unimplemented"},location)
             if complete:
-                required={identity,"scope","findings","verdict","evidence_refs","counter_evidence_refs","conditions","unimplemented"}
-                bx.require(required<=row.keys(),"逐项复核须明确判断、支持/反证、条件及未实现部分；使用当前 review_template。",location=location,expected=sorted(required),actual=sorted(row),details={"missing_fields":sorted(required-row.keys())})
+                required={identity,"scope","findings","verdict","evidence_refs"}
+                bx.require(required<=row.keys(),"逐项复核须明确对象、范围、判断与依据；有反证、条件或未实现项时填写对应数组。",location=location,expected=sorted(required),actual=sorted(row),details={"missing_fields":sorted(required-row.keys())})
             for key in (identity,"scope","findings"):
                 if complete or key in row or key==identity and expected_ids is not None:
                     bx.require(isinstance(row.get(key),str) and row[key].strip(),key+" 应为非空文字。",location=location+"/"+key,expected="nonempty string",actual=row.get(key))
@@ -436,6 +444,18 @@ def render_text(text, evidence):
     return re.sub(r"\{\{(value|fact):([^{}]+)\}\}",substitute,text),missing
 
 
+def stage_claim_ids(stage):
+    """Project typed references from a draft; field validators retain malformed input."""
+    snapshot=stage.get("snapshot",{})
+    result=set()
+    for values in (stage.get("entry_conditions",[]),snapshot.get("assumptions",[])):
+        if isinstance(values,list): result.update(value for value in values if isinstance(value,str))
+    for rows in (stage.get("entry_checks",[]),snapshot.get("usage",[])):
+        if isinstance(rows,list):
+            result.update(row["claim_id"] for row in rows if isinstance(row,dict) and isinstance(row.get("claim_id"),str))
+    return result
+
+
 def claim_bindings(document, claim, engine_fingerprint):
     """Bind a judgment to its declared source objects, not to other judgments."""
     def digest(value): return bx.digest(json.dumps(value,ensure_ascii=False,sort_keys=True,allow_nan=False))
@@ -443,12 +463,19 @@ def claim_bindings(document, claim, engine_fingerprint):
     result={"document":digest({k:v for k,v in document.items() if k not in omitted}),"engine":engine_fingerprint}
     stages={s["stage_id"]:s for s in document.get("stages",[])}
     objectives={o["objective_id"]:o for o in document.get("objectives",[])}
+    if stages and claim["claim_id"] in document.get("assessment",{}).get("goal_claim_ids",[]):
+        result["stages"]=digest(document["stages"])
+    linked=[sid for sid,stage in stages.items() if claim["claim_id"] in stage_claim_ids(stage)]
+    result.update({"stage:"+sid:digest(stages[sid]) for sid in linked})
+    stage_scoped=bool(linked) or any(subject[len(prefix):] in stages
+                     for subject in claim.get("subjects",[])
+                     for prefix in ("stage:","snapshot:","configuration:stage:") if subject.startswith(prefix))
     for subject in claim.get("subjects",[]):
         kind,_,identifier=subject.partition(":")
         if kind=="configuration" and identifier.startswith("stage:"): result[identifier]=digest(stages.get(identifier[len("stage:"):]))
         elif kind in {"stage","snapshot"}: result["stage:"+identifier]=digest(stages.get(identifier))
         elif kind=="objective": result[subject]=digest(objectives.get(identifier))
-        elif stages: result["stages"]=digest(document["stages"])
+        elif stages and (kind!="skill" or not stage_scoped): result["stages"]=digest(document["stages"])
     declared={e["evidence_id"]:e for e in document.get("evidence",[])}
     for reference in claim_references(claim):
         if reference.startswith("native:stage:"):
@@ -727,9 +754,9 @@ def claim_diagnostics(claims):
             for claim in claims for row in claim.get("diagnostics",[])]
 
 
-def configuration_reviewed(claims, calculation_name):
+def configuration_reviewed(claims, calculation_name, *, reviewed_ids=()):
     references=["native:"+calculation_name+"#/"+field for field in ("config_values","config_controls")]
-    return any(c["status"]=="model_assessed" and "configuration:"+calculation_name in c["subjects"] and
+    return any((c["status"]=="model_assessed" or c["claim_id"] in reviewed_ids) and "configuration:"+calculation_name in c["subjects"] and
                any(ref==prefix or ref.startswith(prefix+"/") for ref in c["evidence_refs"] for prefix in references) for c in claims)
 
 
@@ -775,7 +802,7 @@ def objective_coverage(objectives, evidence, claims):
 def goal_review_diagnostics(assessment, claims):
     """Locate incomplete overall-review references; never choose the conclusion."""
     indexed={c["claim_id"]:c for c in claims}
-    available=sorted(c["claim_id"] for c in claims if "goal" in c.get("subjects",[]) and c.get("status")=="model_assessed")
+    available=sorted(c["claim_id"] for c in claims if c.get("status")=="model_assessed")
     diagnostics=[]
     def add(code, location, expected, actual, message):
         diagnostics.append({"code":code,"category":"input","subject":"goal_assessment","status":"unknown",
@@ -787,11 +814,9 @@ def goal_review_diagnostics(assessment, claims):
     for index,key in enumerate(ids):
         claim=indexed.get(key)
         actual={k:claim.get(k) for k in ("claim_id","subjects","status")} if claim else {"claim_id":key}
-        expected={"subjects_include":"goal","status":"model_assessed"}
+        expected={"status":"model_assessed"}
         if claim is None:
             add("goal_claim_missing",f"/assessment/goal_claim_ids/{index}",expected,actual,"未找到当前判断 ID；使用实际已有记录或补充总体判断。")
-        elif "goal" not in claim.get("subjects",[]):
-            add("goal_claim_subject_missing",f"/assessment/goal_claim_ids/{index}",expected,actual,"该判断未关联总体 goal；选定适用的总体判断，或核对其用途后修改 subjects。")
         elif claim.get("status")!="model_assessed":
             add("goal_claim_unresolved",f"/assessment/goal_claim_ids/{index}",expected,actual,"总体判断仍有未解决项；处理其当前诊断与证据，不直接填写输出状态。")
     if not assessment.get("scope","").strip():
@@ -830,11 +855,16 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
         {**evidence[ref],"evidence_id":ref} for ref in user_refs if evidence.get(ref,{}).get("kind")=="user_statement"]}
     def stable(value):
         if isinstance(value, dict):
-            return {k: stable(v) for k, v in value.items() if k not in {"recorded_at", "review", "runtime"}}
+            current={k: stable(v) for k, v in value.items() if k not in {"recorded_at", "review", "runtime"}}
+            if current.get("assessment")=={}:current.pop("assessment")
+            return current
         if isinstance(value, list): return [stable(v) for v in value]
         return value
     review = assessment.get("review")
-    if review is not None: review_shape(review)
+    if review is not None:
+        review_shape(review)
+        review={**review,**{field:[{**row,**{key:row.get(key,[]) for key in ("counter_evidence_refs","conditions","unimplemented")}}
+                                 for row in review.get(field,[])] for field in ("conclusions","objectives")}}
     summary_refs=claim_references({'text':review['findings']}) if review else []
     explicit_refs=summary_refs+[ref for claim in claims for ref in claim_references(claim)]
     for row in (review or {}).get("conclusions",[])+(review or {}).get("objectives",[]):
@@ -924,7 +954,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
             display.append(current)
         rendered.append(display)
     def template(key,identity):
-        return {identity:key,"scope":"","findings":"","evidence_refs":[],"counter_evidence_refs":[],"conditions":[],"unimplemented":[],"verdict":""}
+        return {identity:key,"scope":"","findings":"","evidence_refs":[],"verdict":""}
     rendered_conditions=[]
     for index,row in enumerate(condition_rows):
         current=dict(row)
@@ -946,7 +976,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
               "condition_reviews":rendered_conditions,
               "condition_review_contract":{"subjects_pointer":"/facts/pending","claim_ids_pointer":"/claims",
                   "fields":{"subjects":"本次待办精确键数组；同一原因可以分组，每键只出现一次。","claim_ids":"当前逐项复核中 supported/partial 判断的 claim_id 数组。",
-                            "conditions":"用户实际执行前要满足的明确条件数组。","fallback":"在该条件确实失败的状态下核对可执行的退路：当时能否行动、所需资源是否可用、能否在那里取得缺少的物资；或明确已有可用阶段并满足条件后才切换。","evidence_refs":"当次可解析的条件与退路依据。"},
+                            "conditions":"用户实际执行前要满足的明确条件数组。","fallback":"条件失败当时实际怎么做、何时做：各分支按当前对象和窗口核资源、取得及原限制，引用实算依据；或保留已有可用对象待条件满足。尚待设计或验证的操作留unimplemented，未来恢复不抵消越界。","evidence_refs":"当次可解析的条件与退路依据。"},
                   "scope":"映射完整性不证明条件合理或退路可用；已知错误、失效引用与未完成的必要工作不能改称执行条件。"},
               "coverage":{"required_claim_ids":required,"missing_claim_ids":missing,"unknown_claim_ids":unexpected,
                           "required_objective_ids":required_objectives,"missing_objective_ids":missing_objectives,"unknown_objective_ids":unexpected_objectives},
@@ -954,7 +984,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
               "completion_pending":list(dict.fromkeys(pending)),
               "review_template":{"token":token,"findings":"","unresolved":[],"condition_reviews":[],"conclusions":[template(key,"claim_id") for key in required],
                                  "objectives":[template(key,"objective_id") for key in required_objectives]},
-              "check": "先按原话确定本项要求或 claims.text 待审判断的含义，从 facts.user_goal_sources 反向检查 facts.objective_coverage 与 facts.pending。逐项问‘即使当前数值成立，原要求或判断还可能为什么不成立？’scope 界定直接证据的对象、状态和窗口，不能把待审命题缩窄后当作原命题成立。findings 说明证据直接证明什么、原命题还依赖哪些必要前提及其验证情况；必要前提未证明时，原命题用 partial/unknown，列出的条件不等于已经验证。已证明的有限支付、条件下局部收益分别保留，无关未知不否定它们。有 facts.stages 时按 previous_stage_id 从起点检查最低可用的推进配置：结合 required_items、instance_transitions、equipment_reference 所指本次实际装备 与 transition，核对前段能否取得后段必要规格。把退路放到条件已失败的状态下检查行动、资源、取得地点；来源或最低配置尚未设计出来写入 review.unresolved，不能改称未来条件。未来条件只承接已经设计完整、尚待玩家取得、训练或完成任务的步骤。支持/反证放 evidence_refs/counter_evidence_refs，成立条件放 conditions，相关缺口放 unimplemented，按原命题选择 verdict（supported/partial/refuted/unknown）。核对源判断与当前数值、名称、实验输入、共同条件和作用主体；复核写对数值不等于修正了源文字。发现偏离先修源判断并重算，当前事实用本次 {{fact:引用}}，再单独提交新的 assessment.review；提交后配装再次evaluate再export，路线再次route。刷新绑定不等于复核通过，不自动回填 token。",
+              "check": "先反驳再定结论：对照 facts.user_goal_sources、最终对象和原句，核实际主体、效果、触发/持续条件及当前规则；寻找能推翻该句的状态，查已计因子，必要时做最小区分实验。findings 写支持和反证如何改变原句，scope 限已证对象和窗口，缺口留 unknown/partial。数字用 {{fact:引用}}，原话只证明要求。矛盾先修源重算，按 references/evidence.md#最终复核与交付审全 objectives/conclusions；未来条件放 conditions，必要设计缺口放 unimplemented，未完复核放 review.unresolved。单独提交 assessment.review、重算再导出；绑定不认证语义。",
               "scope": "摘要绑定防止旧复核沿用到新方案；同一模型自审，不能证明自由文字无误或等同独立模型/实战验证。"}
     # A completed model review may honestly retain relevant unmet goals.
     pending += ["objective:"+row["objective_id"]+":review:"+row["verdict"] for row in objectives if row["verdict"]!="supported" or row["unimplemented"]]

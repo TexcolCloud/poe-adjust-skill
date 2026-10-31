@@ -13,6 +13,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -70,6 +71,19 @@ def resource_fixture():
 
 
 class DocumentTests(unittest.TestCase):
+    def test_empty_plan_preserves_level_mode_and_all_xml(self):
+        for mode in (None,'true','false'):
+            with self.subTest(mode=mode):
+                original=bx.parse(SAMPLE)
+                if mode is not None:original.find('Build').set('characterLevelAutoMode',mode)
+                before=bx.serialise(original)
+                result=bx.apply_plan(original,{'mode':'refine','summary':'Observe the original role','operations':{}})
+                self.assertEqual(bx.serialise(result),before)
+                changed=bx.apply_plan(original,{'mode':'refine','summary':'Explicit level change','operations':{'level':87}})
+                self.assertEqual(changed.find('Build').get('level'),'87')
+                self.assertEqual(changed.find('Build').get('characterLevelAutoMode'),'false')
+                self.assertEqual(bx.serialise(original),before)
+
     def test_native_explicit_gem_state_rejects_ignored_or_changed_requests(self):
         current={'group':1,'index':1,'id':'ShieldCrush','source':'Item:fixture','level':20,'quality':0,
                  'enabled':True,'count':1,'enable_global1':True,'enable_global2':False}
@@ -365,6 +379,15 @@ class DocumentTests(unittest.TestCase):
         intent["confirmed"] = True
         intent["budget"]["amount"] = float("inf")
         with self.assertRaises(ValueError): poe.validate_intent(intent, self.root)
+        preserved=intent_for(self.root)
+        preserved['keep_skill_groups']=[1]
+        preserved['constraint_sources']['/keep_skill_groups']='user'
+        self.assertEqual(poe.validate_intent(preserved,self.root)['keep_skill_groups'],[1])
+        missing=copy.deepcopy(preserved);missing['constraint_sources'].pop('/keep_skill_groups')
+        with self.assertRaisesRegex(ValueError,'/keep_skill_groups'):poe.validate_intent(missing,self.root)
+        for value in (None,[True],[0],[2],[1,1],{'group':1}):
+            with self.subTest(keep_skill_groups=value),self.assertRaises(ValueError):
+                poe.validate_intent({**preserved,'keep_skill_groups':value},self.root)
 
     def test_budget_keeps_unknown_and_foreign_prices_unverified(self):
         intent={"budget":{"amount":20,"currency":"divine"},"league":"CN"}
@@ -388,6 +411,12 @@ class DocumentTests(unittest.TestCase):
         result = {"equipped": [{"slot": "Boots", "id": 1}],
                   "gems": [{"group": 1, "index": i, "color": "G", "enabled": True, "support": i > 1} for i in range(1, 5)]}
         self.assertEqual(poe.socket_layout_issues(self.root, result), [])
+        group=bx.groups(self.root)[0]
+        group.set('slot','')
+        self.assertTrue(poe.socket_layout_issues(self.root,result))
+        group.set('enabled','false')
+        self.assertEqual(poe.socket_layout_issues(self.root,result),[])
+        group.set('enabled','true');group.set('slot','Boots')
         self.root.find("Items/Item").text = "Rarity: NORMAL\nIron Greaves\nSockets: W-W W-W"
         self.assertTrue(any("连线不匹配" in error for error in poe.socket_layout_issues(self.root, result)))
         result["gems"].append({"group": 1, "index": 5})
@@ -484,6 +513,12 @@ class DocumentTests(unittest.TestCase):
         result=poe.budget_summary({"inventory":[inventory]},intent_for(self.root),needs,evidence)
         self.assertEqual(result["materials"][0]["remaining"],1)
         self.assertEqual(result["status"],"unknown")
+        retained=copy.deepcopy(old)
+        retained['gems']+=copy.deepcopy(old['gems'])
+        retained['gems'][1].update(slot='Gloves',group_enabled=False)
+        duplicate=poe.material_requirements(self.root,self.root,old,retained)[0]
+        self.assertEqual((duplicate['original_quantity'],duplicate['final_quantity'],duplicate['quantity']),(1,2,1))
+        self.assertIn('需另备',duplicate['description'])
 
     def test_energy_shield_costs_recharge_conditions_and_self_degen(self):
         result=resource_fixture();result["resource_rules"]={"energy_shield_protects_mana":True}
@@ -521,7 +556,7 @@ class DocumentTests(unittest.TestCase):
 def route_fixture(game_version="3.29"):
     return {"schema_version":2,"name":"离线路线","confirmed":True,"goal":"验证阶段结构","objectives":[{"objective_id":"fixture-goal","text":"验证阶段结构","evidence_refs":["user"]}],"league":"测试赛季","class_id":4,"game_version":game_version,"ascendancy":"Champion","scope":"所列阶段","trade_mode":"ssf",
             "constraint_sources":{"/goal":"user","/trade_mode":"user"},"gems":{"ShieldCrush":{}},
-            "stages":[{"stage_id":"stage-"+str(i),"name":"测试阶段","level":level,"act":act,"entry_conditions":[],"bases":{"Gloves":"Iron Gauntlets"},
+            "stages":[{"stage_id":"stage-"+str(i),"name":"测试阶段","level":level,"act":act,"entry_conditions":[],"bases":{"Gloves":"Wool Gloves"},
                        "skill_groups":[{"name":"输出","slot":"Gloves","use":"按需使用","gems":[{"instance_id":"one","skill_id":"ShieldCrush","level":1,"quality":0}]}],
                        "ascendancy_points":0,"ascendancy_nodes":[],"required_items":[]} for i,(level,act) in enumerate(((1,1),(12,2),(68,11)))]}
 
@@ -532,13 +567,25 @@ class RouteTests(unittest.TestCase):
         self.gems={"ShieldCrush":{"skill_id":"ShieldCrush","name":"Shield Crush","tags":{"grants_active_skill":True},"level_requirements":[{"gem_level":1,"character_level":1,"naturally_trainable":True,"strength":10,"dexterity":0,"intelligence":0,"base_resources":{"manaCost":6}},{"gem_level":20,"character_level":70,"naturally_trainable":True}]}}
         self.classes=[{"id":4,"name":"Duelist","ascendancies":[{"id":3,"name":"Champion"}]}]
         self.evidence={"user":{"kind":"user_statement","status":"user_declared","subject":"intent"}}
-        self.bases={"Iron Gauntlets":{"name":"Iron Gauntlets","sockets":4,"valid_slots":["Gloves"]}}
+        self.bases={"Wool Gloves":{"name":"Wool Gloves","sockets":4,"valid_slots":["Gloves"]}}
         self.slots=[{"name":"Gloves"}]
-        self.equipment={stage["stage_id"]:{"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Iron Gauntlets","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}} for stage in self.route["stages"]}
+        self.equipment={stage["stage_id"]:{"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Wool Gloves","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}} for stage in self.route["stages"]}
     def check(self):
         return routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,equipment=self.equipment,evidence=self.evidence)
 
-    def test_goal_reference_diagnostics_distinguish_missing_subject_and_unreviewed_claims(self):
+    def test_unmaterialized_stage_checks_native_base_level_without_guessing_attributes(self):
+        self.bases["Wool Gloves"]["requirements"]={"level":2,"str":999}
+        with self.assertRaises(bx.ContractError) as error:self.check()
+        self.assertEqual(error.exception.diagnostic["location"],"/stages/0/bases/Gloves")
+        self.assertEqual(error.exception.diagnostic["expected"]["minimum_character_level"],2)
+        self.route["stages"][0]["level"]=2
+        checked,_=self.check()  # No actual attributes were supplied; do not invent them.
+        self.assertEqual(checked["stages"][0]["level"],2)
+        self.route["stages"][0]["level"]=1
+        self.route["stages"][0]["snapshot"]={"assumptions":[],"operations":{}}
+        self.check()  # The actual snapshot item requirements, not its bare base, govern this case.
+
+    def test_goal_reference_diagnostics_use_explicit_selection_without_duplicate_subject(self):
         claims=[{"claim_id":"overall","status":"model_assessed","subjects":["goal"]},
                 {"claim_id":"detail","status":"model_assessed","subjects":["objective:direction"]},
                 {"claim_id":"unreviewed","status":"unresolved","subjects":["goal"]}]
@@ -549,11 +596,11 @@ class RouteTests(unittest.TestCase):
         checked=validate()
         self.assertIn("goal_assessment",checked["pending"])
         self.assertEqual([d["location"] for d in checked["diagnostics"]],
-                         ["/assessment/goal_claim_ids/0","/assessment/goal_claim_ids/1","/assessment/goal_claim_ids/2"])
+                         ["/assessment/goal_claim_ids/0","/assessment/goal_claim_ids/2"])
         self.assertEqual([d["code"] for d in checked["diagnostics"]],
-                         ["goal_claim_missing","goal_claim_subject_missing","goal_claim_unresolved"])
-        self.assertTrue(all(d["available_goal_claim_ids"]==["overall"] for d in checked["diagnostics"]))
-        self.route["assessment"]["goal_claim_ids"]=["overall"]
+                         ["goal_claim_missing","goal_claim_unresolved"])
+        self.assertTrue(all(d["available_goal_claim_ids"]==["detail","overall"] for d in checked["diagnostics"]))
+        self.route["assessment"]["goal_claim_ids"]=["detail","overall"]
         checked=validate();self.assertNotIn("goal_assessment",checked["pending"]);self.assertEqual(checked["diagnostics"],[])
         self.route["assessment"]["scope"]="  "
         self.assertEqual(validate()["diagnostics"][0]["location"],"/assessment/scope")
@@ -616,11 +663,28 @@ class RouteTests(unittest.TestCase):
         group["gems"]=[dict(group["gems"][0],instance_id=str(i)) for i in range(5)]
         with self.assertRaisesRegex(ValueError,"孔位"):self.check()
     def test_slots_and_capacity_come_from_native_base(self):
-        self.bases["Iron Gauntlets"]["valid_slots"]=["Future Slot"]
+        self.bases["Wool Gloves"]["valid_slots"]=["Future Slot"]
         checked,_=self.check();self.assertNotIn("native:equipment:stage-0:Gloves",checked["pending"])
         self.equipment["stage-0"]["checks"]["Gloves"]["valid_for_slot"]=False
         with self.assertRaisesRegex(ValueError,"不相符"):self.check()
         self.equipment.clear();checked,_=self.check();self.assertIn("native:equipment:stage-0:Gloves",checked["pending"])
+
+    def test_snapshot_uses_actual_socket_capacity_without_duplicate_base_declaration(self):
+        stage=self.route['stages'][0]
+        stage.pop('bases');stage['snapshot']={}
+        layout=self.equipment['stage-0']
+        layout['context']={'basis':'snapshot_xml','xml_sha256':'current-snapshot'}
+        layout['checks']['Gloves']['socket_capacity']=1
+        before=copy.deepcopy(self.route)
+        checked,_=self.check()
+        self.assertNotIn('native:socket_capacity:stage-0:Gloves',checked['pending'])
+        self.assertEqual(checked['stages'][0]['socket_evidence']['Gloves']['capacity'],1)
+        self.assertEqual(self.route,before)
+        stage['skill_groups'][0]['gems'].append(dict(stage['skill_groups'][0]['gems'][0],instance_id='second'))
+        with self.assertRaisesRegex(ValueError,'孔位|占孔'):self.check()
+        stage['skill_groups'][0]['gems'].pop()
+        layout['context']['basis']='declared_base_layout'
+        self.assertIn('native:socket_capacity:stage-0:Gloves',self.check()[0]['pending'])
 
     def test_slot_check_from_other_layout_is_unknown_and_does_not_certify(self):
         self.equipment["stage-0"]["bases"]={"Gloves":"Different Base"}
@@ -669,6 +733,14 @@ class RouteTests(unittest.TestCase):
                 for text in claim["conditions"]+claim["uncertainties"]:
                     self.assertEqual(rendered.count(text),0 if invalidation else 3)
                 self.assertEqual(current["claims"][0]["text"],claim["text"])
+                entry_diagnostics=[row for row in checked["diagnostics"] if row["code"]=="entry_condition_claim_unresolved"]
+                self.assertEqual(entry_diagnostics,[])
+        self.route["stages"][0]["entry_conditions"]=["absent"]
+        checked,_=self.check()
+        self.assertIn("entry_condition:stage-0:absent",checked["pending"])
+        self.assertTrue(any(row["code"]=="entry_condition_claim_unresolved" and row["actual"]=="absent"
+                            and row["location"]=="/stages/0/entry_conditions/0"
+                            for row in checked["diagnostics"]))
 
     def test_instance_cannot_change_gem_id_silently(self):
         self.gems["Other"]={**self.gems["ShieldCrush"],"skill_id":"Other","name":"Other"};self.route["gems"]["Other"]={}
@@ -683,6 +755,17 @@ class RouteTests(unittest.TestCase):
     def test_key_transition_requires_actual_snapshot(self):
         self.route["stages"][0]["key_transition"]=True
         checked,_=self.check();self.assertIn("snapshot:"+self.route["stages"][0]["stage_id"],checked["pending"])
+        stage=self.route["stages"][0];sid=stage["stage_id"]
+        stage["snapshot"]={"assumptions":["Snapshot explanation instead of a claim ID"],"operations":{}}
+        checked,_=self.check()
+        diagnostic=next(d for d in checked["diagnostics"] if d["code"]=="snapshot_assumptions_unresolved")
+        self.assertEqual(diagnostic["location"],"/stages/0/snapshot/assumptions")
+        self.assertEqual(diagnostic["actual"],stage["snapshot"]["assumptions"])
+        stage["snapshot"]["assumptions"]=["chosen"]
+        checked,_=routes.validate(self.route,self.gems,"3.29",self.classes,bases=self.bases,slots=self.slots,
+                                 equipment=self.equipment,evidence=self.evidence,
+                                 claims=[{"claim_id":"chosen","status":"model_assessed","subjects":["objective:fixture-goal"]}])
+        self.assertNotIn("snapshot_assumptions:"+sid,checked["pending"])
     def test_reused_instance_is_not_acquired_twice(self):
         need={"kind":"gem","instance_id":"one","skill_id":"ShieldCrush","level":1,"quality":0,"quantity":1,"acquisition":"owned"}
         self.route["stages"][0]["required_items"]=[need]
@@ -1235,6 +1318,14 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(diagnostic["expected"]["source_base"],str(nested.resolve()))
             self.assertEqual(diagnostic["actual"],str((folder/"source.txt").resolve()))
             self.assertNotIn('maximum_bytes',diagnostic['expected'])
+            source=folder/'source.txt';original=source.read_bytes();stamp=source.stat().st_mtime_ns
+            absolute=facts.load_evidence([dict(declaration,path=str(source.resolve()))],nested,{})['price']
+            self.assertEqual(absolute['status'],'artifact_observed')
+            self.assertEqual(absolute['path'],str(source.resolve()))
+            self.assertEqual(absolute['content_sha256'],bx.digest(original))
+            self.assertEqual(source.read_bytes(),original);self.assertEqual(source.stat().st_mtime_ns,stamp)
+            self.assertEqual(list(nested.iterdir()),[])
+            self.assertEqual(facts.load_evidence([dict(declaration,path=str(source.resolve()),excerpt='invented')],nested,{})['price']['status'],'unresolved')
             missing=facts.load_evidence([dict(declaration,path='missing/source.txt')],folder,{})['price']
             self.assertEqual(missing['status'],'unresolved')
             self.assertEqual(missing['diagnostic']['expected'],{'source_base':str(folder.resolve()),'type':'existing text file'})
@@ -1251,11 +1342,44 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(assessed["diagnostics"][0]["source_diagnostic"],diagnostic)
             with self.assertRaises(ValueError):facts.load_evidence([dict(declaration,status="verified")],folder,{})
             declaration["excerpt"]="invented price";self.assertEqual(facts.load_evidence([declaration],folder,{})["price"]["status"],"unresolved")
+            # Text source pages must be reusable without model transcription or newline conversion.
+            source.write_bytes(('第一行\r\n原文包含 \"引号\" 与 literal\\path。\r\n'+'长文字'*4000).encode('utf-8-sig'))
+            original=source.read_bytes();stamp=source.stat().st_mtime_ns
+            failed=facts.load_evidence([dict(declaration,path=str(source.resolve()),excerpt='paraphrased claim')],nested,{})['price']
+            self.assertEqual(failed['status'],'unresolved')
+            stdout=io.StringIO()
+            with patch.object(engine,'calculate',side_effect=AssertionError('text view must not calculate')),redirect_stdout(stdout):
+                code=poe.main(['view','--file',str(source),'--limit','12000'])
+            self.assertEqual(code,0)
+            page=json.loads(stdout.getvalue());text=original.decode('utf-8-sig')
+            self.assertLessEqual(len(stdout.getvalue()),10000)
+            self.assertEqual(page['value'],text[:page['next_offset']])
+            self.assertEqual(page['page_unit'],'characters');self.assertEqual(page['revision'],bx.digest(original))
+            template=page['evidence_template']
+            self.assertEqual(template,{'kind':'artifact','path':str(source.resolve()),'excerpt':page['value']})
+            actual=facts.load_evidence([{**template,'evidence_id':'actual','subject':'source'}],nested,{})['actual']
+            self.assertEqual(actual['status'],'artifact_observed');self.assertEqual(actual['text'],page['value'])
+            self.assertEqual(actual['content_sha256'],page['revision'])
+            self.assertEqual(failed['repair']['source_revision'],page['revision'])
+            action=failed['repair']['next_actions'][0]
+            self.assertEqual(action,{'action':'view','file':str(source.resolve()),'pointer':'','offset':0,'limit':2000})
+            next_page=poe.view_json(args(file=str(source),pointer='',fields='',keys=False,query='',offset=page['next_offset'],limit=2000))
+            self.assertEqual(next_page['value'],text[page['next_offset']:page['next_offset']+2000])
+            for options in ({'pointer':'/invented'},{'fields':'invented'},{'keys':True},{'query':'invented'}):
+                parameters=dict(file=str(source),pointer='',fields='',keys=False,query='',offset=0,limit=20);parameters.update(options)
+                with self.assertRaises(bx.ContractError):poe.view_json(args(**parameters))
+            self.assertEqual(source.read_bytes(),original);self.assertEqual(source.stat().st_mtime_ns,stamp)
+            self.assertEqual(list(nested.iterdir()),[])
+            with self.assertRaises(bx.ContractError):poe.view_json(args(file=str(oversized),pointer='',fields='',keys=False,query='',offset=0,limit=20))
     def test_json_artifact_pointer_preserves_values_and_reports_exact_repairs(self):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp);source=folder/'observations.json'
             poe.write_json(source,{'rows':[{'future/value':False,'zero':0,'missing':None}]})
             declaration={'evidence_id':'observed','kind':'artifact','subject':'fixture','path':source.name,'pointer':'/rows/0/future~1value'}
+            nested=folder/'review';nested.mkdir()
+            template=poe.view_json(args(file=str(source),pointer=declaration['pointer'],fields='',keys=False,query='',offset=0,limit=20))['evidence_template']
+            absolute=facts.load_evidence([{**declaration,**template}],nested,{})['observed']
+            self.assertEqual(absolute['status'],'artifact_observed');self.assertIs(absolute['value'],False)
             record=facts.load_evidence([declaration],folder,{})['observed']
             self.assertEqual(record['status'],'artifact_observed');self.assertIs(record['value'],False)
             self.assertEqual(record['locator'],declaration['pointer']);self.assertEqual(record['content_sha256'],bx.digest(source.read_bytes()))
@@ -1283,6 +1407,30 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(failed['status'],'unresolved');self.assertNotIn('next_actions',failed['repair'])
             with self.assertRaises(bx.ContractError): facts.evidence_shape([dict(declaration,excerpt='also text')])
             with self.assertRaises(bx.ContractError): facts.evidence_shape([dict(declaration,kind='web')])
+
+    def test_current_json_view_evidence_reuses_large_original_without_transcription(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);source=folder/'native-observations.json'
+            poe.write_json(source,{'observed':False,'other_observations':'x'*2_000_001})
+            original=source.read_bytes();stamp=source.stat().st_mtime_ns
+            page=poe.view_json(args(file=str(source),pointer='/observed',fields='',keys=False,query='',offset=0,limit=20))
+            self.assertIn('evidence_template',page)
+            declaration={**page['evidence_template'],'evidence_id':'current','subject':'current native observation'}
+            record=facts.load_evidence([declaration],folder,{})['current']
+            self.assertEqual(record['status'],'artifact_observed',record)
+            self.assertIs(record['value'],False)
+            self.assertEqual(record['content_sha256'],page['revision'])
+            self.assertEqual(source.read_bytes(),original)
+            self.assertEqual(source.stat().st_mtime_ns,stamp)
+            value=json.loads(original);value['calculation']={'stats':{'Observed':7}}
+            value['reference_contract']=facts.reference_contract({'current':value['calculation']},{'current':{'pointer':'/calculation'}})
+            poe.write_json(source,value)
+            external=poe.view_json(args(file=str(source),pointer='/observed',fields='',keys=False,query='',offset=0,limit=20))
+            self.assertIn('evidence_template',external)
+            self.assertIs(facts.load_evidence([{**external['evidence_template'],'evidence_id':'current','subject':'observation'}],folder,{})['current']['value'],False)
+            native=poe.view_json(args(file=str(source),pointer='/calculation/stats/Observed',fields='',keys=False,query='',offset=0,limit=20))
+            self.assertNotIn('evidence_template',native)
+            self.assertEqual(native['native_references']['/calculation/stats/Observed'],'native:current#/stats/Observed')
     def test_native_pointer_must_resolve_in_current_calculation(self):
         claims=[{"claim_id":"life","text":"Native life value","subjects":["goal"],"evidence_refs":["native:candidate#/stats/Life"]}]
         evidence={};native={"candidate":{"stats":{"Life":123},"engine_fingerprint":"new","xml":"<fixture/>"}}
@@ -1438,6 +1586,51 @@ class ReadOnlyDataTests(unittest.TestCase):
 
 
 class FinalReviewTests(unittest.TestCase):
+    def test_empty_assessment_container_preserves_review_identity_but_scope_change_invalidates(self):
+        for nested in (False,True):
+            with self.subTest(nested=nested):
+                specification={'plan':{'schema_version':2}} if nested else {'schema_version':2}
+                first,_=facts.final_review(specification,{},[],{}, {})
+                reviewed=copy.deepcopy(specification);target=reviewed['plan'] if nested else reviewed
+                review={**first['review_template'],'findings':'Actual current review'}
+                target['assessment']={'review':review}
+                packet,pending=facts.final_review(reviewed,{},[],{},target['assessment'])
+                self.assertEqual(packet['token'],first['token']);self.assertNotIn('final_review:stale',pending)
+                target['assessment']['scope']='A different actual assessment scope'
+                changed,pending=facts.final_review(reviewed,{},[],{},target['assessment'])
+                self.assertNotEqual(changed['token'],first['token']);self.assertIn('final_review:stale',pending)
+
+    def test_compact_review_matches_explicit_empty_lists_without_mutating_source(self):
+        native={'candidate':{'stats':{'Life':123}}}
+        reference='native:candidate#/stats/Life'
+        claims=[{'claim_id':'life','text':'{{fact:'+reference+'}}','subjects':['goal'],'evidence_refs':[reference]}]
+        observed=facts.assess_claims(claims,{},native)
+        observations={'objective_coverage':[{'objective_id':'requested','text':'Current observation'}]}
+        packet,_=facts.final_review({}, {}, observed, observations, {},native=native)
+        review={'token':packet['token'],'findings':'Current finite observation only.',
+                'conclusions':[review_row('claim_id','life','Current snapshot','Observed directly',verdict='supported',evidence_refs=[reference])],
+                'objectives':[review_row('objective_id','requested','Current request','Current observation reported',verdict='supported',evidence_refs=[reference])]}
+        expected,expected_pending=facts.final_review({}, {}, observed,observations,{'review':review},native=native)
+        compact=copy.deepcopy(review)
+        for field in ('conclusions','objectives'):
+            for row in compact[field]:
+                for key in ('counter_evidence_refs','conditions','unimplemented'):row.pop(key)
+        original=copy.deepcopy(compact)
+        actual,pending=facts.final_review({}, {}, observed,observations,{'review':compact},native=native)
+        self.assertEqual(actual,expected);self.assertEqual(pending,expected_pending)
+        self.assertEqual(compact,original)
+        for invalid in (None,'',False):
+            broken=copy.deepcopy(compact);broken['conclusions'][0]['conditions']=invalid
+            with self.subTest(invalid=invalid),self.assertRaises(bx.ContractError):
+                facts.final_review({}, {}, observed,observations,{'review':broken},native=native)
+        for field in ('scope','findings','verdict','evidence_refs'):
+            broken=copy.deepcopy(compact);broken['conclusions'][0].pop(field)
+            with self.subTest(missing=field),self.assertRaises(bx.ContractError):
+                facts.final_review({}, {}, observed,observations,{'review':broken},native=native)
+        broken=copy.deepcopy(compact);broken['conclusions'][0]['verdict']='refuted'
+        with self.assertRaises(bx.ContractError):
+            facts.final_review({}, {}, observed,observations,{'review':broken},native=native)
+
     def test_review_current_references_render_facts_and_change_invalidates_old_result(self):
         native={'candidate':{'stats':{'Future':7},'character_identity':{'digest':'current'}}}
         observations={'objective_coverage':[{'objective_id':'g','text':'Actual requirement','claim_ids':[],'status':'unresolved'}]}
@@ -1471,7 +1664,7 @@ class FinalReviewTests(unittest.TestCase):
         observations={'objective_coverage':[{'objective_id':'g','text':'Player requirement','claim_ids':[],'status':'unresolved'}]}
         packet,_=facts.final_review({}, {}, [], observations, {})
         row=packet['review_template']['objectives'][0]
-        self.assertEqual(set(row),{'objective_id','scope','findings','verdict','evidence_refs','counter_evidence_refs','conditions','unimplemented'})
+        self.assertEqual(set(row),{'objective_id','scope','findings','verdict','evidence_refs'})
         review={**packet['review_template'],'findings':'Partial result only','objectives':[{**row,'scope':'This finite window',
                 'findings':'Not measured','verdict':'unknown','unimplemented':['No relevant measured result']}]}
         checked,pending=facts.final_review({}, {}, [], observations, {'review':review})
@@ -1523,6 +1716,18 @@ class FinalReviewTests(unittest.TestCase):
         self.assertEqual(mean["mean_pool_depletion_seconds"],4)
         self.assertEqual(mean["status"],"native_mean_projection")
         self.assertEqual(resources.assess(result,{}, {})["sustained_use"]["status"],"unknown")
+        for fixed in (15,75,95):
+            result['stats']['NetManaRegen']=fixed
+            audit=resources.assess(result,{}, {})
+            packet=poe.publication('draft',[],audit['pending'],{'status':'unknown'},{'candidate':result},readiness=audit,keys=[])
+            published=next(row for row in packet['statements'] if row['kind']=='single_skill_mean'
+                           and row['skill_ref']=='secondary' and row['resource_id']=='Mana')
+            actual=next(row for row in audit['single_payments'] if row['skill_ref']=='secondary' and row['resource_id']=='Mana')
+            self.assertEqual(published['values'],actual['mean_use'])
+            self.assertEqual(published['actor'],actual['actor'])
+            self.assertIn(str(75-fixed),published['text'])
+            self.assertIn(published['text'],packet['facts_summary'])
+            self.assertEqual(packet['resource_audits']['candidate']['sustained_use']['status'],'unknown')
         result["stats"]["NetManaRegen"]=75
         mean=next(r for r in resources.single_payments(result) if r["skill_ref"]=="secondary" and r["resource_id"]=="Mana")["mean_use"]
         self.assertEqual(mean["net_drain_per_second"],0)
@@ -1653,6 +1858,14 @@ class FinalReviewTests(unittest.TestCase):
         self.assertEqual(row["status"],"supported")
         self.assertEqual(audit["sustained_use"]["status"],"unknown")
         self.assertIn("usage:aux",audit["pending"])
+        result["stats"]["ManaUnreserved"]=-3
+        result["active_skills"][1].update(trigger=True)
+        result["active_skills"][1]["costs"].update(SkillTriggerRate=1,ManaPerSecondCost=70)
+        audit=resources.assess(result,{}, {})
+        failure=next(row for row in audit['diagnostics'] if row.get('payment_facts') and row['subject']=='resource:Mana')
+        self.assertEqual([(row['skill_ref'],row['payment'],row['pool']) for row in failure['payment_facts']],[('aux',70,-3)])
+        self.assertIn(failure['message'],audit['errors'])
+        self.assertEqual(failure['category'],'usage')
 
     def test_snapshot_positive_balance_does_not_prove_sustained_use(self):
         result=resource_fixture();result["stats"].update(LifeCost=10,LifePerSecondCost=20,LifeLeechGainRate=30)
@@ -1772,6 +1985,26 @@ class FinalReviewTests(unittest.TestCase):
             pointers={r["pointer"] for r in response["continuations"]}
             self.assertTrue({"/response/pending","/response/readiness"}<=pointers)
             self.assertEqual(facts.pointer(poe.read_json(response["details_file"]),"/response/pending"),long["pending"])
+            for count in (40,100):
+                dense={**long,**{'observation-'+str(i):['current native observation '*200] for i in range(count)}}
+                poe.write_json(artifact,{'response':dense});before=artifact.read_bytes();output=io.StringIO()
+                with patch.object(poe,'evaluate',return_value=dense),redirect_stdout(output):
+                    code=poe.main(['evaluate','--run',str(run),'--name','test','--plan','fixture.json'])
+                self.assertEqual(code,0,output.getvalue())
+                self.assertLess(len(output.getvalue()),12000)
+                reply=json.loads(output.getvalue())
+                self.assertEqual(reply['status'],'draft')
+                self.assertEqual(artifact.read_bytes(),before)
+                saved=poe.read_json(reply['details_file'])
+                self.assertTrue(reply['continuations'])
+                for row in reply['continuations']: facts.pointer(saved,row['pointer'])
+                # A saved parent is a valid recovery path for every child; the
+                # metadata enumerating omitted fields must itself remain bounded.
+                for key in dense:
+                    if key in reply and reply[key]==dense[key]: continue
+                    pointer='/response/'+key
+                    self.assertTrue(any(pointer==row['pointer'] or pointer.startswith(row['pointer']+'/')
+                                        for row in reply['continuations']),key)
 
     def test_stage_targets_use_actual_values_and_preserve_unmet_conditions(self):
         claim={"claim_id":"ready","status":"model_assessed","subjects":["stage:a"]}
@@ -1785,6 +2018,81 @@ class FinalReviewTests(unittest.TestCase):
 
 
 class WorkflowInterfaceTests(unittest.TestCase):
+    def test_successful_export_files_survive_terminal_envelope_reduction(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);artifact=run/'output/final/final-assessment.json'
+            files=[str(run/'output/final/role.xml'),str(run/'output/final/report.html')]
+            response={'status':'scoped_result','file_exported':True,'xml_exported':True,'files':files,
+                      'facts_summary':'Observed current fact. '*300,
+                      'reply_policy':'Use the current delivered files and their limits. '*45,
+                      'delivery_brief':{'scope':'Current measured window; other conditions unknown. '*60},
+                      'publication':{'scope':'window '*600},
+                      'entrypoint':{'script':'current entrypoint','python':'current Python','skill_version':poe.VERSION},
+                      'runtime':{'elapsed_seconds':1},'extra_observations':['Current observation. '*1000]}
+            poe.write_json(artifact,{'response':response});original=artifact.read_bytes()
+            reply=poe.bound_reply(response,args(command='export',run=str(run),name='final'))
+            self.assertEqual(reply['files'],files)
+            self.assertTrue(reply['file_exported']);self.assertTrue(reply['xml_exported'])
+            self.assertLess(len(json.dumps({'ok':True,**reply},ensure_ascii=False))+1,12000)
+            self.assertEqual(artifact.read_bytes(),original)
+            for row in reply['continuations']:facts.pointer(poe.read_json(artifact),row['pointer'])
+
+            report=run/'route.html';details=report.with_suffix('.evidence.json')
+            files=[str(run/('materialized-stage-'+str(index)+'-'+'x'*120)/'snapshot.xml') for index in range(90)]
+            response={'status':'scoped_result','file_exported':True,'files':files,
+                      'facts_summary':'Current measured observations. '*300,'reply_policy':'Use current saved files and declared limits.'}
+            poe.write_json(details,{'response':response});original=details.read_bytes()
+            stdout,stderr=io.StringIO(),io.StringIO()
+            with patch.object(poe,'route_command',return_value=copy.deepcopy(response)),redirect_stdout(stdout),redirect_stderr(stderr):
+                code=poe.main(['route','--file',str(run/'route.json'),'--out',str(report)])
+            self.assertEqual(code,0,stderr.getvalue())
+            reply=json.loads(stdout.getvalue())
+            self.assertTrue(reply['ok']);self.assertTrue(reply['file_exported'])
+            self.assertTrue(reply['files_is_preview']);self.assertEqual(reply['files_total'],len(files))
+            self.assertEqual(reply['files'],files[:len(reply['files'])]);self.assertLess(len(reply['files']),len(files))
+            self.assertLess(len(stdout.getvalue()),12000)
+            continuation=next(row for row in reply['continuations'] if row['pointer']=='/response/files')
+            self.assertEqual(facts.pointer(poe.read_json(continuation['file']),continuation['pointer']),files)
+            self.assertEqual(details.read_bytes(),original)
+
+    def test_nonstandard_native_resource_observations_reach_facts_and_diagnosis(self):
+        current={'stats':{'LifeOnFutureEvent':7,'ManaFutureGain':-2,'OtherOutput':9},
+                 'points':0,'ascendancy_points':0,'active_skills':[]}
+        projected=poe.calculation_facts(current)
+        self.assertEqual(projected['stats'],{'LifeOnFutureEvent':7,'ManaFutureGain':-2})
+        summary=poe.diagnosis_summary(current)
+        self.assertIn('LifeOnFutureEvent',summary);self.assertIn('ManaFutureGain',summary)
+        with patch.object(poe,'skill_statements',return_value=[{'kind':'skill','text':'Long skill detail '*1000}]):
+            summary=poe.diagnosis_summary(current)
+        self.assertLess(summary.index('LifeOnFutureEvent'),summary.index('Long skill detail'))
+        review={'objectives':[{'objective_id':'goal','reference_status':'resolved','verdict':'supported',
+                              'evidence_scope':{'counts':{}},'scope':'Declared scope','findings':'Model interpretation '*1000,
+                              'evidence_refs':[],'counter_evidence_refs':[],'conditions':[],'unimplemented':[]}]}
+        current['equipped']=[{'slot':'Flask 1','active':True}]
+        audit={'execution_coverage':{'status':'unknown','payment_schedule_status':'not_requested','scope':'Schedule not measured'}}
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':current},review=review,readiness=audit)
+        self.assertEqual([row['metric'] for row in published['measurements']],['LifeOnFutureEvent','ManaFutureGain'])
+        self.assertIn(poe.effect_statement(current,'candidate',compact=True)['text'],published['facts_summary'][:1500])
+        self.assertIn('not_requested',published['facts_summary'][:1500])
+        materials=[{'requirement_id':'service:generic-material-'+str(index)+'-specification',
+                    'quantity':1,'declared_owned':1,'remaining':0} for index in range(120)]
+        acquisition={'status':'user_declared','materials':materials}
+        material_publication=poe.publication('draft',[],[],acquisition,{'candidate':current},readiness=audit)
+        self.assertIn(poe.effect_statement(current,'candidate',compact=True)['text'],material_publication['facts_summary'][:1500])
+        self.assertIn('not_requested',material_publication['facts_summary'][:1500])
+        material_text=next(row['text'] for row in material_publication['statements'] if row['kind']=='budget')
+        self.assertNotIn('原 XML',material_text)
+        self.assertNotIn('额外库存已声明',material_text)
+        self.assertEqual(acquisition['materials'],materials)
+        long_current={**current,'stats':{**current['stats'],**{key:1 for key in poe.METRICS}}}
+        short_review=copy.deepcopy(review);short_review['objectives'][0]['findings']='Requested outcome remains unimplemented'
+        long_publication=poe.publication('draft',[],[],{'status':'unknown'},
+                                       {str(i):long_current for i in range(8)},review=short_review)
+        self.assertIn('Requested outcome remains unimplemented',long_publication['facts_summary'][:5000])
+        self.assertIn('OtherOutput',[row['metric'] for row in poe.publication('draft',[],[],{'status':'unknown'},
+                      {'candidate':current},keys=['OtherOutput'])['measurements']])
+        self.assertEqual(poe.publication('draft',[],[],{'status':'unknown'},{'candidate':current},keys=[])['measurements'],[])
+
     def test_config_input_origin_distinguishes_active_inputs_placeholders_and_runtime(self):
         document=bx.parse(SAMPLE)
         config=document.find('Config');config.set('activeConfigSet','second')
@@ -1828,25 +2136,32 @@ class WorkflowInterfaceTests(unittest.TestCase):
                  'publication':poe.publication('blocked',['Known contradiction'],[],budget,{}),'validation':{'scope':'Structural checks only'},
                  'name':'candidate','engine_version':'fixture','xml_sha256':'fixture','engine_fingerprint':'fixture'}
         page=poe.report_html({'intent':{'goal':'Actual player goal'}},outcome)
-        self.assertNotIn('在 PoECharm 中打开同目录 XML',page);self.assertIn('未导出交付 XML',page)
+        self.assertNotIn('在 PoECharm 中打开同目录 XML',page);self.assertIn('未导出交付文件',page)
         actions=poe.delivery_actions(outcome,'plan.json','evaluation.json','review.json')
-        report=next(row for row in actions if row['action']=='export')
-        self.assertEqual(report['purpose'],'diagnostic_report');self.assertFalse(report['file_exported'])
-        self.assertEqual(report['delivery_status'],'blocked')
-        self.assertIn('claims',report['instruction']);self.assertIn('review',report['instruction'])
+        self.assertFalse(any(row['action']=='export' for row in actions))
         self.assertEqual(outcome['errors'],['Known contradiction']);self.assertEqual(outcome['status'],'blocked')
         self.assertFalse(any(row['action']=='export' for row in poe.delivery_actions(outcome,'plan.json','final-assessment.json','review.json',report_exported=True)))
         self.assertFalse(any(row['action']=='export' for row in poe.delivery_actions(outcome,'route.json','route.json','review.json','/checked_route')))
 
     def test_readonly_report_uses_current_publication_and_preserves_unknown_controls(self):
-        native={'class':'New Class','class_id':17,'points':2,'ascendancy_points':0,'stats':{'CombinedDPS':91},
+        native={'class':'New Class','class_id':17,'points':2,'ascendancy_points':0,'stats':{'CombinedDPS':91,'GuardSkillActive':True},
                 'config_values':{'new-scene':'boss'},'config_placeholders':{'new-mode':3},
                 'config_loader_source':{'source':'engine/Classes/CurrentLoader.lua','line':21,'count':4,'total_lines':4},
                 'main_group':1,'config_labels':{},'gems':[
-                    {'group':1,'index':1,'id':'NewSkill','name':'New native skill','display_name':None,'slot':'Current Slot','group_enabled':True,'slot_enabled':False,'enabled':True},
+                    {'group':1,'index':1,'id':'NewSkill','name':'New native skill','display_name':None,'slot':'Current Slot','group_enabled':True,'slot_enabled':False,'enabled':True,
+                     'granted_effects':[{'id':'NewSkill','global_enabled':False,'active_skill_present':False},
+                                        {'id':'OtherEffect','global_enabled':True,'active_skill_present':True}]},
                     {'group':1,'index':2,'id':'NewSupport','name':'New native support','display_name':'当次辅助（New native support）','slot':'Current Slot','group_enabled':True,'slot_enabled':False,'enabled':False,'support':True,'support_applied':False}],
                 'active_skills':[{'group':1,'index':1,'id':'NewSkill','name':'New native skill','skill_ref':'1:1:NewSkill:mirage:gem:1','actor':'mirage','is_main':True,
-                    'usage_rate':{'value':3.75,'metric':'CurrentRate','basis':'native_action_rate','scope':'Current native rate only'},'costs':{'LifeCost':2.5,'LifePerSecondCost':9.375,'ManaCost':0},'cost_scope':'Current actor costs only'}],
+                    'description':'Current native main definition <guard & effect>.',
+                    'supports':[{'id':'FutureExtraSupport','name':'Future current native support','level':None,'quality':None,'effective_level':8,'effective_quality':3}],
+                    'supports_source':'Current native applied effect list',
+                    'usage_rate':{'value':3.75,'metric':'CurrentRate','basis':'native_action_rate','scope':'Current native rate only'},'costs':{'LifeCost':2.5,'LifePerSecondCost':9.375,'ManaCost':0},'cost_scope':'Current actor costs only'},
+                    {'group':1,'index':1,'id':'OtherEffect','name':'Other native effect','skill_ref':'1:1:OtherEffect:minion:gem:1','actor':'minion','is_main':False,
+                     'description':'Current native secondary definition: expires after its observed duration.','trigger':'CurrentNativeTrigger',
+                     'benefit_excluded':True,
+                     'usage_rate':{'value':None,'metric':None},'costs':{'ManaCost':4,'ManaPerSecondCost':None},'cost_scope':'Native player output only',
+                     'native_timing':{'cooldown_seconds':2,'duration_seconds':None,'source':'Native player output only'}}],
                 'config_controls':{'new-mode':{'id':'new-mode','type':'list','value':None,'default':1,'shown':False,'if_cond':'FutureCondition',
                     'input_origin':{'status':'input_xml_observed','input_present':False,'placeholder_present':True,'placeholder_value':1},
                     'runtime_placeholder_present':True,'runtime_placeholder_value':3,
@@ -1859,8 +2174,21 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(code,0,stdout.getvalue())
             saved=poe.read_json(output);receipt=json.loads(stdout.getvalue())
             self.assertEqual(saved['reference_contract']['current']['artifact'],{'file':str(output),'pointer':'/calculation'})
+            self.assertEqual(saved['reference_contract']['resources']['artifact'],{'file':str(output),'pointer':'/readiness'})
+            self.assertIsNone(saved['readiness']['timeline'])
+            self.assertEqual(saved['readiness']['sustained_use']['basis'],'no_common_timeline')
+            self.assertTrue(any(row['kind']=='single_payment' for row in saved['publication']['statements']))
+            self.assertEqual(next(row for row in saved['publication']['statements'] if row['kind']=='sustained_use')['status'],'unknown')
             self.assertIs(saved['calculation']['config_controls']['new-mode']['value'],None)
-            self.assertEqual(saved['publication']['statements'],receipt['publication']['statements'])
+            published=receipt['publication'].get('statements')
+            if published is None:
+                continuation=next(row for row in receipt['continuations'] if row['pointer']=='/publication')
+                published=[];offset=0
+                while offset is not None:
+                    chunk=poe.view_json(args(file=continuation['file'],pointer=continuation['pointer']+'/statements',fields='',keys=False,query='',offset=offset,limit=1))
+                    self.assertFalse(chunk.get('deferred_values'))
+                    published.extend(chunk['value']);offset=chunk['next_offset']
+            self.assertEqual(saved['publication']['statements'],published)
             self.assertEqual(saved['publication']['facts_summary'].split('\n\n',1)[0],saved['publication']['delivery_brief']['message'])
             self.assertEqual(saved['publication']['statements'][0]['text'],saved['publication']['delivery_brief']['message'])
             self.assertEqual(receipt['report'],str(report))
@@ -1878,10 +2206,32 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertIs(group['values']['gems'][0]['slot_enabled'],False)
             self.assertEqual(main['values']['usage_rate'],native['active_skills'][0]['usage_rate'])
             self.assertEqual(main['values']['costs'],native['active_skills'][0]['costs'])
+            self.assertEqual(main['values']['description'],native['active_skills'][0]['description'])
+            self.assertIn(native['active_skills'][0]['description'],receipt['publication']['facts_summary'])
+            self.assertEqual(main['values']['supports'],native['active_skills'][0]['supports'])
+            self.assertIn('Future current native support',main['text'])
             self.assertIn('3.75',main['text']);self.assertIn('mirage',main['text'])
+            secondary=next(row for row in saved['publication']['statements'] if row['kind']=='native_skill_observation')
+            self.assertEqual(secondary['reference'],'native:current#/active_skills/1')
+            self.assertEqual(secondary['skill_ref'],native['active_skills'][1]['skill_ref'])
+            self.assertEqual(secondary['values']['costs'],{'ManaCost':4,'ManaPerSecondCost':None})
+            self.assertEqual(secondary['actor'],'minion')
+            self.assertEqual(secondary['values']['description'],native['active_skills'][1]['description'])
+            self.assertIn(native['active_skills'][1]['description'],secondary['text'])
+            self.assertEqual(secondary['values']['trigger'],'CurrentNativeTrigger')
+            effect=next(row for row in saved['publication']['statements'] if row['kind']=='effect_state')
+            self.assertIs(effect['values']['guard_active'],True)
+            self.assertIn('GuardSkillActive',effect['text']);self.assertIn('守护技能',effect['text'])
+            self.assertIs(secondary['values']['benefit_excluded'],True)
+            self.assertIn('条件审计',secondary['text'])
+            self.assertEqual(group['values']['gems'][0]['granted_effects'],native['gems'][0]['granted_effects'])
             page=report.read_text(encoding='utf-8')
             self.assertIn('New native skill',page);self.assertNotIn('None',page)
             self.assertIn(html.escape(group['text']),page)
+            self.assertIn(html.escape(secondary['text']),page)
+            self.assertIn(html.escape(main['text']),page)
+            self.assertIn('Native player output only',page)
+            self.assertIn('OtherEffect',page)
             self.assertIn('未知',page);self.assertIn('Current default',page)
             self.assertIn('可见性与关联条件',page);self.assertIn('FutureCondition',page)
             self.assertIn('XML 输入来源',page);self.assertIn('input_present',page)
@@ -1907,6 +2257,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 code=poe.main(['inspect','--input',str(original),'--calculate','--out',str(output),'--report',str(report)])
             self.assertEqual(code,0)
             receipt=json.loads(stdout.getvalue());saved=poe.read_json(output)
+            self.assertLess(stdout.getvalue().index('"reply_policy"'),stdout.getvalue().index('"publication"'))
             self.assertEqual(receipt['publication']['facts_summary'],saved['publication']['facts_summary'])
             self.assertEqual(receipt['publication']['delivery_brief'],saved['publication']['delivery_brief'])
             self.assertIn('current.engine',receipt['diagnosis_summary'])
@@ -1929,6 +2280,8 @@ class WorkflowInterfaceTests(unittest.TestCase):
             projected=poe.bound_reply({'inspection':str(output),'report':str(report),'build':saved['build'],
                 'publication':saved['publication'],'diagnosis_summary':saved['diagnosis_summary'],
                 'reply_policy':poe.READONLY_REPLY_POLICY,'entrypoint':{'script':str(Path(poe.__file__).resolve()),'python':sys.executable}},args(command='inspect',out=str(output)))
+            self.assertEqual(next(iter(projected)),'reply_policy')
+            self.assertEqual(projected['reply_policy'],poe.READONLY_REPLY_POLICY)
             self.assertLessEqual(len(json.dumps(projected,ensure_ascii=False)),12000)
             for owner,key,pointer in [(projected,'diagnosis_summary','/diagnosis_summary'),
                                       (projected['publication'],'facts_summary','/publication/facts_summary')]:
@@ -1946,13 +2299,17 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertTrue(saved['publication']['facts_summary'].startswith(projected['publication']['facts_summary']))
             self.assertEqual(projected['publication']['delivery_brief'],saved['publication']['delivery_brief'])
             self.assertLessEqual(len(json.dumps(projected,ensure_ascii=False)),12000)
+            small={'inspection':str(output),'publication':{'scope':'Current native observation'},'reply_policy':'Current rule scope'}
+            projected=poe.bound_reply(small,args(command='inspect',out=str(output)))
+            self.assertEqual(next(iter(projected)),'reply_policy')
+            self.assertEqual(projected,small)
 
     def test_saved_inspection_returns_breakdown_feedback_and_current_references(self):
         native={'stats':{'FutureMetric':0},'points':0,'ascendancy_points':0,'breakdowns':[
-            {'metric':'FutureMetric','actor':'player','status':'unsupported','value':0,'main_value':0,
+            {'metric':'FutureMetric','actor':'player','status':'unsupported','value_status':'observed','detail_status':'unavailable','value':0,'main_value':0,
              'matches_main_value':True,'reason':'No native breakdown','available_metrics':['CurrentNativeMetric'],
              'scope':'Current selected actor only'},
-            {'metric':'CurrentNativeMetric','actor':'player','status':'partial','value':4,'main_value':4,
+            {'metric':'CurrentNativeMetric','actor':'player','status':'partial','value_status':'observed','detail_status':'partial','value':4,'main_value':4,
              'detail':['Actual native formula'],'omissions':['Unavailable detail'],'available_metrics':['CurrentNativeMetric']}]}
         with tempfile.TemporaryDirectory() as folder:
             original=Path(folder)/'original.xml';original.write_text(SAMPLE,encoding='utf-8');output=Path(folder)/'current.json'
@@ -1963,6 +2320,8 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(saved['reference_contract']['current']['artifact'],{'file':str(output),'pointer':'/calculation'})
             missing,partial=receipt['breakdown_summary']
             self.assertEqual(missing['status'],'unsupported');self.assertEqual(missing['value'],0)
+            self.assertEqual(missing['value_status'],'observed');self.assertEqual(missing['detail_status'],'unavailable')
+            self.assertEqual(partial['value_status'],'observed');self.assertEqual(partial['detail_status'],'partial')
             self.assertEqual(partial['omission_count'],1);self.assertEqual(partial['status'],'partial')
             self.assertEqual(missing['available_metrics_pointer'],'/calculation/breakdowns/0/available_metrics')
             action=next(row for row in receipt['next_actions'] if row['pointer']==missing['available_metrics_pointer'])
@@ -1986,6 +2345,17 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(not_checked['report_integrity']['status'],'not_checked')
             self.assertIsNone(not_checked['report_integrity']['actual_sha256'])
             self.assertEqual(original.read_bytes(),original_bytes)
+            for selection in (['--calculate'],['--metrics','FutureMetric,CurrentNativeMetric']):
+                stdout=io.StringIO();details=Path(folder)/'detail-only.json'
+                with patch.object(engine,'calculate',return_value=native),patch.object(engine,'resolve_root',return_value=Path(folder)),redirect_stdout(stdout):
+                    code=poe.main(['inspect','--input',str(original),*selection,'--out',str(details)])
+                self.assertEqual(code,0,stdout.getvalue())
+                receipt=json.loads(stdout.getvalue());saved=poe.read_json(details)
+                self.assertEqual(receipt['reply_policy'],poe.READONLY_REPLY_POLICY)
+                self.assertEqual(saved['reply_policy'],poe.READONLY_REPLY_POLICY)
+                self.assertNotIn('report',receipt)
+                self.assertNotIn('publication',saved)
+                self.assertEqual(original.read_bytes(),original_bytes)
 
     def test_current_flask_parameters_are_shared_by_diagnosis_and_publication(self):
         native={'stats':{},'points':0,'ascendancy_points':0,'equipped':[
@@ -2107,7 +2477,13 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertIn('控件集合',statement['text'])
 
     def test_comparison_context_separates_control_observability_from_actual_conditions(self):
-        before={'config_values':{},'config_controls':{'shared':{'type':'check','value':False}},'stats':{}}
+        before={'config_values':{},'config_controls':{'shared':{'type':'check','value':False}},'stats':{'FutureMetric':10}}
+        for included in (None,False,True):
+            after=copy.deepcopy(before)
+            after['equipped']=[{'slot':'Future Item Slot','id':9,'active':False,'effective_in_calculation':included}]
+            context=poe.comparison_context(before,after)
+            self.assertEqual(context['changes'],[])
+            self.assertEqual(poe.compare(before,after,not context['changes'])['FutureMetric']['percent'],0)
         after=copy.deepcopy(before)
         after['config_controls']['newly-visible']={'type':'check','value':False,'value_basis':'native_unchecked_default'}
         context=poe.comparison_context(before,after)
@@ -2220,6 +2596,17 @@ class WorkflowInterfaceTests(unittest.TestCase):
             keys=poe.view_json(args(file=str(source),pointer='/readiness/timeline/resources/1',fields='',keys=True,query='future',offset=0,limit=1))
             self.assertEqual(keys['native_references']['/readiness/timeline/resources/1/future~1value'],ref)
             self.assertEqual(source.read_bytes(),source_before)
+            document={'readiness':native,'reference_contract':contract,
+                      'review_packet':{'facts':{'resources':copy.deepcopy(native)}}}
+            poe.write_json(source,document)
+            projected='/review_packet/facts/resources/timeline/resources/1'
+            page=poe.view_json(args(file=str(source),pointer=projected,fields='resource_id,status,future/value',keys=False,query='',offset=0,limit=10))
+            self.assertEqual(page['native_references'][projected+'/future~1value'],ref)
+            document['review_packet']['facts']['resources']['timeline']['resources'][1]['future/value']=0
+            poe.write_json(source,document)
+            page=poe.view_json(args(file=str(source),pointer=projected,fields='resource_id,status,future/value',keys=False,query='',offset=0,limit=10))
+            self.assertNotIn(projected+'/future~1value',page['native_references'])
+            self.assertEqual(page['native_references'][projected+'/status'],'native:resources#/timeline/resources/1/status')
 
     def test_report_distinguishes_inactive_slot_and_disabled_gems_from_enabled_group(self):
         native={'config_values':{},'config_labels':{},'gems':[
@@ -2279,13 +2666,18 @@ class WorkflowInterfaceTests(unittest.TestCase):
                     'nodes':[1,2],'equipped':[],
                     'config_types':{'future-switch':'check'},'config_lists':{},
                     'config_controls':{'future-switch':{'type':'check','value':False}}}
+            native['stats'].update(ManaUnreserved=200,NetManaRegen=15)
+            native['resource_rules']={'energy_shield_protects_mana':False}
+            native['active_skills']=[{'skill_ref':'future-ref','actor':'player','is_main':True,
+                'costs':{'ManaCost':20,'ManaPerSecondCost':60},'usage_rate':{'value':3}}]
             def calculate(*pos,**kw):
                 if 'xml_batch' in kw:
                     changed=copy.deepcopy(native);changed['config_controls']['future-switch']['value']=True
+                    changed['stats']['NetManaRegen']=70
                     return {'calculations':[{**changed,'request_id':engine.batch_id('xml',i,xml),'input_xml_sha256':bx.digest(xml)} for i,xml in enumerate(kw['xml_batch'])]}
                 return native
             before=source.read_bytes()
-            with patch.object(poe,'read_candidate',side_effect=AssertionError('Read-only input must not need a candidate session')),patch.object(engine,'resolve_root',return_value=Path(folder)),patch.object(engine,'check',return_value={'engine_fingerprint':'fixture'}),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',return_value={'errors':[],'pending':[],'warnings':[]}):
+            with patch.object(poe,'read_candidate',side_effect=AssertionError('Read-only input must not need a candidate session')),patch.object(engine,'resolve_root',return_value=Path(folder)),patch.object(engine,'check',return_value={'engine_fingerprint':'fixture'}),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',side_effect=lambda current,*pos:{'errors':[],'pending':[],'warnings':[],'single_payments':resources.single_payments(current)}):
                 response=poe.probe(args(input=str(source),variants=str(variants)))
                 self.assertEqual(response['source_mode'],'input_xml')
                 self.assertIs(response['baseline_effect_state']['config_switches']['future-switch'],False)
@@ -2320,6 +2712,13 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 self.assertIn('原始文件字节 SHA256 '+bx.digest(before),page)
                 self.assertIn('request_selections_verified',page);self.assertIn('actual_changes',page)
                 self.assertIn('数值差不证明因果',page)
+                means=[row for row in saved['publication']['statements'] if row['kind']=='single_skill_mean' and row['resource_id']=='Mana']
+                self.assertEqual({row['subject']:row['values']['net_drain_per_second'] for row in means},
+                                 {'current':45,'variant:observed-switch':-10})
+                for row in means:
+                    self.assertIn(row['text'],saved['publication']['facts_summary'])
+                    self.assertIn(html.escape(row['text']),page)
+                self.assertEqual(saved['publication']['resource_audits']['variant:observed-switch'],saved['alternatives'][0]['readiness'])
                 def changed_source(*pos,**kw):
                     source.write_bytes(before+b'\n')
                     return calculate(*pos,**kw)
@@ -2327,6 +2726,27 @@ class WorkflowInterfaceTests(unittest.TestCase):
                     poe.probe(args(input=str(source),variants=str(variants)))
                 self.assertEqual(caught.exception.diagnostic['location'],'/input')
                 source.write_bytes(before)
+                # Real CLI projection must keep the measured actor beside a batch result,
+                # rather than filling the preview with repeated audit/context details.
+                native['stat_metadata']={'CombinedDPS':[{'label':'Combined DPS','actor':'player','format':'.1f'}]}
+                native['config_values']={'large-current-context':'context '*1500}
+                poe.write_json(variants,{'variants':[{'id':'observed-switch-'+str(i),'operations':{'config':{'future-switch':True}}} for i in range(12)]})
+                stdout=io.StringIO()
+                with redirect_stdout(stdout):
+                    code=poe.main(['probe','--input',str(source),'--variants',str(variants),'--out',str(output),'--report',str(report)])
+                self.assertEqual(code,0,stdout.getvalue())
+                saved=poe.read_json(output);receipt=json.loads(stdout.getvalue())
+                experiments=[s for s in saved['publication']['statements'] if s['kind']=='experiment']
+                first=experiments[0]
+                self.assertIn('player',first['text'])
+                self.assertIn('future-ref',first['text'])
+                self.assertIn('Combined DPS',first['text'])
+                self.assertLess(len(first['text']),2500)
+                self.assertIn('future-ref',receipt['publication']['facts_summary'])
+                self.assertIn('observed-switch-0',receipt['publication']['facts_summary'])
+                self.assertEqual(saved['alternatives'][0]['measurement']['metric_observation']['context']['config_values'],native['config_values'])
+                page=report.read_text(encoding='utf-8')
+                self.assertIn('<p>'+html.escape(first['text'])+'</p>',page)
             self.assertEqual(source.read_bytes(),before)
             self.assertEqual({row.name for row in Path(folder).iterdir()},{'supplied.xml','variants.json','comparison.json','comparison.html'})
 
@@ -2369,12 +2789,23 @@ class WorkflowInterfaceTests(unittest.TestCase):
         native={'stats':{'Observed':12,'GuardSkillActive':True},'config_controls':{'future-condition':{'type':'check','value':False}},
                 'gems':[{'group':1,'index':1,'id':'future-gem','enabled':True,'group_enabled':True,'slot_enabled':True,
                          'granted_effects':[{'id':'future-guard','name':'Future guard','has_global_effect':True,'global_enabled':True,'active_skill_present':True}]}],
-                'equipped':[]}
+                'equipped':[{'slot':'Future Native Slot','active':False,'effective_in_calculation':True}]}
         result=poe.publication('draft',[],[],{'status':'unknown'}, {'candidate':native},keys=['Observed'])
         rows=[row for row in result['statements'] if row['kind']=='effect_state']
         self.assertEqual(len(rows),1);self.assertIs(rows[0]['values']['config_switches']['future-condition'],False)
+        self.assertIs(rows[0]['values']['equipment_inclusion']['Future Native Slot'],True)
         self.assertIn('future-guard',result['facts_summary']);self.assertIn('future-condition=false',result['facts_summary'])
         self.assertIs(poe.calculation_facts(native)['config_controls']['future-condition']['value'],False)
+        note='Shared current-native control scope'
+        native['config_controls']['future-condition']['scope']=note
+        native['config_controls']['future-counter']={'type':'integer','value':0,'scope':note}
+        before=copy.deepcopy(native);projected=poe.calculation_facts(native)
+        self.assertIs(projected['config_controls']['future-condition']['value'],False)
+        self.assertEqual(projected['config_controls']['future-counter']['value'],0)
+        self.assertEqual(json.dumps(projected,ensure_ascii=False).count(note),1)
+        self.assertEqual(native,before)
+        native['config_controls']['future-counter']['scope']='Different source scope'
+        self.assertEqual(poe.calculation_facts(native)['config_controls'],native['config_controls'])
 
     def test_common_measurement_cannot_hide_a_locked_main_skill_change(self):
         before={'level':86,'tree_version':'future','class':'fixture','ascendancy':'fixture','main_skill':'changed-by-control','gems':[],'equipped':[],
@@ -2386,6 +2817,31 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertIn('permission:allow_main_skill_change',pending)
         errors,pending=poe.check_constraints(original,original,before,after,{'allow_main_skill_change':True},plan)
         self.assertFalse(errors);self.assertNotIn('permission:allow_main_skill_change',pending)
+        groups=bx.active_set(original,'Skills','SkillSet','activeSkillSet')
+        groups.append(ET.fromstring('<Skill slot="Gloves" enabled="true"><Gem skillId="FutureBackup" level="7" quality="3" enabled="true" enableGlobal2="true"/></Skill>'))
+        locked={'allow_main_skill_change':True,'keep_skill_groups':[2]}
+        def violations(document):return poe.check_constraints(original,document,before,after,locked,plan)[0]
+        formatting=copy.deepcopy(original);group=bx.groups(formatting)[1]
+        group.attrib=dict(reversed(list(group.attrib.items())));group.text='\n  ';group.find('Gem').tail='\n'
+        self.assertFalse(violations(formatting))
+        permitted=copy.deepcopy(original);bx.groups(permitted)[0].find('Gem').set('level','19')
+        self.assertFalse(violations(permitted))
+        for field,value in (('skillId','FutureOther'),('enabled','false'),('level','8'),('quality','4'),('enableGlobal2','false')):
+            changed=copy.deepcopy(original);bx.groups(changed)[1].find('Gem').set(field,value)
+            with self.subTest(preserved_gem_field=field):
+                self.assertTrue(any('技能组 2' in error for error in violations(changed)))
+        changed=copy.deepcopy(original);bx.groups(changed)[1].set('enabled','false')
+        self.assertTrue(any('技能组 2' in error for error in violations(changed)))
+        removed=copy.deepcopy(original)
+        bx.active_set(removed,'Skills','SkillSet','activeSkillSet').remove(bx.groups(removed)[1])
+        self.assertTrue(any('技能组 2' in error for error in violations(removed)))
+        native_original={'xml':bx.serialise(original)}
+        observed={**after,'xml':bx.serialise(formatting)}
+        self.assertFalse(poe.check_constraints(original,formatting,before,observed,locked,plan,original_native=native_original)[0])
+        observed['xml']=bx.serialise(changed)
+        self.assertTrue(poe.check_constraints(original,original,before,observed,locked,plan,original_native=native_original)[0])
+        observed['xml']=native_original['xml']
+        self.assertTrue(poe.check_constraints(original,changed,before,observed,locked,plan,original_native=native_original)[0])
 
     def test_measurement_resolves_native_effect_order_and_keeps_physical_assignment(self):
         document=bx.parse(SAMPLE)
@@ -2410,39 +2866,63 @@ class WorkflowInterfaceTests(unittest.TestCase):
         for invalid in ({'flasks_enabled':0},{'effects':[{'skill_id':'x','enabled':True},{'skill_id':'x','enabled':False}]},{'effects':[{'skill_id':'x','enabled':'false'}]}):
             with self.subTest(invalid=invalid),self.assertRaises(bx.ContractError):bx.measurement_shape(invalid)
 
-    def test_probe_damage_observation_keeps_selected_skill_and_actor_context(self):
+    def test_probe_metric_observation_keeps_selected_skill_and_actor_context(self):
         with tempfile.TemporaryDirectory() as folder:
             run=Path(folder);poe.write_text(run/'original.xml',SAMPLE)
             variant_file=run/'variants.json';poe.write_json(variant_file,{'variants':[{'id':'secondary-change','operations':{}}]})
-            baseline={'stats':{'CombinedDPS':100},'main_skill':'fixture-main','main_skill_name':'Fixture main','main_group':1,'config_values':{'native-scene':True},'engine_fingerprint':'fixture','input_xml_sha256':'before',
+            baseline={'stats':{'CombinedDPS':100,'FutureMetric':5},'main_skill':'fixture-main','main_skill_name':'Fixture main','main_group':1,'config_values':{'native-scene':True},'engine_fingerprint':'fixture','input_xml_sha256':'before',
                       'active_skills':[{'id':'fixture-main','name':'Fixture main','skill_ref':'qualified-main','is_main':True,'actor':'player'}],
                       'nodes':[1,2],'equipped':[],
-                      'stat_metadata':{'CombinedDPS':[{'label':'Combined DPS','format':'.1f','actor':'player'}]}}
+                      'stat_metadata':{'CombinedDPS':[{'label':'Combined DPS','format':'.1f','actor':'player'}],'FutureMetric':[{'label':'Future metric','format':'.1f','actor':'player'}]}}
             candidate=copy.deepcopy(baseline);candidate.update(input_xml_sha256='after',points=1,ascendancy_points=0,secondary_ascendancy_points=0)
+            candidate['stats']['FutureMetric']=12
             record=(run,{'intent':{}},{'plan':{'mode':'refine'},'engine_fingerprint':'fixture','baseline':baseline},SAMPLE,run)
             def calculate(*pos,**kw):
                 if 'xml_batch' in kw:
                     return {'calculations':[{**candidate,'xml':xml,'request_id':engine.batch_id('xml',i,xml),'input_xml_sha256':bx.digest(xml)} for i,xml in enumerate(kw['xml_batch'])]}
                 return baseline
             with patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'materialize_items',side_effect=lambda plan,root:(plan,[])),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(poe,'check_constraints',return_value=([],[])),patch.object(resources,'assess',return_value={'errors':[],'pending':[],'warnings':[]}):
-                response=poe.probe(args(run=str(run),name='fixture',variants=str(variant_file)))
-            observation=response['alternatives'][0]['damage_observation']
-            self.assertEqual(response['alternatives'][0]['dps_delta'],0)
+                response=poe.probe(args(run=str(run),name='fixture',variants=str(variant_file),metrics='FutureMetric,CombinedDPS',out=str(run/'comparison.json')))
+            observation=response['alternatives'][0]['metric_observation']
+            self.assertEqual(response['alternatives'][0]['stats']['FutureMetric'],12)
+            self.assertEqual(response['alternatives'][0]['comparison']['FutureMetric']['delta'],7)
+            self.assertEqual(response['alternatives'][0]['comparison']['CombinedDPS']['delta'],0)
+            self.assertEqual(response['alternatives'][0]['observed_delta'],7)
+            self.assertEqual((observation['locator'],observation['value']),('/stats/FutureMetric',12))
+            self.assertEqual(response['baseline_metric_observation']['value'],5)
+            text=next(row['text'] for row in response['publication']['statements'] if row['kind']=='experiment')
+            self.assertIn('Future metric',text)
             self.assertEqual(observation['context']['main_skill_ref'],'qualified-main')
             self.assertEqual(observation['context']['main_group'],1)
             self.assertEqual(observation['meaning']['actor'],'player')
             self.assertEqual(observation['context']['config_values'],{'native-scene':True})
-            self.assertEqual(response['baseline_damage_observation']['context']['xml_sha256'],'before')
+            self.assertEqual(response['baseline_metric_observation']['context']['xml_sha256'],'before')
             self.assertIn('actual_changes',response['alternatives'][0])
             self.assertEqual(response['alternatives'][0]['configuration_changes'],{})
+            # A display panel can belong to the player while another actor executes
+            # the selected skill; publication must not equate those native fields.
+            other=copy.deepcopy(baseline)
+            other['active_skills'][0].update(actor='mirage',skill_ref='qualified-other-actor')
+            measured=poe.measurement_facts(baseline,other,{})
+            observed=poe.publication('scoped_result',[],[],{'status':'not_requested'},{'current':baseline},
+                experiments=[{'id':'different-native-actor','status':'screened','measurement':measured,'comparison':{}}])
+            text=next(row['text'] for row in observed['statements'] if row['kind']=='experiment')
+            self.assertEqual(measured['metric_observation']['meaning']['actor'],'player')
+            self.assertEqual(other['active_skills'][0]['actor'],'mirage')
+            self.assertIn('面板归属 player',text)
+            self.assertIn('qualified-other-actor',text)
 
-    def test_damage_observation_selects_current_minion_metric_and_keeps_missing_unknown(self):
+    def test_metric_observation_selects_current_minion_metric_and_keeps_missing_unknown(self):
         calculation={'stats':{'CombinedDPS':0,'MinionCombinedDPS':230},'main_skill':'native-minion','active_skills':[{'skill_ref':'current-minion','is_main':True,'minion':True,'actor':'minion'}]}
-        observed=poe.damage_observation(calculation,'candidate')
+        observed=poe.metric_observation(calculation,'candidate')
         self.assertEqual((observed['locator'],observed['value']),('/stats/MinionCombinedDPS',230))
         self.assertEqual(observed['context']['main_skill_ref'],'current-minion')
         calculation['stats'].pop('MinionCombinedDPS')
-        self.assertIsNone(poe.damage_observation(calculation,'candidate')['value'])
+        missing=poe.metric_observation(calculation,'candidate')
+        self.assertIsNone(missing['value'])
+        self.assertEqual(missing['status'],'unknown')
+        explicit=poe.metric_observation(calculation,'candidate','FutureMetric')
+        self.assertEqual((explicit['locator'],explicit['value'],explicit['status']),('/stats/FutureMetric',None,'unknown'))
 
     def test_probe_preserves_native_diagnostic_and_maps_variant_source(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2486,6 +2966,15 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(actions[1]['categories'],{'material':1,'objective':1})
         self.assertEqual(actions[1]['pointer'],'/checked_route/pending')
         self.assertEqual(poe.delivery_actions({'status':'scoped_result','errors':[],'pending':[]},'a','b','c'),[])
+        for pointer in ('', '/checked_route'):
+            current={'status':'draft','errors':[], 'pending':['assessment:Actual unresolved work']}
+            action=next(row for row in poe.delivery_actions(current,'source.json','result.json','review.json',pointer)
+                        if row['action']=='assess_dependencies')
+            self.assertEqual(action.get('input_pointer'),'/assessment/unresolved')
+            self.assertEqual(action['pointer'],pointer+'/pending')
+            self.assertEqual(current['pending'],['assessment:Actual unresolved work'])
+        self.assertNotIn('input_pointer',actions[1])
+
 
     def test_route_snapshot_keeps_contextual_tree_path_and_source_repair(self):
         stage={'stage_id':'dynamic','level':12,'ascendancy_allocated_nodes':[],
@@ -2597,6 +3086,7 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(action['repair_count'],3)
         self.assertEqual(action['total'],len(diagnostics))
         self.assertNotIn('diagnostics',action)
+        self.assertEqual(action['edit_arguments'],{'kind':'route','file':'source.json'})
         # A retained object error must not hide independent source-reference repairs.
         large=[{**diagnostics[0],'location':'/claims/'+str(i)+'/evidence_refs',
                 'source_diagnostic':{'expected':['native value '+str(j) for j in range(100)]}}
@@ -2605,8 +3095,11 @@ class WorkflowInterfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             run=Path(folder);file=run/'candidates/fixture/evaluation.json'
             actions=poe.delivery_actions(outcome,'source.json',str(file),'review.json','/checked_route')
+            completion={'kind':'build','status':'blocked','scope':'Current requested task',
+                        'errors':outcome['errors'],'pending':['dependency:'+str(i) for i in range(40)]}
             response={'status':'blocked','next_actions':actions,'facts_summary':'observed scope '*500,
-                      'readiness':{'long':'x'*16000}}
+                      'readiness':{'long':'x'*16000},'task_completion':completion,
+                      'character_readiness':copy.deepcopy(completion)}
             poe.write_json(file,{'checked_route':outcome,'response':response})
             bounded=poe.bound_reply(response,argparse.Namespace(command='evaluate',run=str(run),name='fixture'))
             repair=bounded['next_actions'][0]
@@ -2615,6 +3108,31 @@ class WorkflowInterfaceTests(unittest.TestCase):
             self.assertEqual(repair['repair_count'],40)
             self.assertEqual(facts.pointer(poe.read_json(file),repair['errors_pointer']),outcome['errors'])
             self.assertEqual(facts.pointer(poe.read_json(file),repair['pointer']),large)
+            self.assertEqual(bounded['task_completion']['pending'],completion['pending'])
+            def complete_actions(reply):
+                continuation=next((row for row in reply['continuations'] if row['pointer']=='/response/next_actions'),None)
+                tail=facts.pointer(poe.read_json(file),continuation['pointer'])[continuation['offset']:] if continuation else []
+                return reply['next_actions']+tail
+            self.assertEqual(complete_actions(bounded),actions)
+            action_reads=[row for row in bounded['continuations'] if 'purpose' in row]
+            self.assertEqual([row.get('purpose',row['action']) for row in bounded['next_actions']+action_reads],
+                             [row['action'] for row in actions])
+            for index,row in enumerate(bounded['next_actions']+action_reads):
+                if 'purpose' in row:
+                    self.assertEqual(row['action'],'view')
+                    self.assertEqual(facts.pointer(poe.read_json(file),row['pointer']),actions[index])
+            response.update(task_completion={**completion,'pending':['task '+str(i)+' '+('x'*180) for i in range(20)],'errors':[]},
+                            character_readiness={**completion,'pending':['role '+str(i)+' '+('x'*820) for i in range(8)],'errors':[]},
+                            next_actions=[{'action':'repair_input','detail':'x'*2200} for i in range(12)],facts_summary='x'*6000)
+            poe.write_json(file,{'response':response})
+            bounded=poe.bound_reply(response,argparse.Namespace(command='evaluate',run=str(run),name='fixture'))
+            self.assertLessEqual(len(json.dumps({'ok':True,**bounded},ensure_ascii=False))+1,12000)
+            self.assertEqual(complete_actions(bounded),response['next_actions'])
+            for key in ('task_completion','character_readiness'):
+                self.assertEqual(bounded[key]['pending_total'],len(response[key]['pending']))
+                self.assertEqual(bounded[key]['pending_is_preview'],len(bounded[key]['pending'])<len(response[key]['pending']))
+            for continuation in bounded['continuations']:
+                facts.pointer(poe.read_json(file),continuation['pointer'])
             self.assertLess(len(json.dumps(bounded,ensure_ascii=False)),12000)
 
     def test_missing_claim_bindings_return_direct_review_action_before_final_review(self):
@@ -2628,10 +3146,30 @@ class WorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(action["input_file"],"source.json")
         self.assertEqual(action["diagnostics"],diagnostics)
         self.assertLess(actions.index(action),next(i for i,row in enumerate(actions) if row["action"]=="review_current_result"))
+        # Large diagnostics must not bury the current edit/review arguments.
+        diagnostics[0]['source_diagnostic']={'actual':'observed context '*1000}
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);details=run/'candidates/current/evaluation.json'
+            response={'status':'draft','file_exported':False,'files':[], 'next_actions':actions}
+            poe.write_json(details,{'response':response})
+            bounded=poe.bound_reply(response,argparse.Namespace(command='evaluate',run=str(run),name='current'))
+            indexed={row['purpose']:row for row in bounded['continuations'] if 'purpose' in row}
+            self.assertEqual(indexed['review_claims']['changes'],action['changes'])
+            review=next(row for row in actions if row['action']=='review_current_result')
+            for key in ('edit_arguments','review_file','template_pointer'):
+                self.assertEqual(indexed['review_current_result'][key],review[key])
+            continuation=next(row for row in bounded['continuations'] if row['pointer']=='/response/next_actions')
+            self.assertEqual(bounded['next_actions']+actions[continuation['offset']:],actions)
+            self.assertLessEqual(len(json.dumps({'ok':True,**bounded},ensure_ascii=False))+1,12000)
+            self.assertEqual((bounded['status'],bounded['file_exported'],bounded['files']),('draft',False,[]))
 
     def test_calculation_facts_exposes_current_keys_without_inventing_values(self):
-        result={'stats':{'SeasonSpecificObservation':0,'SeasonSpecificFlag':False,'Life':1}}
+        result={'stats':{'SeasonSpecificObservation':0,'SeasonSpecificFlag':False,'Life':1},
+                'rules':[{'id':'current-native-rule','applied':False,'value':0,'scope':'native wording'}]}
+        before=copy.deepcopy(result)
         observed=poe.calculation_facts(result)
+        self.assertEqual(observed['rules'],result['rules'])
+        self.assertEqual(result,before)
         self.assertEqual(observed['available_stat_keys'],sorted(result['stats']))
         self.assertNotIn('SeasonSpecificObservation',observed['stats'])
         referenced=poe.calculation_facts(result,[{'evidence_refs':['native:candidate#/stats/SeasonSpecificObservation','native:candidate#/stats/SeasonSpecificFlag']}])
@@ -2879,6 +3417,38 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 self.assertFalse(poe.workflow_status(args(run=str(run)))['candidate_records'][0]['valid'])
                 with self.assertRaisesRegex(ValueError,'计划'):
                     poe.read_candidate(args(run=str(run),name='test'))
+                # Multiple real recovery records must remain readable without
+                # recalculation; output snapshots cannot overwrite run state.
+                state=poe.read_json(run/'run.json')
+                state['input_sha256']=bx.digest((run/'original.xml').read_bytes())
+                state['candidates'].update({f'missing-{i}':{} for i in range(30)})
+                poe.write_json(run/'run.json',state)
+                stdout,stderr=io.StringIO(),io.StringIO()
+                with redirect_stdout(stdout),redirect_stderr(stderr):
+                    code=poe.main(['status','--run',str(run)])
+                self.assertEqual(code,2)
+                self.assertEqual(json.loads(stderr.getvalue())['diagnostic']['code'],'response_too_large')
+                saved=run/'status-snapshot.json';stdout=io.StringIO()
+                with redirect_stdout(stdout):
+                    code=poe.main(['status','--run',str(run),'--out',str(saved)])
+                self.assertEqual(code,0);self.assertLessEqual(len(stdout.getvalue()),12000)
+                complete=poe.read_json(saved)
+                self.assertEqual(len(complete['candidate_records']),31)
+                response=json.loads(stdout.getvalue());self.assertTrue(response['continuations'])
+                for continuation in response['continuations']:
+                    self.assertEqual(Path(continuation['file']),saved)
+                    facts.pointer(complete,continuation['pointer'])
+                self.assertEqual(response['runtime']['requests'],0)
+                before=(run/'run.json').read_bytes();stderr=io.StringIO()
+                with redirect_stderr(stderr):
+                    self.assertEqual(poe.main(['status','--run',str(run),'--out',str(run/'run.json')]),2)
+                self.assertEqual((run/'run.json').read_bytes(),before)
+                stdout=io.StringIO()
+                with redirect_stdout(stdout):
+                    code=poe.main(['start','--invoked','--input',str(run/'original.xml'),'--run',str(run)])
+                self.assertEqual(code,0);self.assertLess(len(stdout.getvalue()),2000)
+                self.assertEqual(json.loads(stdout.getvalue())['next_actions'][0]['command'],'status')
+                self.assertEqual((run/'run.json').read_bytes(),before)
 
     def test_route_status_requires_current_input_output_and_engine(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2904,7 +3474,117 @@ class WorkflowInterfaceTests(unittest.TestCase):
                 self.assertEqual(result['next_actions'][0]['action'],'resume_route')
 
 
+class ManualActionWindowTests(unittest.TestCase):
+    def fixture(self, modes=(('a','manual',.5,'player'),('b','manual',.5,'player'))):
+        result=resource_fixture();result['resource_rules']={'energy_shield_protects_mana':False}
+        costs={key:0 for key in ('ManaCost','LifeCost','ESCost','ManaPerSecondCost','LifePerSecondCost','ESPerSecondCost')};costs['Speed']=2
+        result['stats'].update(costs)
+        result['active_skills']=[{'id':ref,'skill_ref':ref,'is_main':i==0,'actor':actor,'costs':dict(costs),
+            'native_timing':{'action_mode':mode,'action_time_seconds':seconds,'action_time_source':'current native player output'}}
+            for i,(ref,mode,seconds,actor) in enumerate(modes)]
+        return result
+
+    def audit(self, result, timeline=None, usage=None):
+        usage=usage or [{'skill_ref':s['skill_ref'],'claim_id':s['skill_ref']} for s in result['active_skills']]
+        claims=[{'claim_id':s['skill_ref'],'subjects':['skill:'+s['skill_ref']],'status':'model_assessed'} for s in result['active_skills']]
+        return resources.assess(result,{}, {'usage':usage,**({'timeline':timeline} if timeline else {})},claims)
+
+    def test_cross_skill_overlap_blocks_completion_without_refuting_payments(self):
+        result=self.fixture();timeline={'duration_seconds':2,'repeat':False,'events':[{'skill_ref':'a','at':0},{'skill_ref':'b','at':.25}]}
+        audit=self.audit(result,timeline)
+        self.assertTrue(audit['errors'])
+        self.assertEqual(audit['timeline']['status'],'supported')
+        self.assertTrue(all(r['status']=='supported' for r in audit['timeline']['resources']))
+        self.assertEqual(audit['manual_actions']['status'],'refuted')
+        timeline['events'][1]['at']=.5
+        self.assertFalse(self.audit(result,timeline)['errors'])
+        timeline['events'].pop()
+        self.assertFalse(self.audit(result,timeline)['errors'])
+
+    def test_native_mode_not_damage_actor_controls_shared_time(self):
+        result=self.fixture((('a','instant',0,'player'),('b','automatic',0,'player'),('c','manual',.5,'minion'),('d','manual',.5,'player')))
+        timeline={'duration_seconds':2,'repeat':False,'events':[{'skill_ref':ref,'at':0} for ref in ('a','b','c')]}
+        self.assertFalse(self.audit(result,timeline)['errors'])
+        timeline['events'].append({'skill_ref':'d','at':.25})
+        self.assertTrue(self.audit(result,timeline)['errors'])
+
+    def test_repeat_and_preparation_seams_share_the_same_action_clock(self):
+        result=self.fixture();timeline={'duration_seconds':1,'repeat':True,'events':[{'skill_ref':'a','at':.1},{'skill_ref':'b','at':.9}]}
+        self.assertTrue(self.audit(result,timeline)['errors'])
+        timeline['repeat']=False
+        self.assertFalse(self.audit(result,timeline)['errors'])  # payment window may end during its final action
+        timeline={'duration_seconds':1,'repeat':False,'events':[{'skill_ref':'b','at':0}],
+                  'preparation':{'duration_seconds':1,'events':[{'skill_ref':'a','at':.8}]}}
+        self.assertTrue(self.audit(result,timeline)['errors'])
+        timeline['events'][0]['at']=.3
+        self.assertFalse(self.audit(result,timeline)['errors'])
+
+    def test_unknown_action_duration_is_not_free_or_a_gameplay_failure(self):
+        result=self.fixture((('a','manual',None,'player'),))
+        audit=self.audit(result,{'duration_seconds':2,'repeat':False,'events':[{'skill_ref':'a','at':0}]})
+        self.assertFalse(audit['errors'])
+        self.assertEqual(audit['manual_actions']['status'],'unknown')
+        self.assertTrue(any(x.startswith('capability:manual_action:') for x in audit['pending']))
+        self.assertEqual(audit['timeline']['status'],'supported')
+
+    def test_continuous_mean_capacity_is_checked_without_inventing_exact_events(self):
+        result=self.fixture((('a','manual',.6,'player'),('b','manual',.6,'player')))
+        usage=[{'skill_ref':ref,'claim_id':ref,'casts_per_second':1,'continuous':True} for ref in ('a','b')]
+        audit=self.audit(result,usage=usage)
+        self.assertTrue(audit['errors'])
+        self.assertEqual(audit['manual_actions']['status'],'refuted')
+        usage[1]['casts_per_second']=.5
+        audit=self.audit(result,usage=usage)
+        self.assertFalse(audit['errors'])
+        self.assertEqual(audit['manual_actions']['status'],'supported')
+        self.assertEqual(audit['manual_actions']['basis'],'declared_mean_capacity_only')
+
+    def test_different_mean_windows_are_not_assumed_concurrent(self):
+        result=self.fixture((('a','manual',.6,'player'),('b','manual',.6,'player')))
+        usage=[{'skill_ref':ref,'claim_id':ref,'casts_per_second':1,'active_seconds':seconds} for ref,seconds in (('a',1),('b',2))]
+        audit=self.audit(result,usage=usage)
+        self.assertFalse(audit['errors'])
+        self.assertEqual(audit['manual_actions']['status'],'unknown')
+
+
 class ResourceRegressionTests(unittest.TestCase):
+    def test_declared_points_cannot_override_observed_native_global_limits(self):
+        result=resource_fixture()
+        for maximum in (5,12):
+            with self.subTest(maximum=maximum):
+                result.update(ascendancy_points=maximum+1,point_limits={'status':'observed',
+                    'source':'build.controls.pointDisplay.str','pools':{'ascendancy':{'used':maximum+1,'maximum':maximum}}})
+                audit=resources.assess(result,{'ascendancy_points':maximum+1},{})
+                self.assertTrue(audit['errors'])
+                budget=next(row for row in audit['point_budgets'] if row['pool']=='ascendancy')
+                self.assertEqual(budget['native_global_maximum'],maximum)
+                self.assertEqual(budget['status'],'exceeded_native_maximum')
+                result['ascendancy_points']=maximum
+                result['point_limits']['pools']['ascendancy']['used']=maximum
+                self.assertTrue(resources.assess(result,{'ascendancy_points':maximum+1},{})['errors'])
+                valid=resources.assess(result,{}, {})
+                self.assertFalse(valid['errors'])
+                self.assertIn('progress:ascendancy',valid['pending'])
+                result['point_limits']={'status':'unsupported'}
+                self.assertNotIn('native_global_maximum',resources.assess(result,{}, {})['point_budgets'][1])
+
+    def test_declared_point_budget_cannot_override_current_native_progress_bounds(self):
+        result=resource_fixture()
+        result.update(level=20,points=24,progress_limits={'status':'observed','chapters':[
+            {'entering_act':1,'quest_points':0,'extra_points':0},
+            {'entering_act':2,'quest_points':2,'extra_points':0},
+            {'entering_act':3,'quest_points':4,'extra_points':1}]})
+        intent={'normal_points_available':24,'act':1}
+        first=resources.assess(result,intent,{})
+        self.assertTrue(first['errors'])
+        result['progress_limits']['chapters'][1]['quest_points']=5
+        changed=resources.assess(result,intent,{})
+        self.assertFalse(changed['errors'])
+        self.assertEqual(changed['point_budgets'][0]['native_maximum'],24)
+        self.assertEqual(changed['point_budgets'][0]['status'],'within_declared_limit')
+        unknown=resources.assess(result,{}, {})
+        self.assertIn('progress:normal',unknown['pending'])
+
     def secondary(self, result, **costs):
         result['active_skills'].append({'id':'secondary','skill_ref':'secondary','actor':'player',
             'costs':{'ManaCost':10,'LifeCost':0,'ESCost':0,'ManaPerSecondCost':10,'ESPerSecondCost':0,'Speed':1,**costs}})
@@ -2952,6 +3632,179 @@ class ResourceRegressionTests(unittest.TestCase):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_native_duration_at_window_end_is_event_relative_arithmetic_not_coverage(self):
+        result,timeline=self.fixture()
+        result['active_skills'][0]['description']='长原生说明 '*1200
+        result['active_skills'][0]['native_timing']['duration_seconds']=3
+        timeline.update(repeat=False,preparation={'duration_seconds':5.25,'events':[{'skill_ref':'main','at':4}]})
+        audit=resources.timeline_assessment(result,timeline)
+        position=audit['preparation']['skill_schedules']['main']['native_duration_at_window_end']
+        self.assertEqual(position['last_event_at'],4)
+        self.assertEqual(position['window_end_at'],5.25)
+        self.assertEqual(position['elapsed_seconds'],1.25)
+        self.assertEqual(position['nominal_remaining_seconds'],1.75)
+        self.assertEqual(position['effect_coverage_status'],'unmeasured')
+        self.assertEqual(audit['native_snapshot'],audit['preparation']['native_snapshot'])
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},resource_audits={'candidate':{'timeline':audit}})
+        statement=next(row for row in published['statements'] if row['kind']=='skill_schedule' and row['phase']=='preparation' and row['skill_ref']=='main')
+        self.assertEqual(statement['values']['native_duration_at_window_end'],position)
+        self.assertIn('1.75',statement['text'])
+        self.assertIn('名义剩余',statement['text'])
+        self.assertIn('不证明效果',statement['text'])
+        summary=published['facts_summary']
+        self.assertIn('最低余额',summary[:5000])
+        self.assertIn('名义剩余',summary[:5000])
+        self.assertLess(summary.index('时间线测量范围'),summary.index('最低余额'))
+        self.assertEqual(summary.count(statement['text']),1)
+
+        result['stats']['CurrentScopedMetric']=23
+        selected=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},
+                                 resource_audits={'candidate':{'timeline':audit}},keys=['CurrentScopedMetric'])
+        with tempfile.TemporaryDirectory() as folder:
+            run=Path(folder);details=run/'candidates/current/evaluation.json'
+            response={'status':'draft','file_exported':False,'files':[],
+                      'publication':selected,'facts_summary':selected['facts_summary'],
+                      **{'detail_'+str(index):'Unrelated saved observation. '*1000 for index in range(16)}}
+            poe.write_json(details,{'response':response});original=details.read_bytes()
+            bounded=poe.bound_reply(response,args(command='evaluate',run=str(run),name='current'))
+            self.assertIn(selected['measurements'][0]['text'],bounded['facts_summary'])
+            self.assertIn('时间线测量范围',bounded['facts_summary'])
+            self.assertIn('最低余额',bounded['facts_summary'])
+            self.assertLessEqual(len(json.dumps({'ok':True,**bounded},ensure_ascii=False))+1,12000)
+            self.assertEqual(details.read_bytes(),original)
+            for continuation in bounded['continuations']:
+                facts.pointer(poe.read_json(details),continuation['pointer'])
+
+    def test_native_duration_end_position_keeps_missing_unknown_and_expired_zero(self):
+        result,timeline=self.fixture();timeline['repeat']=False
+        timing=result['active_skills'][0]['native_timing']
+        for value in (None,0):
+            timing['duration_seconds']=value
+            with self.subTest(duration=value):
+                audit=resources.timeline_assessment(result,timeline)
+                self.assertIsNone(audit['skill_schedules']['main'].get('native_duration_at_window_end'))
+        timing['duration_seconds']=.75
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit['skill_schedules']['main']['native_duration_at_window_end']['nominal_remaining_seconds'],0)
+        timeline['events']=[row for row in timeline['events'] if row['skill_ref']!='main']
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertIsNone(audit['skill_schedules']['main'].get('native_duration_at_window_end'))
+
+    def test_native_effect_end_condition_does_not_relabel_the_payment_projection(self):
+        result,timeline=self.fixture()
+        result['active_skills'][0]['native_timing']={**result['active_skills'][0]['native_timing'],'duration_seconds':.75,'cooldown_seconds':.5,
+            'cooldown_paused_during_effect':True,'source':'Current native skill modifier and output'}
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit['resources'][0]['status'],'supported')
+        condition=next(row for row in audit['timing_conditions'] if row['skill_ref']=='main')
+        self.assertEqual(condition['status'],'unknown')
+        self.assertEqual(condition['interval_basis'],'scheduled_event_minimum_gap')
+        self.assertEqual(condition['full_duration_recast_seconds'],1.25)
+        self.assertEqual(condition['required_early_end_within_seconds'],.5)
+        readiness=resources.assess(result,{}, {'timeline':timeline})
+        self.assertIn('capability:action_timing:main',readiness['pending'])
+        self.assertEqual(readiness['timeline']['status'],'supported')
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},readiness=readiness,keys=[])
+        statement=next(row for row in published['statements'] if row['kind']=='native_timing_condition')
+        self.assertIn(statement['text'],published['facts_summary'])
+        self.assertEqual(statement['status'],'unknown')
+        self.assertIn('完整持续 0.75 秒后仍有 0.5 秒冷却空窗',statement['text'])
+        self.assertIn('完整周期内名义覆盖 60%',statement['text'])
+        self.assertIn('可再次施放不表示无缝覆盖',statement['text'])
+        timeline['events'][-1]['at']=1.5
+        self.assertFalse(resources.timeline_assessment(result,timeline)['timing_conditions'])
+        timeline['events'][-1]['at']=1
+        result['active_skills'][0]['native_timing']['cooldown_paused_during_effect']=False
+        self.assertFalse(resources.timeline_assessment(result,timeline)['timing_conditions'])
+
+    def test_nominal_payment_rates_and_timeline_gaps_share_the_native_recast_check(self):
+        result,timeline=self.fixture()
+        result['active_skills'][0]['native_timing']={'duration_seconds':.75,'cooldown_seconds':.5,
+            'cooldown_paused_during_effect':True}
+        timed=resources.assess(result,{}, {'timeline':timeline})
+        plan={'usage':[{'skill_ref':'main','casts_per_second':1}]}
+        averaged=resources.assess(result,{},plan)
+        condition=averaged['timing_conditions'][0]
+        self.assertEqual(condition['phase'],'usage')
+        self.assertEqual(condition['native_timing'],timed['timing_conditions'][0]['native_timing'])
+        self.assertEqual(condition['full_duration_recast_rate'],.8)
+        self.assertEqual(condition['interval_basis'],'declared_mean_rate')
+        self.assertEqual(condition['declared_mean_interval_seconds'],timed['timing_conditions'][0]['observed_minimum_interval_seconds'])
+        self.assertNotIn('observed_minimum_interval_seconds',condition)
+        self.assertNotIn('required_early_end_within_seconds',condition)
+        self.assertIn('capability:action_timing:main',averaged['pending'])
+        self.assertEqual(resources.native_rate(result['active_skills'][0]),2)
+        self.assertEqual(averaged['resources'][0]['cost_per_second'],20)
+        published=poe.publication('draft',[],[],{'status':'unknown'},{'candidate':result},readiness=averaged,keys=[])
+        statement=next(row for row in published['statements'] if row['kind']=='native_timing_condition')
+        self.assertEqual(statement['phase'],'usage');self.assertIn(statement['text'],published['facts_summary'])
+        self.assertIn('平均间隔不证明实际最短间隔',statement['text'])
+        plan['usage'][0]['casts_per_second']=.8
+        self.assertFalse(resources.assess(result,{},plan)['timing_conditions'])
+        plan['usage'][0]['casts_per_second']=0
+        self.assertFalse(resources.assess(result,{},plan)['timing_conditions'])
+        result['active_skills'][0]['native_timing']['cooldown_paused_during_effect']=False
+        plan['usage'][0]['casts_per_second']=1
+        self.assertFalse(resources.assess(result,{},plan)['timing_conditions'])
+
+    def test_action_timing_uses_existing_current_condition_review_without_refuting_payments(self):
+        result,timeline=self.fixture()
+        result['active_skills'][0]['native_timing']={**result['active_skills'][0]['native_timing'],'duration_seconds':.75,'cooldown_seconds':.5,
+            'cooldown_paused_during_effect':True}
+        claim={'claim_id':'current','subjects':['skill:main','skill:move','objective:requested'],
+               'evidence_refs':['native:resources#/timing_conditions/0'],'missing_evidence':[],
+               'check_status':'not_requested','status':'model_assessed','diagnostics':[]}
+        usage=[{'skill_ref':ref,'claim_id':'current'} for ref in ('main','move')]
+        audit=resources.assess(result,{}, {'timeline':timeline,'usage':usage},[claim])
+        subject='capability:action_timing:main'
+        self.assertEqual(audit['pending'],[subject]);self.assertEqual(audit['errors'],[])
+        self.assertEqual(audit['timeline']['status'],'supported')
+        reviewed={'reference_status':'resolved','verdict':'supported','conditions':[],'unimplemented':[]}
+        review={'completion_pending':[],'conclusions':[{'claim_id':'current',**reviewed}],
+                'objectives':[{'objective_id':'requested',**reviewed}],'condition_reviews':[],'facts':{},'diagnostics':[]}
+        coverage=[{'objective_id':'requested','basis_status':'user_declared','claim_ids':['current']}]
+        def completion():return poe.plan_completion('build_plan',audit['errors'],audit['pending'],audit['diagnostics'],coverage,[claim],review)
+        self.assertEqual(completion()['status'],'draft')
+        review['condition_reviews']=[{'subjects':[subject],'claim_ids':['current'],'reference_status':'resolved',
+            'conditions':['Use the shorter interval only after verifying the actual early termination.'],
+            'fallback':'Otherwise use the full-duration recast branch.','evidence_refs':claim['evidence_refs']}]
+        completed=completion()
+        self.assertEqual(completed['status'],'scoped_result',completed)
+        self.assertEqual(completed['conditions'][0]['subjects'],[subject])
+        self.assertEqual(audit['pending'],[subject])
+        review['condition_reviews'][0]['fallback']=''
+        self.assertEqual(completion()['status'],'draft')
+
+    def test_active_flask_snapshot_needs_coverage_for_finite_declared_windows_too(self):
+        result,timeline=self.fixture()
+        result['equipped']=[{'slot':'Flask 1','active':True,'flask_local':{'duration':4}}]
+        subject='capability:flask_coverage:Flask 1'
+        finite=resources.assess(result,{}, {'timeline':timeline})
+        self.assertIn(subject,finite['pending'])
+        self.assertEqual(finite['timeline']['status'],'supported')
+        averaged=resources.assess(result,{}, {'usage':[{'skill_ref':'main','casts_per_second':1,'active_seconds':10}]})
+        self.assertIn(subject,averaged['pending'])
+        empty=resources.assess(result,{}, {'usage':[{'skill_ref':'main','casts_per_second':1,'active_seconds':0}]})
+        self.assertNotIn(subject,empty['pending'])
+        self.assertNotIn(subject,resources.assess(result,{}, {})['pending'])
+        result['equipped'][0]['active']=False
+        self.assertNotIn(subject,resources.assess(result,{}, {'timeline':timeline})['pending'])
+
+    def test_timeline_exposes_actual_fixed_snapshot_and_action_definition(self):
+        result,timeline=self.fixture()
+        result.update(xml_sha256='a'*64,engine_fingerprint='b'*64,
+            config_controls={'future_switch':{'type':'check','value':False}})
+        result['active_skills'][0].update(description='Uses an identified material, not another created entity.',
+            skill_types=['Spell'],native_timing={'cooldown_seconds':.5,'duration_seconds':None})
+        timeline['preparation']={'duration_seconds':1,'events':[{'skill_ref':'move','at':0}]}
+        audit=resources.timeline_assessment(result,timeline)
+        self.assertEqual(audit['native_snapshot']['xml_sha256'],result['xml_sha256'])
+        self.assertEqual(audit['native_snapshot']['effect_state'],engine.effect_state(result))
+        self.assertEqual(audit['preparation']['native_snapshot'],audit['native_snapshot'])
+        action=audit['skill_schedules']['main']['native_action']
+        self.assertEqual(action['description'],result['active_skills'][0]['description'])
+        self.assertEqual(action['native_timing'],result['active_skills'][0]['native_timing'])
+
     def test_preparation_phase_with_invalid_timeline_is_a_located_input_error(self):
         for value in (None,[],{},'invalid'):
             with self.subTest(value=value):
@@ -3100,6 +3953,34 @@ class TimelineTests(unittest.TestCase):
         missing=next(row for row in audit['diagnostics'] if row['code']=='timeline_skill_unscheduled')
         self.assertEqual(missing['location'],'/timeline/preparation/events')
         self.assertEqual(missing['skill_ref'],'future-startup')
+        repair=missing['repair_options']['unused']['usage']
+        resources.input_shape({'timeline':timeline,'usage':[repair]})
+        self.assertEqual(repair['phase'],'preparation')
+        self.assertEqual(resources.timeline_assessment(result,timeline,[repair])['preparation']['status'],'unknown')
+
+    def test_active_automatic_payments_cover_preparation_and_keep_their_phase(self):
+        result,timeline=self.automatic_fixture()
+        timeline['preparation']={'duration_seconds':4,'events':[{'skill_ref':'main','at':0}]}
+        missing=resources.timeline_assessment(result,timeline)
+        setup=missing['preparation']
+        self.assertEqual(setup['status'],'unknown')
+        self.assertIn('automatic:future-auto',setup['resources'][0]['gaps'])
+        self.assertIsNone(missing['resources'][0]['initial'])
+        self.assertEqual(missing['resources'][1]['status'],'supported')
+        self.assertTrue(any(row['code']=='timeline_automatic_schedule_incomplete'
+                            and row['location']=='/timeline/preparation/events' for row in missing['diagnostics']))
+        timeline['preparation']['events'] += [{'skill_ref':'future-auto','at':0},{'skill_ref':'future-auto','at':2}]
+        measured=resources.timeline_assessment(result,timeline)
+        self.assertEqual(measured['status'],'supported')
+        self.assertEqual(measured['preparation']['resources'][0]['scheduled_payment_total'],40)
+        self.assertEqual(measured['resources'][0]['initial'],measured['preparation']['resources'][0]['final'])
+        for event in timeline['events']:
+            if event['skill_ref']=='future-auto':event['at']+=.5
+        shifted=resources.timeline_assessment(result,timeline)
+        self.assertEqual(shifted['preparation']['status'],'supported')
+        self.assertEqual(shifted['resources'][0]['status'],'unknown')
+        self.assertIsNone(shifted['resources'][0]['scheduled_payment_total'])
+        self.assertEqual(shifted['automatic_schedules']['future-auto']['previous_window']['gap_seconds'],2.5)
 
     def automatic_fixture(self):
         result,timeline=self.fixture();timeline['repeat']=False
@@ -3108,6 +3989,27 @@ class TimelineTests(unittest.TestCase):
                                         'usage_rate':{'value':.5,'metric':'SkillTriggerRate','basis':'native_action_rate'}})
         timeline['events'] += [{'skill_ref':'future-auto','at':0},{'skill_ref':'future-auto','at':2}]
         return result,timeline
+
+    def test_fixed_automatic_payments_keep_balances_when_a_window_has_no_payment_due(self):
+        result,_=self.automatic_fixture()
+        result['active_skills']=result['active_skills'][-1:]
+        result['stats'].update(Mana=100,ManaRegenRecovery=0)
+        events=[{'skill_ref':'future-auto','at':at} for at in (1,3,5,7)]
+        flat=resources.timeline_assessment(result,{'duration_seconds':8,'repeat':False,'events':events})
+        self.assertEqual(flat['status'],'supported')
+        for boundary in (.5,1,1.5,3,7.5):
+            timeline={'duration_seconds':8-boundary,'repeat':False,
+                      'preparation':{'duration_seconds':boundary,'events':[e for e in events if e['at']<boundary]},
+                      'events':[{**e,'at':e['at']-boundary} for e in events if e['at']>=boundary]}
+            with self.subTest(boundary=boundary):
+                split=resources.timeline_assessment(result,timeline)
+                self.assertEqual(split['status'],'supported',split['diagnostics'])
+                setup,combat=split['preparation']['resources'][0],split['resources'][0]
+                self.assertEqual(combat['initial'],setup['final'])
+                self.assertEqual(combat['final'],flat['resources'][0]['final'])
+                self.assertEqual(setup['scheduled_payment_total']+combat['scheduled_payment_total'],40)
+        timeline['repeat']=True
+        self.assertEqual(resources.timeline_assessment(result,timeline)['status'],'unknown')
 
     def test_declared_native_trigger_payments_share_clock_without_certifying_execution(self):
         result,timeline=self.automatic_fixture();audit=resources.assess(result,{}, {'timeline':timeline})
@@ -3177,6 +4079,10 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(execution['status'],'unknown')
         resource=next(row for row in packet['statements'] if row['kind']=='resource' and row['subject']=='Mana')
         self.assertEqual(resource['window']['final'],audit['timeline']['resources'][0]['final'])
+        self.assertEqual(resource['window']['minimum_balance'],20)
+        self.assertLess(resource['window']['minimum_balance'],resource['window']['initial'])
+        self.assertEqual(resource['window']['initial'],resource['window']['final'])
+        self.assertIn('最低余额 20',resource['text'])
         self.assertEqual(resource['window']['at'],timeline['duration_seconds'])
         scopes=[row for row in packet['statements'] if row['kind']=='timeline_scope']
         self.assertEqual(len(scopes),1)
@@ -3205,7 +4111,8 @@ class TimelineTests(unittest.TestCase):
         for index,cost in enumerate((20,10)):
             ref="main" if index==0 else "move"
             costs={"ManaCost":cost,"ManaPerSecondCost":cost*2,"LifeCost":0,"LifePerSecondCost":0,"ESCost":0,"ESPerSecondCost":0,"Speed":2}
-            skill={"skill_ref":ref,"is_main":index==0,"actor":"player","costs":costs}
+            skill={"skill_ref":ref,"is_main":index==0,"actor":"player","costs":costs,
+                   "native_timing":{"action_mode":"manual","action_time_seconds":.5,"action_time_source":"fixture native duration"}}
             if index==0:result["active_skills"][0]=skill;result["stats"].update(costs)
             else:result["active_skills"].append(skill)
         result["stats"].update(Mana=50,ManaRegenRecovery=20)
@@ -3277,6 +4184,10 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(diagnostic["resource_id"],"Mana")
         self.assertEqual(diagnostic["location"],"/timeline/events")
         self.assertEqual(diagnostic["action"],"edit_input")
+        repair=diagnostic['repair_options']['unused']['usage']
+        resources.input_shape({'timeline':timeline,'usage':[repair]})
+        self.assertEqual(repair['phase'],'combat')
+        self.assertEqual(resources.timeline_assessment(result,timeline,[repair])['status'],'unknown')
         self.assertNotIn("capability:timeline:Mana",audit["pending"])
         del result["active_skills"][0]["costs"]["ManaCost"]
         self.assertIn("capability:timeline:Mana",resources.timeline_assessment(result,timeline)["pending"])
@@ -3325,8 +4236,98 @@ class TimelineTests(unittest.TestCase):
 
 
 class EditAndRecoveryTests(unittest.TestCase):
+    def test_review_from_replaces_complete_authored_review_without_container_prerequisite(self):
+        for kind in ('route','plan'):
+            for previous in (None,{'findings':'Prior incomplete review','unresolved':['Old outstanding work'],
+                                   'conclusions':[],'objectives':[]}):
+                with self.subTest(kind=kind,previous=previous):
+                    self.source=self.folder/(kind+str(previous is None)+'.json')
+                    prior,state_path=self.saved_proposal(kind)
+                    source=poe.read_json(self.source)
+                    if previous is None:source.pop('assessment')
+                    else:source['assessment']={'review':previous}
+                    poe.write_json(self.source,source)
+                    file=Path(prior.proposal_file);saved=poe.read_json(file);state=poe.read_json(state_path)
+                    packet={'token':'current-review','coverage':{'required_objective_ids':[]}}
+                    if kind=='route':
+                        saved['checked_route']['final_review']=packet
+                        state['input_sha256']=bx.digest(self.source.read_bytes())
+                    else:
+                        saved['review_packet']=packet;saved['source_plan_sha256']=bx.digest(self.source.read_bytes())
+                    poe.write_json(file,saved)
+                    if kind=='route':state['files'][str(file)]=bx.digest(file.read_bytes())
+                    else:state['candidates']['native']['evaluation_sha256']=bx.digest(file.read_bytes())
+                    poe.write_json(state_path,state)
+                    review={'findings':'Current authored review','unresolved':[],'conclusions':[],'objectives':[]}
+                    poe.write_json(self.request,{'set':{'assessment':{'review':review}}})
+                    request=args(invoked=True,kind=kind,file=str(self.source),changes=str(self.request),review_from=str(file))
+                    before={k:v for k,v in source.items() if k!='assessment'}
+                    result=poe.edit_document(request)
+                    current=poe.read_json(self.source)
+                    self.assertEqual(current['assessment']['review'],{**review,'token':'current-review'})
+                    self.assertEqual({k:v for k,v in current.items() if k!='assessment'},before)
+                    self.assertEqual(result['status'],'saved_draft')
+                    self.assertTrue(poe.edit_document(request)['replayed'])
+
+    def test_review_from_binds_authored_review_to_current_calculation_without_transcription(self):
+        for case in ('route','plan','export'):
+            with self.subTest(case=case):
+                kind='plan' if case=='export' else case
+                self.source=self.folder/(case+'.json');prior,state_path=self.saved_proposal(kind)
+                file=Path(prior.proposal_file);saved=poe.read_json(file)
+                outcome=saved['checked_route'] if kind=='route' else saved
+                outcome['final_review' if kind=='route' else 'review_packet']={'token':'opaque-current-calculation',
+                    'coverage':{'required_objective_ids':[]}}
+                poe.write_json(file,saved);state=poe.read_json(state_path)
+                if kind=='route':state['files'][str(file)]=bx.digest(file.read_bytes())
+                else:state['candidates']['native']['evaluation_sha256']=bx.digest(file.read_bytes())
+                poe.write_json(state_path,state)
+                if case=='export':
+                    file=self.folder/'run/output/native/final-assessment.json';poe.write_json(file,saved)
+                    poe.write_json(file.parent/'delivery.json',{'file_exported':False,'candidate':'native',
+                        'files':{'final-assessment.json':bx.digest(file.read_bytes())}})
+                review={'findings':'Reviewer-authored result; real input remains blocked.','unresolved':['Actual work remains'],
+                        'conclusions':[],'objectives':[]}
+                poe.write_json(self.request,{'set':{'assessment':{'review':review}}})
+                request=args(invoked=True,kind=kind,file=str(self.source),changes=str(self.request),review_from=str(file))
+                with patch.object(engine,'calculate') as native:
+                    result=poe.edit_document(request)
+                    replay=poe.edit_document(request)
+                native.assert_not_called()
+                self.assertEqual(poe.read_json(self.source)['assessment']['review'],{**review,'token':'opaque-current-calculation'})
+                self.assertEqual(result['reviewed_calculation']['file'],str(file))
+                self.assertTrue(replay['replayed'])
+                self.assertEqual(result['status'],'saved_draft')
+                self.assertEqual(poe.read_json(file),saved)  # Never edits the result or makes it pass.
+
+    def test_review_from_rejects_stale_calculation_and_mixed_changes_before_writes(self):
+        prior,state_path=self.saved_proposal();file=Path(prior.proposal_file)
+        saved=poe.read_json(file);saved['checked_route']['final_review']={'token':'current','coverage':{'required_objective_ids':[]}}
+        poe.write_json(file,saved);state=poe.read_json(state_path);state['files'][str(file)]=bx.digest(file.read_bytes());poe.write_json(state_path,state)
+        review={'findings':'Authored assessment','unresolved':[],'conclusions':[],'objectives':[]}
+        request=args(invoked=True,kind='route',file=str(self.source),changes=str(self.request),review_from=str(file),if_sha256=prior.if_sha256)
+        for change in ('mixed','receipt','source','missing_findings','shape','token_override'):
+            with self.subTest(change=change):
+                before=self.source.read_bytes();receipt=self.source.with_suffix('.edit.json');old_receipt=receipt.read_bytes()
+                payload={'set':{'assessment':{'review':copy.deepcopy(review)}}}
+                original_file=file.read_bytes()
+                if change=='mixed':payload['set']['name']='Unreviewed modification'
+                elif change=='receipt':poe.write_json(file,{**saved,'changed':True})
+                elif change=='source':
+                    value=poe.read_json(self.source);value['name']='Later source';poe.write_json(self.source,value)
+                    request.if_sha256=bx.digest(self.source.read_bytes());before=self.source.read_bytes()
+                elif change=='missing_findings':payload['set']['assessment']['review'].pop('findings')
+                elif change=='shape':payload['set']['assessment']=[]
+                else:payload['replace']={'/assessment/review/token':'wrong-context'}
+                poe.write_json(self.request,payload)
+                with self.assertRaises(bx.ContractError):poe.edit_document(request)
+                self.assertEqual(self.source.read_bytes(),before);self.assertEqual(receipt.read_bytes(),old_receipt)
+                file.write_bytes(original_file)
+                if change=='source':
+                    value.pop('name');poe.write_json(self.source,value);request.if_sha256=bx.digest(self.source.read_bytes())
+
     def saved_proposal(self,kind='route'):
-        first=self.edit({'set':{'stages':[{'stage_id':'one','snapshot':{'operations':{'tree':{'nodes_add':[42]}}}}]}}) if kind=='route' else self.edit({'set':{'mode':'refine','operations':{'gems':[{'group':1,'index':1,'skill_id':'FutureSkill','level':20},{'group':1,'index':2,'skill_id':'OtherSkill','level':7}]}}},kind='plan')
+        first=self.edit({'set':{'assessment':{},'stages':[{'stage_id':'one','snapshot':{'operations':{'tree':{'nodes_add':[42]}}}}]}}) if kind=='route' else self.edit({'set':{'assessment':{},'mode':'refine','operations':{'gems':[{'group':1,'index':1,'skill_id':'FutureSkill','level':20},{'group':1,'index':2,'skill_id':'OtherSkill','level':7}]}}},kind='plan')
         file=self.folder/'result.evidence.json' if kind=='route' else self.folder/'run/candidates/native/evaluation.json'
         change={'replace':{'/stages/0/snapshot/operations/tree':{'nodes':[20,42]}}} if kind=='route' else {'set':{'operations':{'gems':[{'group':1,'index':1,'level':5}]}}}
         proposal={'proposal_type':'native_tree_connection' if kind=='route' else 'native_gem_level','changes':change,'adoptable':True,'blockers':[],'preview':{'roundtrip_verified':True}}
@@ -3335,7 +4336,7 @@ class EditAndRecoveryTests(unittest.TestCase):
         if kind=='route':
             saved={'skill_version':poe.VERSION,'engine_fingerprint':'fixture','checked_route':outcome,'next_actions':actions}
             state_path=self.folder/'result.state.json'
-            state={'engine_fingerprint':'fixture','input':str(self.source),'input_sha256':first['revision'],'file_exported':True}
+            state={'engine_fingerprint':'fixture','input':str(self.source),'input_sha256':first['revision'],'phase':'evaluated','file_exported':False}
         else:
             original=self.folder/'run/original.xml';poe.write_text(original,SAMPLE)
             saved={**outcome,'skill_version':poe.VERSION,'engine_fingerprint':'fixture','source_plan':str(self.source),'source_plan_sha256':first['revision'],'next_actions':actions,'intent_hash':None,'original_sha256':bx.digest(original.read_bytes())}
@@ -3759,7 +4760,7 @@ class EditAndRecoveryTests(unittest.TestCase):
         for index in range(80):
             stage=copy.deepcopy(template);stage["stage_id"]=f"phase-{index:03d}";stage["name"]="Independently selected stage "+str(index)
             fixture.route["stages"].append(stage)
-            fixture.equipment[stage["stage_id"]]={"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Iron Gauntlets","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}}
+            fixture.equipment[stage["stage_id"]]={"bases":copy.deepcopy(stage["bases"]),"checks":{"Gloves":{"base":"Wool Gloves","valid_for_slot":True}},"context":{"basis":"declared_base_layout"}}
         fixture.check()
         poe.write_json(self.source,fixture.route);out=self.folder/"large.html";details=out.with_suffix(".evidence.json")
         payload={"status":"draft","file_exported":True,"stages":80,
@@ -3821,15 +4822,24 @@ class EditAndRecoveryTests(unittest.TestCase):
         self.assertEqual(error.exception.diagnostic["location"],"/constraint_sources/~1goal")
 
     def test_unrelated_stage_change_preserves_binding_and_related_change_invalidates(self):
-        first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first"},{"stage_id":"b","name":"second"}],"evidence":[{"evidence_id":"u","kind":"user_statement","subject":"goal","text":"actual user request"}],"claims":[{"claim_id":"c","text":"stage explanation","subjects":["stage:a"],"evidence_refs":["u"]}]}})
+        claims=[{"claim_id":key,"text":"stage explanation","subjects":subjects,"evidence_refs":["u"]}
+                for key,subjects in (("c",["stage:a"]),("combined",["skill:Future","stage:a"]),("overall",["goal","stage:a"]),("selected",["objective:direction","stage:a"]),("usage",["skill:Future"]))]
+        first=self.edit({"set":{"stages":[{"stage_id":"a","name":"first","snapshot":{"usage":[{"skill_ref":"Future","claim_id":"usage"}]}},{"stage_id":"b","name":"second"}],"evidence":[{"evidence_id":"u","kind":"user_statement","subject":"goal","text":"actual user request"}],"claims":claims,"assessment":{"goal_claim_ids":["selected"]}}})
         second=self.edit({"set":{"stages":[{"stage_id":"b","name":"unrelated change"}]}},first["revision"])
-        self.assertEqual(second["invalidated_claims"],[])
+        self.assertEqual(second["invalidated_claims"],["overall","selected"])
         third=self.edit({"set":{"stages":[{"stage_id":"a","name":"related change"}]}},second["revision"])
-        self.assertEqual(third["invalidated_claims"],["c"])
+        self.assertEqual(third["invalidated_claims"],["c","combined","overall","selected","usage"])
         spec=poe.read_json(self.source)
         checked=facts.assess_claims(spec["claims"],{"u":{"status":"user_declared"}},specification=spec,engine_fingerprint="fixture")
         self.assertEqual(checked[0]["status"],"unresolved")
-        refreshed=self.edit({"review_claims":["c"]},third["revision"])
+        diagnostics=[d for row in checked for d in row.get('diagnostics',[])]
+        outcome={'status':'draft','errors':[],'pending':['claim_revision:'+row['claim_id'] for row in checked],
+                 'diagnostics':diagnostics}
+        action=next(row for row in poe.delivery_actions(outcome,self.source,'details.json','review.json','/checked_route')
+                    if row['action']=='review_claims')
+        self.assertEqual(action['edit_arguments']['if_sha256'],third['revision'])
+        poe.write_json(self.request,action['changes'])
+        refreshed=poe.edit_document(args(invoked=True,changes=str(self.request),**action['edit_arguments']))
         self.assertEqual(refreshed["invalidated_claims"],[])
 
     def test_review_submission_requires_current_claim_coverage_before_save(self):
@@ -3972,6 +4982,14 @@ class EditAndRecoveryTests(unittest.TestCase):
             self.edit({"set":{"usage":[{"skill_ref":"observed","casts_per_second":True}]}},first["revision"],kind="plan")
         self.assertEqual(error.exception.diagnostic["location"],"/usage/0/casts_per_second")
         self.assertEqual(self.source.read_bytes(),before);self.assertEqual(self.source.with_suffix(".edit.json").read_bytes(),receipt)
+        for index,malformed in enumerate(("current",None,{"claim_id":["current"]})):
+            with self.subTest(partial_entry_check=malformed):
+                self.source=self.folder/f"partial-route-{index}.json"
+                saved=self.edit({"set":{"stages":[{"stage_id":"a","entry_checks":[malformed]}],
+                                        "claims":[{"claim_id":"current","text":"Draft interpretation","subjects":["stage:a"]}]}},kind="route")
+                self.assertEqual(saved["status"],"saved_draft")
+                with self.assertRaises(bx.ContractError):
+                    facts.entry_checks([malformed],{},[],"stage:a")
 
 
 class DeliveryIntegrityTests(unittest.TestCase):
@@ -4119,10 +5137,17 @@ class DeliveryIntegrityTests(unittest.TestCase):
                     if singles[0]>1: raise engine.EngineError('injected single failure')
                     return baseline
                 with self.subTest(count=count),patch.object(poe,'read_candidate',return_value=record),patch.object(engine,'calculate',side_effect=calculate),patch.object(poe,'materialize_items',side_effect=lambda plan,root:(plan,[])):
-                    result=poe.probe(args(run=str(run),name='fixture',variants=str(variants)))
+                    output=run/('failed-probe-'+str(count)+'.json')
+                    result=poe.probe(args(run=str(run),name='fixture',variants=str(variants),out=str(output)))
                     self.assertEqual({r['id'] for r in result['alternatives']},{'first','second'})
                     self.assertTrue(all(r['status']=='failed' for r in result['alternatives']))
                     self.assertEqual(result['status'],'failed')
+                    poe.write_json(output,result)
+                    # Follow actual advertised paths, without judging prose semantics.
+                    for statement in result['publication']['statements']:
+                        if statement['kind']!='experiment': continue
+                        for pointer in set(re.findall(r'/alternatives/\d+(?:/\w+)*',statement['text'])):
+                            poe.view_json(args(file=str(output),pointer=pointer,offset=0,limit=20,fields='',keys=False,query=''))
 
     def test_incomplete_catalog_batch_is_a_structured_failure(self):
         queries=[{'kind':'gems','query':'a'},{'kind':'gems','query':'b'}]
@@ -4146,6 +5171,98 @@ class DeliveryIntegrityTests(unittest.TestCase):
 
 
 class TaskCompletionTests(unittest.TestCase):
+    def test_read_only_scope_conflicts_offer_current_intent_choices_without_switching(self):
+        contract=poe.input_contract('intent')['nested_fields']['task_kind']
+        for field in ('operations','template_xml','scenario','measurement'):
+            intent={'task_kind':'read_only_review'}
+            plan={'mode':'refine',field:{'requested':'value'}}
+            before=copy.deepcopy((intent,plan))
+            with self.subTest(field=field):
+                with self.assertRaises(bx.ContractError) as caught:poe.require_read_only_plan(intent,plan)
+                diagnostic=poe.failure_record(caught.exception)['diagnostic']
+                self.assertEqual(diagnostic['location'],'/'+field)
+                self.assertEqual(diagnostic['intent_fields']['/task_kind'],contract)
+                self.assertIn('build_plan',contract['purposes'])
+                self.assertEqual((intent,plan),before)
+        intent={'schema_version':2,'confirmed':True,'task_kind':'read_only_review','goal':'Review existing arrangement','scenario':{'requested':'value'}}
+        with self.assertRaises(bx.ContractError) as caught:poe.validate_intent(intent,bx.parse(SAMPLE))
+        self.assertEqual(caught.exception.diagnostic['intent_fields']['/task_kind'],contract)
+
+    def test_reviewed_configuration_and_goal_have_consistent_pending_and_diagnostics(self):
+        claim={'claim_id':'current','subjects':['configuration:candidate','objective:requested'],
+               'evidence_refs':['native:candidate#/config_values'],'missing_evidence':[],
+               'check_status':'not_requested','status':'unresolved','diagnostics':[]}
+        reviewed={'reference_status':'resolved','verdict':'partial','conditions':['Verify coverage before using this scene.'],'unimplemented':[]}
+        review={'completion_pending':[],'conclusions':[{'claim_id':'current',**reviewed}],
+                'objectives':[{'objective_id':'requested',**reviewed}],'condition_reviews':[],'facts':{},'diagnostics':[]}
+        coverage=[{'objective_id':'requested','basis_status':'user_declared','claim_ids':['current']}]
+        diagnostics=[{'code':'configuration_review_missing','action':'review_configuration','required_subject':'configuration:candidate','location':'/claims'},
+                     {'code':'goal_claim_unresolved','action':'edit_input','subject':'goal_assessment','location':'/assessment/goal_claim_ids/0','actual':{'claim_id':'current'}}]
+        pending=['config:scenario','goal_assessment']
+        result=poe.plan_completion('build_plan',[],pending,diagnostics,coverage,[claim],review)
+        self.assertEqual(result['status'],'scoped_result',result)
+        self.assertEqual(result['pending'],[]);self.assertEqual(result['diagnostics'],[])
+        self.assertEqual(pending,['config:scenario','goal_assessment'])
+        for failure in ('user_only','missing_reference','refuted_check','missing_binding'):
+            altered=copy.deepcopy(claim)
+            if failure=='user_only': altered['evidence_refs']=['user']
+            elif failure=='missing_reference': altered['missing_evidence']=['missing actual source']
+            elif failure=='refuted_check': altered['check_status']='refuted'
+            else: altered['missing_evidence']=['claim_revision:current']
+            with self.subTest(failure=failure):
+                result=poe.plan_completion('build_plan',[],pending,diagnostics,coverage,[altered],review)
+                self.assertEqual(result['status'],'draft');self.assertIn('config:scenario',result['pending'])
+                self.assertTrue(any(row['code']=='configuration_review_missing' for row in result['diagnostics']))
+
+    def test_single_configuration_claim_covers_scenario_and_operation_controls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);document,intent,native,plan=self.fixture(folder,task_kind='build_plan')
+            plan['scenario']={'enemyLevel':82,'enemyIsBoss':'fixture'}
+            plan['operations']={'config':{'buffFortification':False}}
+            native['config_values']={**plan['scenario'],**plan['operations']['config']}
+            plan['claims'][0].update(subjects=['configuration:candidate','goal','objective:requested'],
+                                    evidence_refs=['native:candidate#/config_values'],uncertainties=[])
+            plan['assessment']={'goal_claim_ids':['current'],'scope':'Current selected scene and controls'}
+            plan['claims'][0]['bindings']=facts.claim_bindings(plan,plan['claims'][0],'fixture')
+            with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=([],[],[])):
+                checked=poe.assess_candidate(document,document,native,native,intent,plan,folder,root=folder)
+            self.assertFalse(any(subject.startswith('config:') for subject in checked['pending']),checked['pending'])
+            self.assertEqual(checked['review_packet']['facts']['candidate']['config_values'],native['config_values'])
+
+    def test_unfinished_export_retains_repair_files_and_never_delivers_xml_or_attachments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run=Path(temp)
+            for kind in ('read_only_review','build_plan'):
+                document,intent,native,plan=self.fixture(run,task_kind=kind)
+                assessed=self.assess(run,document,intent,native,plan)
+                source=run/'plan.json';poe.write_json(source,plan)
+                xml=bx.serialise(document);poe.write_text(run/'original.xml',xml);poe.write_text(run/'candidates/draft/requested.xml',xml)
+                outcome={**assessed,'plan':plan,'source_plan':str(source),'evidence_folder':str(run),'baseline':native,'result':native,
+                         'engine_fingerprint':'fixture','engine_version':'fixture','xml_sha256':native['xml_sha256'],'name':'draft'}
+                state={'intent':intent,'pob_path':str(run),'intent_evidence_folder':str(run)}
+                output=run/'output/draft';poe.write_text(output/'改进配装.xml',xml)
+                poe.write_text(output/'配装说明.html','Previous generated report')
+                with self.subTest(kind=kind),patch.object(poe,'read_candidate',return_value=(run,state,outcome,xml,run)),patch.object(poe,'assess_candidate',return_value=assessed),patch.object(engine,'calculate',return_value=copy.deepcopy(native)):
+                    exported=poe.export(args(run=str(run),name='draft'))
+                    self.assertFalse(exported['file_exported']);self.assertFalse(exported['xml_exported'])
+                    self.assertEqual(exported['files'],[]);self.assertEqual(list(output.glob('*.xml')),[])
+                    self.assertTrue((output/'final-assessment.json').is_file());self.assertTrue((output/'review.json').is_file())
+                    self.assertFalse(poe.read_json(output/'delivery.json')['file_exported'])
+                    self.assertEqual(poe.read_json(run/'run.json')['phase'],'evaluated')
+                    self.assertFalse((output/'配装说明.html').exists())
+                    self.assertEqual(set(poe.read_json(output/'delivery.json')['files']),{'final-assessment.json','review.json'})
+
+    def test_export_cli_reports_failed_delivery_without_losing_repair_response(self):
+        for complete in (False,True):
+            response={'status':'scoped_result' if complete else 'draft','file_exported':complete,
+                      'files':['current.html'] if complete else [],'details_file':'current-assessment.json'}
+            output=io.StringIO()
+            with self.subTest(complete=complete),patch.object(poe,'export',return_value=response),redirect_stdout(output):
+                code=poe.main(['export','--run','fixture','--name','current'])
+                saved=json.loads(output.getvalue())
+                self.assertEqual(code,0 if complete else 2);self.assertIs(saved['ok'],complete)
+                self.assertEqual(saved['details_file'],'current-assessment.json');self.assertEqual(saved['files'],response['files'])
+
     def test_formal_assessment_keeps_uncertified_ordinary_text_as_projection(self):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp);original,intent,baseline,plan=self.fixture(folder,task_kind='build_plan')
@@ -4206,8 +5323,10 @@ class TaskCompletionTests(unittest.TestCase):
             plan['assessment']={'goal_claim_ids':['current'],'scope':'Only the requested snapshot comparison'}
             pending=['usage:current-other']
             audit={'errors':[],'warnings':[],'pending':pending,'resources':[],'diagnostics':[]}
+            assess_resources=resources.assess
+            use_native_resources=False
             def assess(current_plan=plan,current_native=native,current_intent=intent,errors=()):
-                with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(list(errors),[],[])),patch.object(resources,'assess',return_value=copy.deepcopy(audit)):
+                with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(list(errors),[],[])),patch.object(resources,'assess',side_effect=lambda *a,**k:assess_resources(*a,**k) if use_native_resources else copy.deepcopy(audit)):
                     return poe.assess_candidate(document,document,copy.deepcopy(native),copy.deepcopy(current_native),current_intent,current_plan,run,root=run)
             first=assess();review=copy.deepcopy(first['review_packet']['review_template'])
             review['findings']='Comparison scope comes from the user; full operation schedule is outside this request.'
@@ -4237,6 +5356,80 @@ class TaskCompletionTests(unittest.TestCase):
                     else: result=assess(altered,snapshot,request)
                     self.assertEqual(result['status'],'draft');self.assertTrue(result['task_completion']['pending'])
             self.assertEqual(assess(errors=['Known invalid current item'])['status'],'blocked')
+            kept=copy.deepcopy(intent);kept['keep_skill_groups']=[1]
+            changed=copy.deepcopy(document);bx.groups(changed)[0].find('Gem').set('level','19')
+            with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=([],[],[])),patch.object(resources,'assess',return_value=copy.deepcopy(audit)):
+                violation=poe.assess_candidate(document,changed,native,native,kept,plan,run,root=run)
+            self.assertEqual(violation['task_completion']['status'],'blocked')
+            self.assertTrue(any('技能组 1' in error for error in violation['task_completion']['errors']))
+
+            # Inherited payment failures still block the character, but a current
+            # user-scoped comparison may explicitly review their irrelevance.
+            native['resource_rules']={'energy_shield_protects_mana':False}
+            native['stats']['ManaUnreserved']=-3
+            native['active_skills']=[copy.deepcopy(resource_fixture()['active_skills'][0]),
+                {'group':2,'skill_ref':'current-other','actor':'player','is_main':False,'trigger':True,
+                 'costs':{'ManaCost':7,'ManaPerSecondCost':7,'LifeCost':0,'LifePerSecondCost':0,
+                          'ESCost':0,'ESPerSecondCost':0,'SkillTriggerRate':1}}]
+            use_native_resources=True
+            audit=resources.assess(native,intent,plan,[])
+            original_audit=copy.deepcopy(audit)
+            first=assess()
+            issue=first['review_packet']['facts']['delivery_scope']['inherited_usage_errors'][0]
+            self.assertIn(issue['error'],first['character_readiness']['errors'])
+            self.assertEqual(first['status'],'blocked')
+            reviewed=copy.deepcopy(first['review_packet']['review_template'])
+            reviewed['findings']='Only the requested comparison; inherited action payment remains invalid.'
+            for field in ('conclusions','objectives'):
+                for row in reviewed[field]:
+                    row.update(scope='Current snapshot only',findings='The compared benefit does not require this unchanged action.',
+                               verdict='partial',conditions=['Use only for this comparison; do not execute the invalid action.'],
+                               evidence_refs=['user','native:materialization#/actual_changes','native:candidate#/stats'])
+            reviewed['condition_reviews']=[{'subjects':first['review_packet']['facts']['pending'],
+                'claim_ids':['current'],'conditions':['Inherited payment failure is outside this specific comparison.'],
+                'fallback':'Keep the file; do not claim that the character is executable.',
+                'evidence_refs':issue['evidence_refs']+['user','native:materialization#/actual_changes']}]
+            plan['assessment']['review']=reviewed
+            current=assess()
+            self.assertEqual(current['status'],'scoped_result',current['task_completion'])
+            self.assertEqual(current['task_completion']['errors'],[])
+            self.assertEqual([row['error'] for row in current['task_completion']['scope_excluded_errors']],audit['errors'])
+            self.assertEqual(current['character_readiness']['errors'],audit['errors'])
+            self.assertEqual(current['character_readiness']['status'],'blocked')
+            self.assertEqual(audit,original_audit)
+            self.assertTrue(any(row['kind']=='comparison_scope_exclusion' for row in current['publication']['statements']))
+            explanation=next(row for row in current['publication']['statements'] if row['kind']=='comparison_scope_exclusion')
+            self.assertEqual(explanation['condition_review']['fallback'],reviewed['condition_reviews'][0]['fallback'])
+            self.assertIn(reviewed['condition_reviews'][0]['fallback'],explanation['text'])
+            self.assertIn(reviewed['condition_reviews'][0]['conditions'][0],explanation['text'])
+            missing=copy.deepcopy(plan)
+            missing['assessment']['review']['condition_reviews'][0]['subjects'].remove(issue['subject'])
+            self.assertEqual(assess(missing)['status'],'blocked')
+            self.assertEqual(assess(errors=audit['errors'])['status'],'blocked')
+            for changed_input in ('cost','pool','rules','group','main'):
+                snapshot=copy.deepcopy(native)
+                if changed_input=='cost': snapshot['active_skills'][1]['costs']['ManaCost']=8
+                elif changed_input=='pool': snapshot['stats']['ManaUnreserved']=-4
+                elif changed_input=='rules': snapshot['resource_rules']['energy_shield_protects_mana']=True
+                elif changed_input=='group': snapshot['gems'][0]['level']=2
+                else: snapshot['active_skills'][1]['is_main']=True
+                with self.subTest(changed_input=changed_input):
+                    checked=assess(current_native=snapshot)
+                    self.assertEqual(checked['review_packet']['facts']['delivery_scope']['inherited_usage_errors'],[])
+                    self.assertNotEqual(checked['status'],'scoped_result')
+                    if checked['errors']: self.assertEqual(checked['status'],'blocked')
+            native['stats']['ManaUnreserved']=3
+            first=assess()
+            issues=first['review_packet']['facts']['delivery_scope']['inherited_usage_errors']
+            self.assertTrue(issues)
+            reviewed['token']=first['review_packet']['token']
+            reviewed['condition_reviews'][0]['subjects']=first['review_packet']['facts']['pending']
+            reviewed['condition_reviews'][0]['evidence_refs']=list(dict.fromkeys(
+                ref for row in issues for ref in row['evidence_refs']))+['user','native:materialization#/actual_changes']
+            plan['assessment']['review']=reviewed
+            checked=assess()
+            self.assertEqual(checked['status'],'scoped_result',checked['task_completion'])
+            self.assertEqual(checked['character_readiness']['status'],'blocked')
 
     def test_comparison_intent_requires_explicit_user_scope_and_keeps_default_execution(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -4256,15 +5449,16 @@ class TaskCompletionTests(unittest.TestCase):
         raw=[{'claim_id':key,'text':'Use the current measured snapshot after the declared future step.',
               'subjects':[subject,'objective:goal'],'evidence_refs':[reference],'uncertainties':['Future step not observed']}
              for key,subject in [('entry','stage:s'),('snapshot','snapshot:s')]]
+        raw[1]['subjects']=['objective:goal']
         specification={'claims':raw}
         for row in raw: row['bindings']=facts.claim_bindings(specification,row,'fixture')
         claims=facts.assess_claims(raw,{},native,specification=specification,engine_fingerprint='fixture')
         checks,check_pending=facts.entry_checks([{'check_id':'measured','locator':'/stats/Life','op':'ge','value':50,'claim_id':'entry'}],native['stage:s'],claims,'stage:s')
         self.assertEqual(checks[0]['status'],'met');self.assertEqual(checks[0]['basis_status'],'unresolved')
-        pending=['stage:s:'+value for value in check_pending]+['snapshot_assumptions:s']
+        pending=['stage:s:'+value for value in check_pending]+['snapshot_assumptions:s','entry_condition:s:entry']
         coverage=[{'objective_id':'goal','basis_status':'user_declared','claim_ids':['entry','snapshot'],'evidence_refs':[]}]
         observations={'pending':pending,'errors':[],'objective_coverage':coverage,
-                      'stages':[{'stage_id':'s','snapshot_assumptions':['snapshot'],
+                      'stages':[{'stage_id':'s','snapshot_assumptions':['snapshot'],'entry_conditions':['entry'],
                                  'calculation':{'native_calculated':True,'errors':[],'entry_checks':checks}}]}
         packet,_=facts.final_review(specification,{},claims,observations,{},native=native)
         review=copy.deepcopy(packet['review_template']);review['findings']='Conditional plan reviewed against this current snapshot.'
@@ -4279,11 +5473,18 @@ class TaskCompletionTests(unittest.TestCase):
         result=poe.plan_completion('leveling_plan',[],pending,[],coverage,claims,packet)
         self.assertEqual(result['status'],'scoped_result',result);self.assertEqual(result['pending'],[])
         self.assertEqual(observations['pending'],pending);self.assertEqual(claims[0]['status'],'unresolved')
-        for failure in ('unmet','unknown','uncomputed','missing_claim','bad_reference','incomplete_condition'):
+        uncalculated=copy.deepcopy(packet)
+        uncalculated['facts']['stages'][0]['calculation']['native_calculated']=False
+        result=poe.plan_completion('leveling_plan',[],[],[],coverage,claims,uncalculated)
+        self.assertEqual(result['status'],'draft')
+        self.assertIn('native:snapshot:missing',result['pending'])
+        self.assertTrue(any(row['code']=='route_snapshot_missing' for row in result['diagnostics']))
+        for failure in ('unmet','unknown','uncomputed','missing_claim','missing_entry_claim','bad_reference','incomplete_condition'):
             current=copy.deepcopy(packet);current_claims=copy.deepcopy(claims)
             if failure in ('unmet','unknown'): current['facts']['stages'][0]['calculation']['entry_checks'][0]['status']=failure
             elif failure=='uncomputed': current['facts']['stages'][0]['calculation']['native_calculated']=False
             elif failure=='missing_claim': current['facts']['stages'][0]['snapshot_assumptions'].append('absent')
+            elif failure=='missing_entry_claim': current['facts']['stages'][0]['entry_conditions']=['absent']
             elif failure=='bad_reference': current_claims[1]['missing_evidence']=['missing actual source']
             else: current['condition_reviews'][0]['claim_ids']=['entry']
             with self.subTest(failure=failure):
@@ -4297,7 +5498,9 @@ class TaskCompletionTests(unittest.TestCase):
         qualified['facts']['stages'][0]['stage_id']='s:branch'
         for missing in ('stage:s:branch:native:socket_capacity:group',
                         'native:item_generation:ordinary-spec',
-                        'stage:s:branch:native:item_generation:ordinary-spec'):
+                        'stage:s:branch:native:item_generation:ordinary-spec',
+                        'entry_condition:s:branch:absent',
+                        'stage:s:branch:entry_condition:s:branch:absent'):
             qualified['condition_reviews'][0]['subjects']=[missing]
             with self.subTest(current_work=missing):
                 result=poe.plan_completion('leveling_plan',[],[missing],[],coverage,claims,qualified)
@@ -4316,6 +5519,15 @@ class TaskCompletionTests(unittest.TestCase):
                 with patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(list(errors),[],[])),patch.object(resources,'assess',return_value=copy.deepcopy(audit)):
                     return poe.assess_candidate(document,document,copy.deepcopy(native),copy.deepcopy(native),intent,current,run,root=run)
             first=assess()
+            unpriced={**first['budget'],'status':'unknown','within_limit':None,'limit':None,
+                      'unresolved':['fixture-future-material']}
+            with patch.object(poe,'budget_summary',return_value=unpriced):
+                no_limit=assess()
+            self.assertIn('material:fixture-future-material',no_limit['pending'])
+            self.assertNotIn('budget',no_limit['pending'])
+            with patch.dict(intent,{'budget':{'amount':10,'currency':'fixture'}}),patch.object(poe,'budget_summary',return_value={**unpriced,'limit':10}):
+                priced=assess()
+            self.assertIn('budget',priced['pending'])
             review=copy.deepcopy(first['review_packet']['review_template'])
             review['findings']='Current file and conditional plan reviewed; execution prerequisites remain unmet.'
             for field in ('conclusions','objectives'):
@@ -4323,7 +5535,7 @@ class TaskCompletionTests(unittest.TestCase):
                     row.update(scope='Conditional planning only',findings='Current snapshot retained; execute after prerequisites are verified.',
                                verdict='partial',evidence_refs=['native:candidate#/stats/Life'],
                                conditions=['Verify the actual acquisition, progress and resource assumptions before execution.'],
-                               unimplemented=['Future execution is not observed.'])
+                               unimplemented=[])
             review['condition_reviews']=[{'subjects':first['review_packet']['facts']['pending'],'claim_ids':['current'],
                 'conditions':['Verify the actual acquisition, progress and resource assumptions before execution.'],
                 'fallback':'Keep the original role and defer this change until the listed prerequisites are verified.',
@@ -4337,6 +5549,29 @@ class TaskCompletionTests(unittest.TestCase):
                 self.assertIn(subject,current['character_readiness']['pending'])
             self.assertEqual(current['review_packet']['objectives'][0]['verdict'],'partial')
             self.assertTrue(current['task_completion']['conditions'])
+            user_only=copy.deepcopy(plan)
+            user_only['assessment']['review']['objectives'][0]['evidence_refs']=['user']
+            insufficient=assess(user_only)
+            self.assertEqual(insufficient['status'],'draft')
+            self.assertIn('plan_objective:requested',insufficient['task_completion']['pending'])
+            self.assertTrue(any(row['code']=='objective_observation_missing'
+                                for row in insufficient['task_completion']['diagnostics']))
+            incomplete=copy.deepcopy(plan)
+            incomplete['assessment']['review']['objectives'][0]['unimplemented']=['Necessary equipment specifications and acquisition steps remain undesigned.']
+            unfinished=assess(incomplete)
+            self.assertEqual(unfinished['status'],'draft')
+            self.assertIn('plan_objective:requested',unfinished['task_completion']['pending'])
+            incomplete=copy.deepcopy(plan)
+            incomplete['claims'].append({**copy.deepcopy(incomplete['claims'][0]),'claim_id':'aux'})
+            incomplete['assessment'].pop('review')
+            first_incomplete=assess(incomplete)
+            aux_review=copy.deepcopy(review);aux_review['token']=first_incomplete['review_packet']['token']
+            aux_review['conclusions'].append({**copy.deepcopy(aux_review['conclusions'][0]),'claim_id':'aux',
+                'unimplemented':['Necessary transition remains undesigned.']})
+            incomplete['assessment']['review']=aux_review
+            unfinished=assess(incomplete)
+            self.assertEqual(unfinished['status'],'draft')
+            self.assertIn('plan_claim:aux:unimplemented',unfinished['task_completion']['pending'])
             source=run/'plan.json';poe.write_json(source,plan)
             xml=bx.serialise(document);poe.write_text(run/'original.xml',xml);poe.write_text(run/'candidates/plan/requested.xml',xml)
             outcome={**current,'plan':plan,'source_plan':str(source),'evidence_folder':str(run),'baseline':native,'result':native,
@@ -4487,7 +5722,7 @@ class TaskCompletionTests(unittest.TestCase):
             task=poe.read_only_completion(document,changed,{'actual_changes':[{'locator':'/level'}]},[],[],complete)
             self.assertEqual(task['status'],'blocked');self.assertTrue(task['errors'])
 
-    def test_read_only_export_saves_report_evidence_and_never_delivers_xml(self):
+    def test_read_only_export_saves_report_and_render_failure_cannot_claim_success(self):
         with tempfile.TemporaryDirectory() as temp:
             run=Path(temp);document,intent,native,plan=self.fixture(run)
             first=self.assess(run,document,intent,native,plan);self.complete_review(first,plan)
@@ -4498,9 +5733,19 @@ class TaskCompletionTests(unittest.TestCase):
                      'engine_fingerprint':'fixture','engine_version':'fixture','xml_sha256':native['xml_sha256'],'name':'review'}
             state={'intent':intent,'pob_path':str(run),'intent_evidence_folder':str(run)}
             xml=bx.serialise(document)
-            with patch.object(poe,'read_candidate',return_value=(run,state,outcome,xml,run)),patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',return_value=(['Original invalid equipment'],[],['native:unmeasured'])),patch.object(resources,'assess',return_value={'errors':['Original resource conflict'],'warnings':['Original warning'],'pending':['progress:unknown'],'resources':[],'diagnostics':[]}):
+            with patch.object(poe,'read_candidate',return_value=(run,state,outcome,xml,run)),patch.object(engine,'calculate',return_value=copy.deepcopy(native)),patch.object(poe,'mechanical_issues',side_effect=lambda *pos,**kw:(['Original invalid equipment'],[],['native:unmeasured'])),patch.object(resources,'assess',return_value={'errors':['Original resource conflict'],'warnings':['Original warning'],'pending':['progress:unknown'],'resources':[],'diagnostics':[]}):
+                exported=poe.export(args(run=str(run),name='review'))
+                previous_report=(run/'output/review/配装说明.html').read_bytes()
+                with patch.object(poe,'report_html',side_effect=OSError('fixture render failure')),self.assertRaises(OSError):
+                    poe.export(args(run=str(run),name='review'))
+                self.assertEqual(poe.read_json(run/'run.json')['phase'],'exporting')
+                self.assertFalse(poe.read_json(run/'output/review/delivery.json')['file_exported'])
+                self.assertEqual((run/'output/review/配装说明.html').read_bytes(),previous_report)
                 exported=poe.export(args(run=str(run),name='review'))
             self.assertEqual(exported['status'],'scoped_result');self.assertTrue(exported['file_exported']);self.assertFalse(exported['xml_exported'])
+            self.assertEqual(exported['pending'],[])
+            self.assertEqual(exported['errors'],[])
+            self.assertIn('progress:unknown',exported['character_readiness']['pending'])
             self.assertEqual({Path(path).suffix for path in exported['files']},{'.html','.json'})
             output=run/'output/review';receipt=poe.read_json(output/'delivery.json')
             self.assertTrue(receipt['file_exported']);self.assertFalse(receipt['xml_exported'])
@@ -4529,11 +5774,97 @@ class TaskCompletionTests(unittest.TestCase):
 
 
 class NativeSelectionIntegrityTests(unittest.TestCase):
+    def test_native_candidate_probe_preserves_groups_across_saved_defaults(self):
+        root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
+        native=engine.calculate(root,'')
+        plan={'mode':'rebuild','summary':'Native transport normalization fixture',
+              'operations':{'replace_skills':[{'gems':[{'skill_id':'Fireball','level':1}]},
+                                            {'gems':[{'skill_id':'Fireball','level':1}]}],'main_group':1}}
+        source=bx.apply_plan(bx.parse(native['xml']),plan,native=native)
+        preserved=bx.groups(source)[1];preserved.set('includeInFullDPS','nil')
+        preserved.find('Gem').set('enableGlobal2','nil');preserved.find('Gem').set('count','nil')
+        with tempfile.TemporaryDirectory() as folder:
+            work=Path(folder);original=work/'original.xml';poe.write_text(original,bx.serialise(source));original_hash=bx.digest(original.read_bytes())
+            run=work/'run';poe.begin(args(invoked=True,input=str(original),run=str(run)))
+            intent={'schema_version':2,'confirmed':True,'task_kind':'build_plan','goal':'Keep the second skill group while comparing this native snapshot.',
+                    'keep_skill_groups':[2],
+                    'objectives':[{'objective_id':'preserve','text':'Preserve the second group.','evidence_refs':['user']}],
+                    'constraint_sources':{'/goal':'user','/keep_skill_groups':'user'},
+                    'evidence':[{'evidence_id':'user','kind':'user_statement','subject':'intent','text':'Preserve the second skill group.'}]}
+            intent_path=work/'intent.json';poe.write_json(intent_path,intent);poe.set_intent(args(run=str(run),file=str(intent_path)))
+            path=work/'plan.json';poe.write_json(path,{'schema_version':2,'mode':'refine','summary':'Keep current native declarations.','operations':{}})
+            poe.evaluate(args(run=str(run),name='baseline',plan=str(path)))
+            variants=work/'variants.json';poe.write_json(variants,{'variants':[
+                {'id':'unchanged','operations':{}},
+                {'id':'group-disabled','operations':{'groups':[{'index':2,'enabled':False}]}},
+                {'id':'gem-quality','operations':{'gems':[{'group':2,'index':1,'quality':1}]}}]})
+            observed=poe.probe(args(run=str(run),name='baseline',variants=str(variants)))
+            rows={row['id']:row for row in observed['alternatives']}
+            self.assertFalse(any('技能组 2' in error for error in rows['unchanged']['errors']),rows['unchanged']['errors'])
+            for name in ('group-disabled','gem-quality'):
+                self.assertTrue(any('技能组 2' in error for error in rows[name]['errors']),rows[name]['errors'])
+            self.assertEqual(bx.digest(original.read_bytes()),original_hash)
+
+    def test_native_read_only_auto_level_review_repeats_and_exports(self):
+        root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
+        native=engine.calculate(root,'')
+        self.assertEqual(native['point_limits']['status'],'observed')
+        self.assertTrue(native['capabilities']['native_point_limits'])
+        for pool,key in (('normal','points'),('ascendancy','ascendancy_points')):
+            self.assertEqual(native['point_limits']['pools'][pool]['used'],native[key])
+            self.assertGreaterEqual(native['point_limits']['pools'][pool]['maximum'],0)
+        stale=copy.deepcopy(native);stale['point_limits']['pools']['ascendancy']['used']+=1
+        with self.assertRaises(engine.EngineError) as mismatch:engine.validate_contract(stale)
+        self.assertEqual(mismatch.exception.diagnostic['location'],'/point_limits')
+        seed=bx.parse(native['xml'])
+        seed.find('Build').set('characterLevelAutoMode','true')
+        with tempfile.TemporaryDirectory() as folder:
+            work=Path(folder);original=work/'original.xml';poe.write_text(original,bx.serialise(seed))
+            input_hash=bx.digest(original.read_bytes());run=work/'run'
+            poe.begin(args(invoked=True,input=str(original),run=str(run)))
+            canonical_hash=bx.digest((run/'original.xml').read_bytes())
+            goal='Report current native Life; combat coverage is outside this snapshot.'
+            intent={'schema_version':2,'confirmed':True,'task_kind':'read_only_review','goal':goal,
+                    'objectives':[{'objective_id':'life','text':goal,'evidence_refs':['user']}],
+                    'constraint_sources':{'/goal':'user'},
+                    'evidence':[{'evidence_id':'user','kind':'user_statement','subject':'intent','text':goal}]}
+            intent_path=work/'intent.json';poe.write_json(intent_path,intent)
+            poe.set_intent(args(run=str(run),file=str(intent_path)))
+            source=work/'plan.json';change=work/'changes.json'
+            poe.write_json(change,{'set':{'schema_version':2,'mode':'refine','summary':goal,'operations':{},
+                'claims':[{'claim_id':'life','text':'Current Life is {{fact:native:candidate#/stats/Life}}; combat coverage is unknown.',
+                           'subjects':['goal','objective:life'],'evidence_refs':['native:candidate#/stats/Life']}]}})
+            poe.edit_document(args(invoked=True,kind='plan',file=str(source),changes=str(change)))
+            current=poe.evaluate(args(run=str(run),name='readonly',plan=str(source)))
+            self.assertEqual(current['task_completion']['errors'],[])
+            for review_number in (1,2):
+                details=poe.read_json(current.get('evaluation_file') or current['details_file'])
+                review=copy.deepcopy(details['review_packet']['review_template']);review.pop('token')
+                review['findings']=f'Authored snapshot review {review_number}; no combat inference.'
+                for field in ('objectives','conclusions'):
+                    for row in review[field]:
+                        row.update(verdict='supported',scope='Current Life snapshot only',
+                                   findings=f'Review {review_number}: native Life is present.',
+                                   evidence_refs=['native:candidate#/stats/Life'])
+                poe.write_json(change,{'set':{'assessment':{'review':review}}})
+                poe.edit_document(args(invoked=True,kind='plan',file=str(source),changes=str(change),
+                                       review_from=current.get('evaluation_file') or current['details_file']))
+                poe.evaluate(args(run=str(run),name='readonly',plan=str(source)))
+                current=poe.export(args(run=str(run),name='readonly'))
+                self.assertEqual(current['status'],'scoped_result',json.dumps(current['task_completion'],ensure_ascii=False));self.assertTrue(current['file_exported'])
+                self.assertFalse(current['xml_exported']);self.assertEqual(current['task_completion']['pending'],[])
+                self.assertEqual(current['task_completion']['errors'],[])
+                self.assertTrue(all(Path(name).is_file() for name in current['files']))
+                requested=bx.read_document(run/'candidates/readonly/requested.xml')
+                self.assertEqual(requested.find('Build').get('characterLevelAutoMode'),'true')
+                self.assertEqual(bx.digest(original.read_bytes()),input_hash)
+                self.assertEqual(bx.digest((run/'original.xml').read_bytes()),canonical_hash)
+
     def test_saved_and_effective_gem_specs_follow_native_effects_without_enabling_disabled_gems(self):
         root=engine.resolve_root(os.environ.get('POECHARM_PATH'))
         base=engine.calculate(root,'')
         document=bx.apply_plan(bx.parse(base['xml']),{'mode':'rebuild','summary':'Native saved/effective specification regression',
-            'operations':{'items':[{'id':201,'text':'Rarity: RARE\nNative Specs\nIron Gauntlets\nSockets: B-B-R\n+2 to Level of Socketed Gems\n+5% to Quality of Socketed Gems'}],
+            'operations':{'items':[{'id':201,'text':'Rarity: RARE\nNative Specs\nIron Gauntlets\nSockets: B-B-R\n+2 to Level of Socketed Gems\n+5% to Quality of Socketed Gems\nSocketed Gems are Supported by Level 1 Added Chaos Damage\nSocketed Gems are Supported by Level 1 Melee Physical Damage'}],
                           'equip':[{'slot':'Gloves','item_id':201}], 'main_group':1,
                           'replace_skills':[{'slot':'Gloves','gems':[{'skill_id':'Fireball','level':1,'quality':0},
                               {'skill_id':'SupportFasterCasting','level':1,'quality':0},
@@ -4549,6 +5880,16 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
         self.assertTrue(support['support_applied'])
         self.assertEqual(support['effective_specification_source'],'MAIN gem.supportEffect')
         main=next(skill for skill in result['active_skills'] if skill['is_main'])
+        applied={row['id']:row for row in main['supports']}
+        self.assertIn('SupportAddedChaosDamage',applied)
+        self.assertNotIn('SupportMeleePhysicalDamage',applied)
+        extra=applied['SupportAddedChaosDamage']
+        self.assertEqual((extra['level'],extra['quality']),(None,None))
+        self.assertEqual((extra['effective_level'],extra['effective_quality']),(1,0))
+        linked=applied[support['id']]
+        self.assertEqual((linked['level'],linked['quality']),(support['level'],support['quality']))
+        self.assertEqual((linked['effective_level'],linked['effective_quality']),
+                         (support['effective_level'],support['effective_quality']))
         self.assertEqual((active['effective_level'],active['effective_quality']),
                          (main['effective_level'],main['effective_quality']))
         displayed=poe.publication('scoped_result',[],[],{'status':'not_requested'},{'current':result},keys=[])['facts_summary']
@@ -4664,6 +6005,34 @@ class NativeSelectionIntegrityTests(unittest.TestCase):
 
 
 class RealEngineTests(unittest.TestCase):
+    def test_native_action_metadata_distinguishes_self_cast_fallback_from_instant(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        instants=[s for s in current['active_skills'] if s.get('native_timing',{}).get('action_mode')=='instant']
+        self.assertTrue(instants)
+        self.assertTrue(all(s['base_cast_time_seconds']==0 for s in instants))
+        plan={'mode':'rebuild','summary':'Native trigger source unavailable; preserve its self-cast fallback',
+              'operations':{'replace_skills':[{'gems':[{'skill_id':'Fireball','level':1},
+                                                     {'skill_id':'SupportCastOnCriticalStrike','level':1}]}],'main_group':1}}
+        document=bx.apply_plan(self.original,plan,native=current)
+        native=engine.calculate(self.pob,bx.serialise(document),cache=False)
+        skill=next(s for s in native['active_skills'] if s['id']=='Fireball')
+        self.assertEqual(skill['trigger'],'')
+        self.assertIn('Self-Cast',skill['info_secondary'])
+        self.assertEqual(skill['native_timing']['action_mode'],'unknown')
+        self.assertIsNone(skill['native_timing']['action_time_seconds'])
+
+    def test_catalog_preserves_current_gem_effect_identity_without_character_switches(self):
+        current=engine.calculate(self.pob,bx.serialise(self.original))
+        multi=[gem for gem in current['gems'] if len(gem.get('granted_effects',[]))>1]
+        self.assertTrue(multi,'Native sample must exercise the multi-effect query contract')
+        result=engine.calculate(self.pob,queries=[{'kind':'gems','query':'id:'+gem['id'],'limit':10} for gem in multi])
+        for gem,query in zip(multi,result['catalog_batch']):
+            entry=next(row for row in query['entries'] if row['skill_id']==gem['id'])
+            self.assertEqual(entry['level_requirements_effect_id'],entry['skill_id'])
+            self.assertEqual([row['id'] for row in entry['granted_effects']],[row['id'] for row in gem['granted_effects']])
+            self.assertTrue(all('support' in row and 'skill_types' in row for row in entry['granted_effects']))
+            self.assertTrue(all('global_enabled' not in row and 'active_skill_present' not in row for row in entry['granted_effects']))
+
     def test_native_preparation_projection_and_saved_view_share_current_payment_evidence(self):
         before=engine.calculate(self.pob,bx.serialise(self.original))
         plan={'mode':'rebuild','summary':'Two native standalone actions',
@@ -4707,6 +6076,9 @@ class RealEngineTests(unittest.TestCase):
         plan={'mode':'refine','summary':'Native requested state validation','operations':{'gems':[operation]}}
         document=bx.apply_plan(self.original,plan,native=current)
         observed=engine.calculate(self.pob,bx.serialise(document),cache=False)
+        preservation_errors,_=poe.check_constraints(self.original,document,current,observed,
+            {'allow_main_skill_change':True,'keep_skill_groups':[selected['group']]},plan)
+        self.assertTrue(any('技能组 '+str(selected['group']) in error for error in preservation_errors))
         actual=next(gem for gem in observed['gems'] if gem['group']==selected['group'] and gem['index']==selected['index'])
         if actual['enabled'] is False:
             bx.verify_selections(document,observed,plan['operations'])
@@ -4931,11 +6303,27 @@ class RealEngineTests(unittest.TestCase):
         plan['assessment']['review']={**template,'findings':'Only the native interface scope is reviewed',
             'objectives':[{**row,'verdict':'unknown','scope':'Fixture scope only','findings':'Unresolved gameplay dependencies retained'} for row in template['objectives']],
             'conclusions':[{**row,'verdict':'unknown','scope':'Native control mapping only','findings':'Two roles use the chosen controls; no temporal guarantee'} for row in template['conclusions']]}
+        # The author writes findings; the editor binds current native identity.
+        authored=copy.deepcopy(plan['assessment']['review']);authored.pop('token')
+        change=Path(self.temp.name)/'common-measurement-review-change.json'
+        poe.write_json(change,{'set':{'assessment':{'review':authored}}})
+        stdout=io.StringIO()
+        with redirect_stdout(stdout):
+            code=poe.main(['edit','--invoked','--kind','plan','--file',str(Path(self.temp.name)/'common-measurement.json'),
+                          '--changes',str(change),'--review-from',first['evaluation_file']])
+        self.assertEqual(code,0,stdout.getvalue())
+        plan=poe.read_json(Path(self.temp.name)/'common-measurement.json')
+        self.assertEqual(plan['assessment']['review']['token'],first['review_token'])
+        self.assertEqual(plan['assessment']['review']['findings'],authored['findings'])
         second=self.evaluate_plan(plan,'common-measurement')
         self.assertEqual(first['review_token'],second['review_token'])
         exported=poe.export(args(run=str(self.run_dir),name='common-measurement'))
         self.assertNotIn('final_review:stale',exported['pending'])
         actual=poe.read_json(self.run_dir/'output/common-measurement/final-assessment.json')
+        reviewed=poe.edit_document(args(invoked=True,kind='plan',file=str(Path(self.temp.name)/'common-measurement.json'),
+            changes=str(change),review_from=exported['details_file']))
+        self.assertEqual(reviewed['reviewed_calculation']['file'],exported['details_file'])
+        self.assertEqual(poe.read_json(Path(self.temp.name)/'common-measurement.json')['assessment']['review']['token'],actual['review_packet']['token'])
         self.assertEqual(actual['configuration_audit']['measurement_actual'],first_details['configuration_audit']['measurement_actual'])
         self.assertEqual(engine.character_state(actual['original']),engine.character_state(current))
         changes=actual['materialization']['actual_changes']
@@ -4954,7 +6342,7 @@ class RealEngineTests(unittest.TestCase):
             self.assertIn(effect['id'],effect_control['text'])
             self.assertIn(effect['operation_field'],effect_control['text'])
         self.assertIn('原角色',actual['publication']['facts_summary'])
-        report=(self.run_dir/'output/common-measurement/配装说明.html').read_text(encoding='utf-8')
+        report=poe.report_html(poe.read_json(self.run_dir/'run.json'),actual)
         for effect in observed: self.assertIn(effect['id'],report)
         self.assertIn('原角色到交付',report)
         self.assertIn('global_enabled',report)
@@ -4982,9 +6370,11 @@ class RealEngineTests(unittest.TestCase):
         cls.run_dir = Path(cls.temp.name) / "中文 配装任务"
         poe.begin(args(invoked=True, input=str(cls.sample), run=str(cls.run_dir)))
         cls.original = bx.read_document(cls.sample)
-        cls.native = engine.calculate(cls.pob, catalog="bases", query="id:Iron Gauntlets", limit=1)
+        cls.native = engine.calculate(cls.pob, catalog="bases", query="id:Wool Gloves", limit=1)
         current=engine.calculate(cls.pob,bx.serialise(cls.original))
-        cls.intent = intent_for(cls.original,game_version=engine.require_data_version(engine.metadata(cls.pob)),normal_points=current['points']+10,ascendancy_points=current['ascendancy_points']+2)
+        point_budget=resources.assess(current,{}, {})['point_budgets'][0]
+        point_limit=min(current['points']+10,point_budget.get('native_maximum',current['points']+10))
+        cls.intent = intent_for(cls.original,game_version=engine.require_data_version(engine.metadata(cls.pob)),normal_points=point_limit,ascendancy_points=current['ascendancy_points']+2)
         path = Path(cls.temp.name) / "intent.json"
         poe.write_json(path, cls.intent)
         poe.set_intent(args(run=str(cls.run_dir), file=str(path)))
@@ -5040,8 +6430,8 @@ class RealEngineTests(unittest.TestCase):
         output = poe.export(args(run=str(self.run_dir), name="refine"))
         operation=poe.read_json(self.run_dir/"run.json")["last_operation"]
         self.assertEqual(operation["command"],"export");self.assertEqual(operation["status"],output["status"])
-        self.assertTrue(operation["file_exported"]);self.assertNotIn("reason",operation)
-        for path in output["files"]: self.assertTrue(Path(path).is_file())
+        self.assertFalse(operation["file_exported"]);self.assertNotIn("reason",operation)
+        self.assertEqual(output["files"],[])
         final=poe.read_json(self.run_dir/"output/refine/final-assessment.json")
         self.assertTrue(final["comparison_notes"])
         self.assertIsNone(final["comparison"]["CombinedDPS"]["percent"])
@@ -5064,14 +6454,14 @@ class RealEngineTests(unittest.TestCase):
         granted = [gem for gem in evidence["result"]["gems"] if gem.get("source")]
         self.assertTrue(granted)
         self.assertTrue(all(not gem["group_enabled"] for gem in granted), granted)
-        saved = bx.read_document(Path(output["files"][0]))
+        saved = bx.read_document(self.run_dir/"candidates/refine/candidate.xml")
         self.assertTrue(all(group.get("enabled") == "false" and group.get("slot")
                             for group in bx.groups(saved) if group.get("source")))
         drifted = copy.deepcopy(evidence["result"])
         next(gem for gem in drifted["gems"] if gem.get("source"))["group_enabled"] = True
         errors, _, _ = poe.mechanical_issues(saved, drifted, poe.read_json(self.run_dir / "run.json")["intent"])
         self.assertTrue(any("授予技能状态" in error for error in errors), errors)
-        report = Path(output["files"][1]).read_text(encoding="utf-8")
+        report = poe.report_html(poe.read_json(self.run_dir/'run.json'),evidence)
         self.assertTrue(evidence["actual_changes"])
         self.assertIn("实际改动", report)
         self.assertEqual(evidence["validation"]["user_constraints"], "passed")
@@ -5203,7 +6593,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertEqual(recorded["result"]["config_labels"]["enemyIsBoss"], "Standard Boss")
         output = poe.export(args(run=str(self.run_dir), name="valid-config-value"))
         self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", output["facts_summary"])
-        report = Path(output["files"][1]).read_text(encoding="utf-8")
+        self.assertEqual(output['files'],[])
+        report = poe.report_html(poe.read_json(self.run_dir/'run.json'),poe.read_json(output['details_file']))
         self.assertIn("敌人类型：Standard Boss（Boss）；敌人等级参数：83", report)
         self.assertIn(recorded["xml_sha256"], report)
         self.assertIn(recorded["engine_fingerprint"], report)
@@ -5330,9 +6721,19 @@ class RealEngineTests(unittest.TestCase):
         self.assertLess(clarity[0]["base_resources"]["manaReservationFlat"], clarity[-1]["base_resources"]["manaReservationFlat"])
         self.assertGreater(gems["ShieldCrush"]["level_requirements"][0]["base_resources"]["cost"]["Mana"], 0)
         self.assertGreater(gems["SupportMinionDamage"]["level_requirements"][0]["base_resources"]["manaMultiplier"], 0)
+        self.assertEqual(gems["SupportMinionDamage"]["level_requirements"][0]["base_resource_units"]["manaMultiplier"], "native_MORE_percent")
+        for gem in gems.values():
+            for row in gem["level_requirements"]:
+                self.assertEqual(set(row.get("base_resource_units", {})), set(row.get("base_resources", {})))
+                for resource in row.get("base_resources", {}).get("cost", {}):
+                    definition = row["base_resource_units"]["cost"][resource]
+                    self.assertEqual(definition["Resource"], resource)
+                    self.assertGreater(definition["Divisor"], 0)
+                    self.assertIn("{0}", definition["ResourceString"])
         route = route_fixture(self.native['data_version'])
         checked, _ = self.validate_route(route, gems)
         self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["name"], gems["ShieldCrush"]["display_name"])
+        self.assertEqual(checked["stages"][0]["skill_groups"][0]["gems"][0]["base_resource_units"]["cost"]["Mana"]["Resource"], "Mana")
         route["stages"][-1]["skill_groups"][0]["gems"][0]["level"] = "auto"
         checked, _ = self.validate_route(route, gems)
         actual = checked["stages"][-1]["skill_groups"][0]["gems"][0]["level"]
@@ -5421,11 +6822,18 @@ class RealEngineTests(unittest.TestCase):
         self.assertFalse(skill.get("trigger"));self.assertEqual(skill["costs"]["Speed"],0)
         cooldown=skill["costs"]["Cooldown"]
         self.assertGreater(cooldown,0)
+        self.assertTrue(all(type(s['native_timing']['cooldown_paused_during_effect']) is bool for s in result['active_skills']))
+        self.assertTrue(any(s['native_timing']['cooldown_paused_during_effect'] is False for s in result['active_skills']))
+        self.assertTrue(skill['native_timing']['cooldown_paused_during_effect'])
+        self.assertGreater(skill['native_timing']['duration_seconds'],0)
         self.assertAlmostEqual(resources.native_rate(skill),1/cooldown/skill["costs"].get("Repeats",1))
         focused={**result,"active_skills":[skill]}
         timeline={"duration_seconds":cooldown*1.5,"repeat":False,"events":[{"skill_ref":skill["skill_ref"],"at":0},{"skill_ref":skill["skill_ref"],"at":cooldown}]}
         audit=resources.timeline_assessment(focused,timeline)
         self.assertFalse(audit["errors"]);self.assertFalse(audit["pending"])
+        condition=next(row for row in audit['timing_conditions'] if row['skill_ref']==skill['skill_ref'])
+        self.assertAlmostEqual(condition['full_duration_recast_seconds'],cooldown+skill['native_timing']['duration_seconds'])
+        self.assertEqual(condition['status'],'unknown')
         row=next(r for r in audit["resources"] if r["resource_id"]=="Mana")
         self.assertEqual([t["payment"] for t in row["trace"]],[skill["costs"]["ManaCost"]]*2)
         timeline["events"][1]["at"]=cooldown/2
@@ -5464,11 +6872,23 @@ class RealEngineTests(unittest.TestCase):
     def test_13_native_multiple_actives_and_unused_supports_are_diagnostics(self):
         result=engine.calculate(self.pob,queries=[{"kind":"links","query":"Fireball,FreezingPulse,SupportAddedLightningDamage","limit":1},
             {"kind":"links","query":"ShieldCrush,SupportGreaterMultipleProjectiles","limit":1},{"kind":"links","query":"NonexistentFixture","limit":1},
-            {"kind":"bases","query":"id:Stone Axe","limit":1},{"kind":"bases","query":"id:Fishing Rod","limit":1},{"kind":"classes","query":"Templar","limit":1}])
-        multi,unused,unknown,axe,rod,classes=[q["entries"][0] for q in result["catalog_batch"]]
+            {"kind":"bases","query":"id:Stone Axe","limit":1},{"kind":"bases","query":"id:Fishing Rod","limit":1},{"kind":"classes","query":"Templar","limit":1},
+            {"kind":"links","query":"ShieldCrush","limit":1},{"kind":"links","query":"SupportGreaterMultipleProjectiles","limit":1}])
+        multi,unused,unknown,axe,rod,classes,active_only,support_only=[q["entries"][0] for q in result["catalog_batch"]]
         self.assertTrue(multi["valid"]);self.assertEqual([r["active_index"] for r in multi["relations"] if r["applied"]],[1,2])
         self.assertTrue(unused["valid"]);self.assertEqual(unused["incompatible"],["SupportGreaterMultipleProjectiles"])
         self.assertFalse(unknown["valid"]);self.assertTrue(unknown["errors"])
+        self.assertEqual(multi["checked_pairs"], len(multi["relations"]))
+        self.assertEqual(multi["status"], "observed")
+        self.assertEqual(multi["provided_ids"], ["Fireball", "FreezingPulse", "SupportAddedLightningDamage"])
+        self.assertEqual(unknown["status"], "invalid_inputs")
+        for row in (active_only, support_only):
+            self.assertTrue(row["valid"])
+            self.assertEqual(row["status"], "not_tested")
+            self.assertEqual(row["checked_pairs"], 0)
+            self.assertEqual(row["relations"], [])
+            self.assertEqual(row["incompatible"], [])
+            self.assertTrue(row["next"])
         self.assertEqual((axe["sockets"],rod["sockets"]),(6,4));self.assertIn("Weapon 1",axe["valid_slots"])
         self.assertEqual(classes["name_cn"],"圣堂武僧")
         for key,invalid in (("points",None),("ascendancy_points",True),("secondary_ascendancy_points",-1)):
@@ -5517,8 +6937,9 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(base['implicit'])
         self.assertIn("ArmourBasePercentile: 0.5", raw)
         output = poe.export(args(run=str(self.run_dir), name="crafted-boots"))
-        self.assertIn("crafted_items", Path(output["files"][1]).read_text(encoding="utf-8"))
+        self.assertEqual(output['files'],[])
         final=poe.read_json(self.run_dir/'output/crafted-boots/final-assessment.json')
+        self.assertIn("crafted_items",poe.report_html(poe.read_json(self.run_dir/'run.json'),final))
         self.assertFalse(any(gap.startswith('native:item_generation:') for gap in final['pending']))
         bad = copy.deepcopy(recipe)
         conflicting=next(entry for entry in entries if entry['group']==selected[0]['group'] and entry['id']!=selected[0]['id'])
@@ -5574,9 +6995,9 @@ class RealEngineTests(unittest.TestCase):
         final=poe.read_json(self.run_dir/'output/missing-belt/final-assessment.json')
         self.assertEqual(response['status'],'blocked');self.assertFalse(response['file_exported'])
         self.assertIn(final['publication']['facts_summary'],response['facts_summary'])
-        self.assertIn('未导出交付 XML',response['facts_summary'])
-        self.assertIn('blocked',response['reply_policy'])
-        self.assertTrue(all(Path(name).suffix=='.html' for name in response['files']))
+        self.assertIn('未导出交付文件',response['facts_summary'])
+        self.assertIn('自检未通过',response['reply_policy'])
+        self.assertEqual(response['files'],[])
 
     def test_17_gem_probe_matches_individual_engine_and_does_not_write_candidate(self):
         self.evaluate_plan(self.refine, "gem-probe")
@@ -5586,9 +7007,9 @@ class RealEngineTests(unittest.TestCase):
                                 ids="SupportIronGrip,SupportBrutality,SupportSpellEcho", level=19, quality=0))
         self.assertEqual(result["status"], "screened")
         rows = result["alternatives"]
-        self.assertAlmostEqual(rows[1]["dps_delta"], 0, places=6)
-        self.assertEqual(rows[1]["damage_observation"]["context"]["main_group"],1)
-        self.assertEqual(rows[1]["damage_observation"]["value"],rows[1]["stats"]["CombinedDPS"])
+        self.assertAlmostEqual(rows[1]["observed_delta"], 0, places=6)
+        self.assertEqual(rows[1]["metric_observation"]["context"]["main_group"],1)
+        self.assertEqual(rows[1]["metric_observation"]["value"],rows[1]["stats"]["CombinedDPS"])
         self.assertTrue(any("未辅助" in error for error in rows[2]["warnings"]), rows[2]["warnings"])
         changed = bx.apply_plan(bx.read_document(folder / "candidate.xml"), {"mode": "refine", "summary": "comparison", "operations": {"gems": [{"group": 1, "index": 2, "skill_id": "SupportIronGrip", "level": 19, "quality": 0}]}})
         standalone = engine.calculate(self.pob, bx.serialise(changed))
@@ -5669,7 +7090,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(result["damage_sources"])
         self.assertEqual(outcome["status"], "draft", outcome["errors"])
         exported = poe.export(args(run=str(self.run_dir), name="gc-costs"))
-        report = Path(exported["files"][1]).read_text(encoding="utf-8")
+        self.assertEqual(exported['files'],[])
+        report = poe.report_html(poe.read_json(self.run_dir/'run.json'),poe.read_json(exported['details_file']))
         self.assertIn("原生 Full DPS 分项", report)
         self.assertIn("automatic_cost_per_second", report)
         self.assertIn("19/0", report)
@@ -5691,10 +7113,10 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(any(row["name"] == "Summon Raging Spirit" for row in result["damage_sources"]))
         result = poe.probe(args(run=str(self.run_dir), name="minion-context", group=1, index=2,
                                 ids="SupportMinionDamage,SupportMeleePhysicalDamage", level=19, quality=0))
-        self.assertEqual(result["alternatives"][0]["dps_metric"], "MinionCombinedDPS")
-        self.assertEqual(result["alternatives"][0]["damage_observation"]["meaning"]["actor"],"minion")
-        self.assertAlmostEqual(result["alternatives"][0]["dps_delta"], 0)
-        self.assertNotEqual(result["alternatives"][1]["dps_delta"], 0)
+        self.assertEqual(result["alternatives"][0]["observed_metric"], "MinionCombinedDPS")
+        self.assertEqual(result["alternatives"][0]["metric_observation"]["meaning"]["actor"],"minion")
+        self.assertAlmostEqual(result["alternatives"][0]["observed_delta"], 0)
+        self.assertNotEqual(result["alternatives"][1]["observed_delta"], 0)
         exported = poe.export(args(run=str(self.run_dir), name="minion-context"))
         observed=next(m for m in exported["publication"]["measurements"] if m["metric"]=="MinionCombinedDPS")
         self.assertEqual(observed["meaning"]["actor"],"minion")
@@ -5741,7 +7163,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertIn(f"主技能综合 DPS：{saved['calculation']['stats']['CombinedDPS']:g}", result["diagnosis_summary"])
         self.assertIn(f"普通天赋 {saved['calculation']['points']} 点，升华 {saved['calculation']['ascendancy_points']} 点", result["diagnosis_summary"])
         self.assertIn("不再乘命中率", result["diagnosis_summary"])
-        self.assertIn("原样", result["reply_policy"])
+        self.assertEqual(result["reply_policy"],poe.READONLY_REPLY_POLICY)
         self.assertLessEqual(len(stdout.getvalue()), 12000)
         self.assertNotIn("calculation", result)
         self.assertGreater(len(path.read_text(encoding="utf-8")), 12000)
@@ -5817,14 +7239,24 @@ class RealEngineTests(unittest.TestCase):
         xml=bx.serialise(self.original)
         baseline=engine.calculate(self.pob,xml)
         minion=next(s for s in baseline["active_skills"] if s["minion"])
-        result=engine.calculate(self.pob,xml,breakdowns=[{"metric":"Life"},{"metric":"UnavailableMetric"},{"metric":"Life","skill_ref":minion["skill_ref"],"actor":"minion"}])
-        life,missing,summon=result["breakdowns"]
+        result=engine.calculate(self.pob,xml,breakdowns=[{"metric":"Life"},{"metric":"UnavailableMetric"},{"metric":"Life","skill_ref":minion["skill_ref"],"actor":"minion"},{"metric":"LifeLeechRate"},{"metric":"LifeLeech"}])
+        life,missing,summon,rate,detail=result["breakdowns"]
+        for row in result['breakdowns']:
+            self.assertEqual(row['value_status'],'observed' if bx.finite_number(row.get('value')) else 'unavailable')
+            self.assertEqual(row['detail_status'],row['status'] if 'detail' in row else 'unavailable')
+            if bx.finite_number(row.get('value')):self.assertIn(row['metric'],row['available_metrics'])
+        self.assertIn(rate['metric'],missing['available_metrics'])
         self.assertEqual(life["status"],"observed");self.assertEqual(life["value"],baseline["stats"]["Life"])
         self.assertTrue(life["matches_main_value"]);self.assertEqual(life["context"]["xml_sha256"],bx.digest(xml))
         self.assertEqual(missing["status"],"unsupported");self.assertNotIn("value",missing)
         self.assertEqual(summon["selected_skill_id"],minion["id"]);self.assertEqual(summon["actor"],"minion")
         self.assertGreater(summon["value"],0)
         if "detail" not in summon: self.assertEqual(summon["status"],"unsupported");self.assertIn("No native breakdown",summon["reason"])
+        self.assertEqual(rate["status"],"observed");self.assertEqual(rate["value"],baseline["stats"]["LifeLeechRate"])
+        self.assertTrue(rate["matches_main_value"]);self.assertEqual(rate["detail_metric"],detail["metric"])
+        self.assertEqual(rate["detail"],detail["detail"])
+        self.assertTrue(rate["detail_sources"])
+        self.assertTrue(all(row["module"]=="Modules/CalcSections" and row["output"]=="LifeLeechRate" for row in rate["detail_sources"]))
         self.assertEqual(engine.character_state(result),engine.character_state(baseline));self.assertEqual(result["stats"],baseline["stats"])
         before,after=bx.summary(bx.parse(baseline["xml"])),bx.summary(bx.parse(result["xml"]))
         for value in (before,after):
@@ -5895,10 +7327,16 @@ class RealEngineTests(unittest.TestCase):
             route['stages'].append({'stage_id':'phase-'+str(index),'name':'Fixture stage','level':12+index,'bases':{'Gloves':'Wool Gloves'},
                 'skill_groups':[{'name':'Fireball','slot':'Gloves','use':'fixture','gems':[{'instance_id':'fire','skill_id':'Fireball','level':1,'quality':0}]}],
                 'required_items':([gem] if index==0 else [])+[item],
-                'snapshot':{'operations':{'items':[{'id':1,'text':text}],'equip':[{'slot':'Gloves','item_id':1}],'main_group':1},'metrics':['Life']}})
+                'snapshot':{'operations':{'items':[{'id':1,'text':text}],'equip':[{'slot':'Gloves','item_id':1}],'main_group':1},
+                            **({'metrics':['Life','FutureRequestedMetric']} if index else {})}})
         source=Path(self.temp.name)/'specs-route.json';output=Path(self.temp.name)/'specs-route.html';poe.write_json(source,route)
-        with patch.object(facts,'gem_facts',return_value={}): poe.route_command(args(invoked=True,file=str(source),out=str(output)))
+        with patch.object(facts,'gem_facts',return_value={}),patch.dict(poe.METRICS,{'FutureOptionalMetric':'Optional display metric'}):
+            poe.route_command(args(invoked=True,file=str(source),out=str(output)))
         checked=poe.read_json(output.with_suffix('.evidence.json'))['checked_route']
+        self.assertIsNone(checked['stages'][0]['calculation']['stats']['FutureOptionalMetric'])
+        self.assertNotIn('stage:phase-0:metric:FutureOptionalMetric',checked['pending'])
+        self.assertIsNone(checked['stages'][1]['calculation']['stats']['FutureRequestedMetric'])
+        self.assertIn('stage:phase-1:metric:FutureRequestedMetric',checked['pending'])
         materials=[row for row in checked['budget_assessment']['materials'] if row['kind']=='item']
         self.assertEqual(len(materials),2);self.assertEqual([row['quantity'] for row in materials],[1,1])
         self.assertEqual([row['remaining'] for row in materials],[0,0])
@@ -5909,7 +7347,8 @@ class RealEngineTests(unittest.TestCase):
         state=output.with_suffix('.state.json');value=poe.read_json(state)
         xmls=[Path(row['calculation']['xml_path']) for row in checked['stages']]
         self.assertTrue(all(str(path) in value['files'] for path in xmls))
-        self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+        current=poe.workflow_status(args(route_state=str(state)))
+        self.assertFalse(current['file_exported']);self.assertTrue(current['files_intact'])
         unchanged=xmls[1].read_bytes();stamp=xmls[1].stat().st_mtime_ns
         xmls[0].unlink()
         missing=poe.workflow_status(args(route_state=str(state)))
@@ -5919,7 +7358,8 @@ class RealEngineTests(unittest.TestCase):
             poe.route_command(args(invoked=True,file=str(source),out=str(output)))
         self.assertEqual(replay.call_count,1)
         self.assertEqual(xmls[1].read_bytes(),unchanged);self.assertEqual(xmls[1].stat().st_mtime_ns,stamp)
-        self.assertTrue(poe.workflow_status(args(route_state=str(state)))['file_exported'])
+        current=poe.workflow_status(args(route_state=str(state)))
+        self.assertFalse(current['file_exported']);self.assertTrue(current['files_intact'])
 
     def test_36_route_snapshots_bind_native_claims_and_leave_missing_stage_unknown(self):
         route=route_fixture(self.native['data_version']);route.update(class_id=3,ascendancy=None,gems={"Fireball":{}},stages=[])
@@ -5935,11 +7375,15 @@ class RealEngineTests(unittest.TestCase):
                "skill_groups":[{"name":"Fireball","slot":"Gloves","use":"fixture","gems":[{"instance_id":"fire","skill_id":"Fireball","level":1,"quality":0}]}],
                "required_items":[held_gem,held_item],"gear":["Actual fixture gloves"],"transition":["Keep the preceding configuration until the next prerequisite is met"],"snapshot":{"assumptions":["stage"],"operations":{"items":[{"id":201,"text":text}],"equip":[{"slot":"Gloves","item_id":201}],"main_group":1},"metrics":["Life","ManaCost"]}}
         route["stages"]=[stage,{**copy.deepcopy(stage),"stage_id":"b","level":None,"required_items":[]}]
+        stage.pop('bases')
         path=Path(self.temp.name)/"route.json";output=Path(self.temp.name)/"route.html";poe.write_json(path,route)
+        poe.write_text(output,'Previous generated route')
         with patch.object(facts,"gem_facts",return_value={"Fireball":{"status":"unverified"}}):
             response=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         first,second=checked["stages"]
+        self.assertNotIn('native:socket_capacity:a:Gloves',checked['pending'])
+        self.assertEqual(first['socket_evidence']['Gloves']['capacity'],1)
         review_stages=poe.read_json(output.with_suffix(".review.json"))["facts"]["stages"]
         self.assertIsNone(review_stages[0]["previous_stage_id"])
         self.assertEqual(review_stages[1]["previous_stage_id"],"a")
@@ -5971,6 +7415,10 @@ class RealEngineTests(unittest.TestCase):
         self.assertNotIn("stats",second["calculation"]);self.assertEqual(second["calculation"]["status"],"not_calculated")
         self.assertIn("native:snapshot:b",response["pending"])
         self.assertEqual(checked["budget_assessment"]["status"],"user_declared")
+        self.assertFalse(output.exists())
+        saved_state=poe.read_json(output.with_suffix('.state.json'))
+        self.assertNotIn(str(output),saved_state['files'])
+        self.assertTrue(poe.workflow_status(args(route_state=str(output.with_suffix('.state.json'))))['files_intact'])
         self.assertEqual(checked["budget_assessment"]["materials"][0]["quantity"],1)
         self.assertEqual(first["calculation"]["material_specs"][0]["spec_sha256"],held_item["spec_sha256"])
         stage["snapshot"]["timeline"]={"duration_seconds":2,"repeat":False,"events":[]}
@@ -6007,7 +7455,8 @@ class RealEngineTests(unittest.TestCase):
         reviewed=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         self.assertEqual(reviewed["final_review"]["status"],"model_reviewed")
         self.assertTrue(any("entry_check:" in p for p in response["pending"]))
-        self.assertTrue(poe.read_json(output.with_suffix(".state.json"))["file_exported"])
+        self.assertFalse(poe.read_json(output.with_suffix(".state.json"))["file_exported"])
+        self.assertEqual(response['files'],[])
         self.assertEqual(poe.workflow_status(args(route_state=str(output.with_suffix('.state.json'))))['completed_stages'],['a'])
         snapshot=Path(first["calculation"]["xml_path"]);snapshot.write_text(snapshot.read_text(encoding="utf-8")+"\n",encoding="utf-8")
         with patch.object(facts,"gem_facts",return_value={}),patch.object(poe,"roundtrip",wraps=poe.roundtrip) as replay:
@@ -6023,6 +7472,27 @@ class RealEngineTests(unittest.TestCase):
         self.assertNotIn("config:scenario:a",response["pending"])
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
         self.assertFalse(any(d["code"]=="configuration_review_missing" for d in checked["diagnostics"]))
+        ref=first["calculation"]["active_skills"][0]["skill_ref"]
+        stage["snapshot"]["usage"]=[{"skill_ref":ref,"claim_id":"explicit-use"}]
+        usage_claim={"claim_id":"explicit-use","text":"Current stage action; execution coverage remains unmeasured.",
+                     "subjects":["skill:"+ref],"evidence_refs":["native:stage:a#/active_skills"]}
+        route["claims"].append(usage_claim)
+        usage_claim["bindings"]=facts.claim_bindings(route,usage_claim,engine.fingerprint(self.pob))
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):
+            poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        self.assertFalse(any(d["code"].startswith("usage_claim_") for d in checked["diagnostics"]),checked["diagnostics"])
+        stage["snapshot"]["metrics"].append("UnobservedMetric")
+        poe.write_json(path,route)
+        with patch.object(facts,"gem_facts",return_value={}):
+            poe.route_command(args(invoked=True,file=str(path),out=str(output)))
+        checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]
+        metric=next(d for d in checked["diagnostics"] if d["code"]=="snapshot_metric_unobserved")
+        self.assertEqual(metric["location"],"/stages/0/snapshot/metrics")
+        self.assertEqual(metric["actual"],["UnobservedMetric"])
+        self.assertIn("Life",metric["expected"]["observed_stats"])
+        self.assertIn("stage:a:metric:UnobservedMetric",checked["task_completion"]["pending"])
 
     def test_37_unparsed_nonflask_remains_unknown_even_when_native_active_false(self):
         result=engine.calculate(self.pob,bx.serialise(self.original))
@@ -6058,7 +7528,8 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(any(row.get('code')=='native_tree_nodes_unretained' and row['location']==diagnostic['location'] for row in facts.pointer(poe.read_json(output.with_suffix('.evidence.json')),repair['pointer'])))
         self.assertEqual(repair['input_revision'],bx.digest(path.read_bytes()))
         self.assertIn('普通天赋已分配',response['facts_summary'])
-        html=output.read_text(encoding='utf8')
+        self.assertFalse(output.exists())
+        html=routes.render(checked,response['warnings'],self.native['engine_version'],self.native['tree_version'],evidence_file=output.with_suffix('.evidence.json').name)
         self.assertIn('已知错误',html)
         self.assertIn(response['errors'][0].split('：',1)[-1],html)
         self.assertIn('tree_diagnostics',html)
@@ -6139,7 +7610,7 @@ class RealEngineTests(unittest.TestCase):
         self.assertNotIn(final["claims"][0]["rendered_text"],display["text"])
         self.assertEqual(final["response"]["judgments"],exported["judgments"])
         self.assertTrue(any(d["code"]=="claim_binding_missing" for d in display["diagnostics"]))
-        report=(self.run_dir/"output/publication/配装说明.html").read_text(encoding="utf-8")
+        report=poe.report_html(poe.read_json(self.run_dir/'run.json'),final)
         for measurement in exported["publication"]["measurements"]:
             self.assertIn(measurement["text"],report)
 
@@ -6147,16 +7618,16 @@ class RealEngineTests(unittest.TestCase):
         plan=copy.deepcopy(self.refine)
         plan["claims"]=[{"claim_id":"overall","text":"Limited overall interpretation","subjects":["goal"],"evidence_refs":["native:candidate#/stats/Life"]},
                         {"claim_id":"detail","text":"A detail interpretation","subjects":["objective:direction"],"evidence_refs":["native:candidate#/stats/Life"]}]
-        plan["assessment"]={"goal_claim_ids":["detail","overall"],"scope":"Fixture scope, not a player recommendation"}
+        plan["assessment"]={"goal_claim_ids":["absent","overall"],"scope":"Fixture scope, not a player recommendation"}
         source=Path(self.temp.name)/"goal-contract.json";request=Path(self.temp.name)/"goal-contract-changes.json"
         poe.write_json(request,{"set":plan})
         first=poe.edit_document(args(invoked=True,kind="plan",file=str(source),changes=str(request),if_sha256=None))
         result=poe.evaluate(args(run=str(self.run_dir),plan=str(source),name="goal-contract"))
         self.assertIn("goal_assessment",result["pending"])
         repair=next(a for a in result["next_actions"] if a["action"]=="repair_input")
-        diagnostic=next(d for d in facts.pointer(poe.read_json(self.run_dir/"candidates/goal-contract/evaluation.json"),repair["pointer"]) if d["code"]=="goal_claim_subject_missing")
+        diagnostic=next(d for d in facts.pointer(poe.read_json(self.run_dir/"candidates/goal-contract/evaluation.json"),repair["pointer"]) if d["code"]=="goal_claim_missing")
         self.assertEqual(diagnostic["location"],"/assessment/goal_claim_ids/0")
-        self.assertEqual(diagnostic["actual"]["claim_id"],"detail")
+        self.assertEqual(diagnostic["actual"]["claim_id"],"absent")
         before=poe.read_json(self.run_dir/"candidates/goal-contract/evaluation.json")["result"]["stats"]
         poe.write_json(request,{"replace":{"/assessment/goal_claim_ids":["overall"]}})
         poe.edit_document(args(invoked=True,kind="plan",file=str(source),changes=str(request),if_sha256=first["revision"]))
@@ -6168,7 +7639,8 @@ class RealEngineTests(unittest.TestCase):
         plan=copy.deepcopy(self.refine)
         self.evaluate_plan(plan,"delivery-context")
         exported=poe.export(args(run=str(self.run_dir),name="delivery-context"))
-        artifacts={path:Path(path).read_bytes() for path in exported["files"]}
+        artifacts={str(path):path.read_bytes() for path in (self.run_dir/'output/delivery-context').iterdir() if path.name!='delivery.json'}
+        self.assertTrue(artifacts);self.assertEqual(exported['files'],[])
         plan["summary"]="A revised interpretation of the same build inputs."
         self.evaluate_plan(plan,"delivery-context")
         status=poe.workflow_status(args(run=str(self.run_dir)))
@@ -6178,11 +7650,11 @@ class RealEngineTests(unittest.TestCase):
         self.assertFalse(receipt["file_exported"])
         self.assertTrue(all(Path(path).read_bytes()==content for path,content in artifacts.items()))
 
-    def test_39_final_review_and_optional_url_survive_export_and_failed_render_is_not_success(self):
+    def test_39_final_review_and_optional_url_survive_blocked_export_without_render(self):
         plan=copy.deepcopy(self.refine)
         source=Path(self.temp.name)/"local-evidence.txt";source.write_text("Offline local record",encoding="utf-8")
         plan["evidence"]=[{"evidence_id":"artifact","kind":"artifact","subject":"fixture","path":source.name,"excerpt":"Offline local record"}]
-        plan["claims"]=[{"claim_id":"review","text":"Fixture conclusion; remaining gaps are retained.","subjects":["goal"],"evidence_refs":["artifact","native:candidate#/stats/Life"]}]
+        plan["claims"]=[{"claim_id":"review","text":"Fixture conclusion; remaining gaps are retained.","subjects":["goal"],"evidence_refs":["artifact","native:candidate#/stats/Life","native:candidate#/xml"]}]
         plan["assessment"]={"goal_claim_ids":["review"],"scope":"Fixture, not a player build"}
         first=self.evaluate_plan(plan,"reviewed")
         template=poe.read_json(self.run_dir/"candidates/reviewed/review.json")["review_template"]
@@ -6202,14 +7674,15 @@ class RealEngineTests(unittest.TestCase):
         self.assertTrue(any(d["code"]=="claim_binding_missing" for d in result["judgments"][0]["diagnostics"]))
         self.assertTrue(any(value.startswith('objective:') for value in final['pending']))
         self.assertIsNone(final["evidence"]["artifact"]["url"])
-        self.assertTrue(result["file_exported"])
+        self.assertFalse(result["file_exported"]);self.assertEqual(result['files'],[])
         manifest=poe.read_json(self.run_dir/"output/reviewed/delivery.json")
         for name,digest in manifest["files"].items(): self.assertEqual(bx.digest((self.run_dir/"output/reviewed"/name).read_bytes()),digest)
-        with patch.object(poe,"report_html",side_effect=OSError("fixture render failure")),self.assertRaises(OSError):
-            poe.export(args(run=str(self.run_dir),name="reviewed"))
-        self.assertEqual(poe.read_json(self.run_dir/"run.json")["phase"],"exporting")
+        with patch.object(poe,"report_html",side_effect=OSError("must not render blocked delivery")) as render:
+            self.assertFalse(poe.export(args(run=str(self.run_dir),name="reviewed"))["file_exported"])
+        render.assert_not_called()
+        self.assertEqual(poe.read_json(self.run_dir/"run.json")["phase"],"evaluated")
         self.assertFalse(poe.read_json(self.run_dir/"output/reviewed/delivery.json")["file_exported"])
-        self.assertTrue(poe.export(args(run=str(self.run_dir),name="reviewed"))["file_exported"])
+        self.assertFalse(poe.export(args(run=str(self.run_dir),name="reviewed"))["file_exported"])
         plan["summary"]="Unreviewed changed explanation"
         self.assertIn("final_review:stale",self.evaluate_plan(plan,"reviewed")["pending"])
 
@@ -6253,11 +7726,12 @@ class RealEngineTests(unittest.TestCase):
         stage=route["stages"][0];stage["bases"].update({"Weapon 1":"Crude Bow","Weapon 2":"Spike-Point Arrow Quiver"})
         path=Path(self.temp.name)/"equipment-route.json";output=path.with_suffix(".html");poe.write_json(path,route)
         with patch.object(facts,"gem_facts",return_value={}):result=poe.route_command(args(invoked=True,file=str(path),out=str(output)))
-        self.assertTrue(result["file_exported"]);self.assertEqual(result["errors"],[])
+        self.assertFalse(result["file_exported"]);self.assertEqual(result['files'],[]);self.assertEqual(result["errors"],[])
         checked=poe.read_json(output.with_suffix(".evidence.json"))["checked_route"]["stages"][0]
         self.assertTrue(checked["equipment_validation"]["checks"]["Weapon 2"]["valid_for_slot"])
         self.assertNotIn("native:equipment:"+stage["stage_id"]+":Weapon 2",result["pending"])
-        self.assertIn("declared_base_layout",output.read_text(encoding="utf-8"))
+        self.assertIn("declared_base_layout",json.dumps(checked["equipment_validation"]))
+        self.assertFalse(output.exists())
         stage["bases"]["Future Slot"]=None;poe.write_json(path,route)
         with self.assertRaises(engine.EngineError) as error:poe.route_command(args(invoked=True,file=str(path),out=str(output)))
         self.assertEqual(error.exception.diagnostic.get("location"),"/stages/0/bases/Future Slot",error.exception.diagnostic)
@@ -6290,7 +7764,7 @@ class RealEngineTests(unittest.TestCase):
                 self.assertEqual(detail['item_generation'],checked['item_generation'])
                 native_item=next(item for item in detail['native']['equipped'] if item['slot']=='Gloves')
                 self.assertIs(native_item['ordinary_craft_supported'],True);self.assertEqual(native_item['rarity'],'RARE')
-                self.assertIn('生成依据',output.read_text(encoding='utf-8'))
+                self.assertFalse(output.exists())
 
     def test_49_native_target_allocation_counts_shared_paths_and_preserves_known_removal(self):
         seed=engine.calculate(self.pob,class_id=int(bx.active_spec(self.original).get('classId')))

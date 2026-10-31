@@ -361,6 +361,8 @@ def effect_state(result):
                                **{key:gem.get(key) for key in ("enabled","group_enabled","slot_enabled")}}
                               for gem in result.get("gems",[]) for effect in gem.get("granted_effects",[]) if effect.get("has_global_effect") is True],
             "flasks":{item["slot"]:item.get("active") for item in result.get("equipped",[]) if item.get("slot","").startswith("Flask ")},
+            "equipment_inclusion":{item["slot"]:item.get("effective_in_calculation") if type(item.get("effective_in_calculation")) is bool else None for item in result.get("equipped",[]) if isinstance(item.get("slot"),str) and item["slot"]},
+            "equipment_inclusion_source":"Known native MAIN slots from equipped[].effective_in_calculation; missing slot identity stays in equipped. Object inclusion does not prove each modifier applies or effects persist.",
             "guard_active":result.get("stats",{}).get("GuardSkillActive"),
             "scope":"Current native switches and skill instances only; enabled flags, control visibility and equipment presence do not measure effect coverage."}
 
@@ -387,6 +389,18 @@ def validate_contract(result, *, catalog_only=False):
     for key in ("points", "ascendancy_points", "secondary_ascendancy_points"):
         if type(result.get(key)) is not int or result[key] < 0:
             raise EngineError("本机接口缺少有效已分配点数：" + key)
+    point_limits=result.get('point_limits')
+    if point_limits is not None:
+        valid=isinstance(point_limits,dict) and isinstance(point_limits.get('status'),str) and point_limits['status'] in {'observed','unsupported'}
+        if valid and point_limits['status']=='observed':
+            pools=point_limits.get('pools',{})
+            valid=isinstance(pools,dict) and all(isinstance(pools.get(pool),dict)
+                and type(pools[pool].get('used')) is int and pools[pool]['used']==result[key]
+                and type(pools[pool].get('maximum')) is int and pools[pool]['maximum']>=0
+                for pool,key in (('normal','points'),('ascendancy','ascendancy_points')))
+        if not valid:
+            raise EngineError('本机点数上限与当前分配身份不一致。',diagnostic={'code':'native_capability_unavailable',
+                'action':'inspect_capability','retryable':False,'location':'/point_limits','expected':'current native allocation caps matched to usage','actual':point_limits})
     groups=set()
     for index,row in enumerate(result['skill_selections']):
         choices=row.get('choices') if isinstance(row,dict) else None
@@ -619,6 +633,7 @@ def calculate(root: Path, xml: str = "", *, catalog: str = "", query: str = "", 
         entries = [(role,entry) for key,role in (("gems","skills"),("equipped","items"),("classes","display"),
                    ("secondary_ascendancies","display"),("active_skills","skills"),("damage_sources","skills"),("granted_passives","nodes"))
                    for entry in calculation.get(key,[])]
+        entries += [("skills",support) for skill in calculation.get("active_skills",[]) for support in skill.get("supports") or []]
         entries += [(catalog_roles.get(catalog,"display"),entry) for entry in calculation.get("catalog",[])]
         for query_result in calculation.get("catalog_batch", []):
             entries += [(catalog_roles.get(query_result['kind'],"display"),entry) for entry in query_result["entries"]]

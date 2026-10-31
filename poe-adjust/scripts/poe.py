@@ -25,11 +25,11 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.17"
+VERSION = "2.8.66"
 SCHEMA_VERSION = 2
-JSON_LIMITS={"input":8*1024*1024,"artifact":64*1024*1024}
-READONLY_REPLY_POLICY="直接事实展示交付 report 与完整 JSON，短答沿用 publication.delivery_brief、scope 和 facts_summary。若加入机制、条件、归因或取舍解释，按 references/build.md#只读解释选择 intent.task_kind=read_only_review，使用 refine 空操作计划的 claims 与当次 review.check 评审，再由同一 publication 生成说明；聊天沿 task_completion 的完成状态，character_readiness 保留完整原对象问题。数字用事实内插，名称沿本机对象。快照只证明所显示的观察；来源列表或局部数值尚未证明的范围继续列为缺口。"
-INTENT_FIELDS={"schema_version", "confirmed", "task_kind", "delivery_scope", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
+JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
+READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
+INTENT_FIELDS={"schema_version", "confirmed", "task_kind", "delivery_scope", "goal", "objectives", "league", "game_version", "version_source", "version_checked_at", "mode", "budget", "target_level", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "keep_slots", "keep_skill_ids", "keep_skill_groups", "scenario", "baseline_main_group", "minimum_stats", "quest_passive_points", "ascendancy_points", "secondary_ascendancy_points", "normal_points_available", "max_changed_equipment", "constraint_sources", "evidence", "notes"}
 METRICS = {
     "CombinedDPS": "主技能综合 DPS", "MinionCombinedDPS": "当前主技能召唤物单体综合 DPS", "FullDPS": "已选技能总 DPS", "HitChance": "角色技能命中率 %", "MinionHitChance": "当前主技能召唤物命中率 %",
     "Life": "生命", "EnergyShield": "能量护盾", "ManaUnreserved": "可用魔力",
@@ -63,6 +63,8 @@ def input_contract(kind):
     nested={"objectives":{"type":"array","entry_fields":["objective_id","text","evidence_refs"],"evidence_refs":"string array"},
             "evidence":{"type":"array","identity":"evidence_id","required":["evidence_id","kind","subject"],"source_fields":"沿实际工具 evidence_template；不填程序生成的 status/digest/origin。"},
             "constraint_sources":{"type":"object","values":"single evidence_id string"}}
+    if kind=="intent":
+        nested["keep_skill_groups"]={"type":"array","values":"原文件中1起的技能组序号，整组XML声明（槽位、宝石规格/顺序及开关等）保留；派生效果另审。","source":"constraint_sources /keep_skill_groups 对应真实用户保留要求"}
     if kind in {"plan","route"}:
         nested.update(claims={"type":"array","identity":"claim_id","required":["claim_id","text","subjects"],
                               "entry_fields":["claim_id","claim_type","text","subjects","evidence_refs","conditions","uncertainties","checks","bindings"],
@@ -70,7 +72,8 @@ def input_contract(kind):
                               "string_arrays":["subjects","evidence_refs","conditions","uncertainties"],
                               "checks":{"type":"array","entry_fields":["reference","op","value"]},"bindings":"program owned; use review_claims"},
                       assessment={"type":"object","fields":["goal_claim_ids","scope","unresolved","review"],
-                                  "review":"沿当前 review.json 的 review_template，完成输入修订与计算后单独提交；随后再次计算再 export。"})
+                                  "goal_claim_ids":"当前总体判断的非空 claim_id 数组；此引用直接确定总体关联，无需重复 goal 标签。",
+                                  "review":"按当前 review_template 写判断；edit --changes 配合 --review-from 本次 details_file，由程序关联计算标识，随后重算再 export。"})
     if kind=="plan":
         nested["operations"]={"fields":sorted(bx.OPERATION_FIELDS),"gems":{"fields":sorted(set(bx.GEM_FIELDS)|{"group","index"})},
                               "groups":{"fields":sorted(set(bx.GROUP_FIELDS)|{"index"})},"tree":{"fields":sorted(bx.TREE_FIELDS)}}
@@ -79,10 +82,14 @@ def input_contract(kind):
     elif kind=="route":
         nested["stages"]={"type":"array","identity":"stage_id","fields":sorted(routes.STAGE_FIELDS),
                           "skill_groups":{"fields":sorted(routes.GROUP_FIELDS),"gems":{"fields":sorted(routes.GEM_FIELDS)}},
-                          "snapshot":{"fields":sorted(routes.SNAPSHOT_FIELDS),"operations":sorted(routes.SNAPSHOT_OPERATION_FIELDS)}}
+                          "snapshot":{"fields":sorted(routes.SNAPSHOT_FIELDS),"operations":sorted(routes.SNAPSHOT_OPERATION_FIELDS),
+                                      "assumptions":"非空当前 claim_id 数组；正文在 claims，程序从引用绑定本阶段，无需重复 snapshot 标签。",
+                                      "metrics":"所选指标取本阶段实际 native stats 字段；未观测项保留缺口并返回可用字段。"}}
     else:
-        nested['task_kind']={'values':['build','build_plan','read_only_review'],'default':'build'}
-        nested['delivery_scope']={'values':['execution_plan','snapshot_comparison'],'default':'execution_plan','snapshot_comparison':'仅 build_plan，真实用户比较要求的 /delivery_scope 依据；以 delivery_scope claim 复核用户依据和当前 materialization。未改技能组的整套操作安排另保留在角色就绪状态。'}
+        nested['task_kind']={'values':['build','build_plan','read_only_review'],'default':'build',
+            'purposes':{'build':'设计并核验当前可用角色。','build_plan':'设计新的配装或操作安排，允许明确的未来条件。','read_only_review':'审查已有对象，保留原角色；实验另用 probe。'},
+            'selection_basis':'按用户请求的交付选择；没有更换物品不等于只读，新的操作安排仍是设计。'}
+        nested['delivery_scope']={'values':['execution_plan','snapshot_comparison'],'default':'execution_plan','snapshot_comparison':'仅 build_plan，真实用户比较要求的 /delivery_scope 依据；以 delivery_scope claim 复核用户依据和当前 materialization。未改非主组的整套操作及相同支付错误可按当前 condition_reviews 复核范围，原角色问题仍保留；不会自动判为无关。'}
     return {"kind":kind,"top_level_fields":sorted(fields[kind]),
             "field_owners":{key:[owner for owner,allowed in fields.items() if key in allowed] for key in sorted(set().union(*fields.values()))},
             "nested_fields":nested,
@@ -230,34 +237,44 @@ def input_artifacts_current(outcome):
     return all(Path(filename).is_file() and bx.digest(Path(filename).read_bytes())==digest for group in groups for filename,digest in group.items())
 
 
-def proposal_request(args, root, source):
-    """Read a saved native proposal through the existing calculation receipts."""
-    path=Path(args.proposal_file).resolve()
-    bx.require(isinstance(getattr(args,"proposal_id",None),str) and args.proposal_id,"采用提案需提供 next_actions 的 proposal_id。",location="/proposal_id")
-    saved=read_json(path); raw_hash=bx.digest(path.read_bytes())
-    if args.kind=="plan":
-        bx.require(path.name=="evaluation.json" and path.parent.parent.name=="candidates","使用 evaluate 返回的 evaluation_file。",location="/proposal_file")
+def calculation_receipt(kind, path, root, source, *, purpose):
+    """Use the same current computation identity for proposals and authored reviews."""
+    path=Path(path).resolve(); location="/proposal_file" if purpose=="proposal" else "/review_from"
+    raw_hash=bx.digest(path.read_bytes()); saved=read_json(path)
+    if kind=="plan":
+        final=path.name=="final-assessment.json" and path.parent.parent.name=="output"
+        bx.require(final or path.name=="evaluation.json" and path.parent.parent.name=="candidates","使用本次 evaluate 的 evaluation_file 或 export 的 details_file。",location=location)
         _,state=read_run(path.parent.parent.parent)
-        bx.require(state.get("candidates",{}).get(path.parent.name,{}).get("evaluation_sha256")==raw_hash,"计算凭证已变化或不完整，请重新 evaluate。",code="proposal_receipt_stale",location="/proposal_file")
+        receipt=read_json(path.parent/"delivery.json") if final else state.get("candidates",{}).get(path.parent.name,{})
+        observed=receipt.get("files",{}).get(path.name) if final else receipt.get("evaluation_sha256")
+        bx.require(observed==raw_hash and (not final or receipt.get("candidate")==path.parent.name),"计算凭证已变化或不完整，请重新 evaluate/export。",code=purpose+"_receipt_stale",location=location)
         outcome=saved; input_file=saved.get("source_plan"); revision=saved.get("source_plan_sha256")
-        bx.require(saved.get("intent_hash")==state.get("intent_hash") and saved.get("original_sha256")==state.get("original_sha256"),"意图或原角色变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
+        bx.require(saved.get("intent_hash")==state.get("intent_hash") and saved.get("original_sha256")==state.get("original_sha256"),"意图或原角色变化，请重新计算。",code=purpose+"_context_stale",location=location)
     else:
-        bx.require(path.name.endswith(".evidence.json"),"使用 route 返回的 .evidence.json。",location="/proposal_file")
+        bx.require(path.name.endswith(".evidence.json"),"使用 route 返回的 .evidence.json。",location=location)
         state=read_json(path.with_name(path.name.removesuffix(".evidence.json")+".state.json"))
-        bx.require(state.get("file_exported") is True and state.get("files",{}).get(str(path))==raw_hash,"路线计算凭证已变化或不完整，请重新 route。",code="proposal_receipt_stale",location="/proposal_file")
+        bx.require(state.get("phase") in {"evaluated","exported"} and state.get("files",{}).get(str(path))==raw_hash,"路线计算凭证已变化或不完整，请重新 route。",code=purpose+"_receipt_stale",location=location)
         outcome=saved.get("checked_route",{});input_file=state.get("input");revision=state.get("input_sha256")
-    bx.require(saved.get("skill_version")==VERSION and saved.get("engine_fingerprint")==state.get("engine_fingerprint")==engine.fingerprint(root),"技能或引擎变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
-    bx.require(input_artifacts_current(outcome),"外部角色模板变化，请重新计算提案。",code="proposal_context_stale",location="/proposal_file")
+    bx.require(saved.get("skill_version")==VERSION and saved.get("engine_fingerprint")==state.get("engine_fingerprint")==engine.fingerprint(root),"技能或引擎变化，请重新计算。",code=purpose+"_context_stale",location=location)
+    bx.require(input_artifacts_current(outcome),"外部角色模板变化，请重新计算。",code=purpose+"_context_stale",location=location)
+    bx.require(input_file is not None and Path(input_file).resolve()==source and isinstance(revision,str) and revision,"计算不属于本源方案或缺少输入凭证。",code=purpose+"_context_stale",location="/file",actual=str(source))
+    bx.require(bx.digest(path.read_bytes())==raw_hash,"读取期间计算凭证变化，请重读。",location=location)
+    return outcome,{"file":str(path),"input_revision":revision,"receipt_sha256":raw_hash}
+
+
+def proposal_request(args, root, source):
+    """Read a saved native proposal through the shared calculation receipts."""
+    bx.require(isinstance(getattr(args,"proposal_id",None),str) and args.proposal_id,"采用提案需提供 next_actions 的 proposal_id。",location="/proposal_id")
+    outcome,context=calculation_receipt(args.kind,args.proposal_file,root,source,purpose="proposal")
     candidates=[row[key] for row in outcome.get("diagnostics",[]) for key in ("connection_proposal","change_proposal") if isinstance(row.get(key),dict) and row[key].get("proposal_id")==getattr(args,"proposal_id",None)]
     bx.require(len(candidates)==1,"proposal_id 必须对应当前计算中唯一的程序提案。",location="/proposal_id",expected="one current saved proposal",actual=getattr(args,"proposal_id",None))
     proposal=candidates[0]
     body={k:v for k,v in proposal.items() if k!="proposal_id"}
     bx.require(bx.digest(json.dumps(body,sort_keys=True,ensure_ascii=False,allow_nan=False))==proposal["proposal_id"],"提案内容被修改，请重新计算。",location="/proposal_id")
-    bx.require(input_file is not None and Path(input_file).resolve()==source and proposal.get("input_file")==str(source) and proposal.get("input_revision")==revision and proposal.get("details_file")==str(path) and proposal.get("kind")==args.kind,
+    bx.require(proposal.get("input_file")==str(source) and proposal.get("input_revision")==context["input_revision"] and proposal.get("details_file")==context["file"] and proposal.get("kind")==args.kind,
                "提案不属于本源方案和本次计算。",code="proposal_context_stale",location="/file",actual=str(source))
     bx.require(proposal.get("adoptable") is True,"提案存在已知冲突；先修订所列目标、点数或操作后重算。",location="/proposal_id",actual=proposal.get("blockers"))
-    bx.require(bx.digest(path.read_bytes())==raw_hash,"读取期间计算凭证变化，请重读。",location="/proposal_file")
-    return copy.deepcopy(proposal["changes"]), {"file":str(path),"proposal_id":proposal["proposal_id"],"input_revision":revision,"receipt_sha256":raw_hash,"proposal_type":proposal["proposal_type"]}
+    return copy.deepcopy(proposal["changes"]), {**context,"proposal_id":proposal["proposal_id"],"proposal_type":proposal["proposal_type"]}
 
 
 def edit_document(args):
@@ -265,8 +282,10 @@ def edit_document(args):
     bx.require(args.invoked,"用户明确调用后才能创建/修改方案。",location="/invoked",expected=True,actual=args.invoked)
     path=Path(args.file).resolve()
     reference=getattr(args,"proposal_file",None)
+    review_from=getattr(args,"review_from",None)
     changes=getattr(args,"changes",None)
     bx.require(bool(reference)!=bool(changes),"使用 changes 文件或程序 proposal_file 二者之一。",location="/changes")
+    bx.require(not review_from or not reference,"review_from 配合模型编写的 changes 文件。",location="/review_from")
     changes_path=Path(reference or changes).resolve()
     bx.require(path.suffix.lower()==".json" and path!=changes_path,"方案与修改请求使用两个独立 JSON 文件。",location="/file",actual=str(path))
     root=engine.resolve_root(args.pob); engine.check_output_path(path)
@@ -274,12 +293,24 @@ def edit_document(args):
     request,adoption=proposal_request(args,root,path) if reference else (read_json(changes_path,role="input"),None)
     bx.require_keys(request,{"set","replace","remove","review_claims"},"/","修改请求使用 set/replace/remove/review_claims。")
     bx.require(isinstance(request.get("set",{}),dict),"set 应为对象。",location="/set",expected="object",actual=type(request.get("set")).__name__)
+    review_context=None; reviewed_packet=None
+    if review_from:
+        current,review_context=calculation_receipt(args.kind,review_from,root,path,purpose="review")
+        reviewed_packet=current.get("review_packet" if args.kind=="plan" else "final_review",{})
+        token=reviewed_packet.get("token")
+        bx.require(isinstance(token,str) and token,"计算缺少复核标识，请重算。",location="/review_from")
+        assessment=request.get("set",{}).get("assessment")
+        bx.require(isinstance(assessment,dict),"changes 的 set.assessment.review 写本次真实复核。",location="/set/assessment")
+        authored=assessment.get("review")
+        bx.require(isinstance(authored,dict),"changes 的 set.assessment.review 写本次真实复核。",location="/set/assessment/review")
+        bx.require(authored.get("token",token)==token,"复核标识与所选计算不一致；核对计算和判断后省略手抄token。",code="review_context_stale",location="/assessment/review/token",expected=token,actual=authored.get("token"))
+        authored["token"]=token
     existing=path.read_bytes() if path.is_file() else None
     stamp=bx.digest(existing) if existing is not None else None
     receipt=path.with_suffix(".edit.json")
-    check_path_roles([("change_request",changes_path)],[("editable_input",path),("edit_receipt",receipt)])
+    check_path_roles([("change_request",changes_path)]+([("reviewed_calculation",review_from)] if review_from else []),[("editable_input",path),("edit_receipt",receipt)])
     bx.require(receipt!=changes_path,"修改请求不能使用程序的 .edit.json 凭证文件名。",location="/changes",actual=str(changes_path))
-    request_hash=bx.digest(json.dumps({"kind":args.kind,"request":request,**({"adoption":adoption} if adoption else {})},sort_keys=True,ensure_ascii=False,allow_nan=False))
+    request_hash=bx.digest(json.dumps({"kind":args.kind,"request":request,**({"adoption":adoption} if adoption else {}),**({"reviewed_calculation":review_context} if review_context else {})},sort_keys=True,ensure_ascii=False,allow_nan=False))
     if receipt.is_file() and existing is not None:
         try: old=read_json(receipt)
         except (ValueError,OSError): old={}
@@ -287,11 +318,18 @@ def edit_document(args):
             if old.get("entrypoint")!=execution_entrypoint() or old.get("input_contract")!=input_contract(args.kind):
                 old.update(entrypoint=execution_entrypoint(),input_contract=input_contract(args.kind));write_json(receipt,old)
             return {**old,"replayed":True,"file":str(path),"status":"saved_draft"}
-    bx.require(existing is None or getattr(args,"if_sha256",None)==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",code="input_revision_stale",location="/if_sha256",expected=stamp,actual=getattr(args,"if_sha256",None))
+    requested_revision=getattr(args,"if_sha256",None)
+    if review_context and requested_revision is None: requested_revision=review_context["input_revision"]
+    bx.require(existing is None or requested_revision==stamp,"已有方案修改需要本次返回的 revision，避免覆盖较新方案。",code="input_revision_stale",location="/if_sha256",expected=stamp,actual=requested_revision)
     if adoption:
         bx.require(existing is not None and adoption["input_revision"]==stamp,"源方案变化，请重算新的提案。",code="proposal_context_stale",location="/if_sha256",expected=stamp,actual=adoption["input_revision"])
+    if review_context:
+        bx.require(existing is not None and review_context["input_revision"]==stamp,"源方案变化，请重算后复核当前结果。",code="review_context_stale",location="/review_from",expected=stamp,actual=review_context["input_revision"])
     document=read_json(path,role="input") if existing is not None else {"schema_version":SCHEMA_VERSION}
-    result=merge_edit(document,request.get("set",{}))
+    updates=copy.deepcopy(request.get("set",{}))
+    if review_context: updates["assessment"].pop("review")
+    result=merge_edit(document,updates)
+    if review_context: result["assessment"]["review"]=copy.deepcopy(authored)
     replacements=request.get("replace",{})
     bx.require(isinstance(replacements,dict),"replace 为现有 JSON pointer 到新值的映射。",location="/replace",expected="object",actual=type(replacements).__name__)
     for locator,value in replacements.items():
@@ -351,11 +389,15 @@ def edit_document(args):
     new_review=result.get("assessment",{}).get("review")
     def without_review(value):
         copied=copy.deepcopy(value);copied.get("assessment",{}).pop("review",None)
+        if copied.get("assessment")=={}:copied.pop("assessment")
         return copied
     changed_inputs=document_changes(without_review(document),without_review(result))
-    if new_review is not None and document_changes(old_review,new_review):
+    if review_context or new_review is not None and document_changes(old_review,new_review):
         bx.require(not changed_inputs,"先保存方案修改并重算，再单独提交当前复核。",code="review_transaction_mixed",location="/assessment/review",expected="review-only transaction")
-        facts.review_shape(new_review,complete=False,claim_ids=claims)
+        facts.review_shape(new_review,complete=bool(review_context),claim_ids=claims,
+                           objective_ids=reviewed_packet.get("coverage",{}).get("required_objective_ids",[]) if review_context else None)
+        if review_context:
+            bx.require(new_review.get("token")==reviewed_packet["token"],"复核标识不能被后续修改覆盖。",code="review_context_stale",location="/assessment/review/token",expected=reviewed_packet["token"],actual=new_review.get("token"))
     # Validate local structure before touching the only source. Semantic choices
     # and current native legality remain evaluate/route responsibilities.
     bx.require((path.read_bytes() if path.is_file() else None)==existing,"保存前方案已变化，请重新读取 revision。",location="/file",actual=str(path))
@@ -385,6 +427,7 @@ def edit_document(args):
                                          'instruction':'先计算当前方案，按新结果核对这些失效判断的正文与依据，修正源文字后重新评审。计算结果会给出可读取的 observations；程序不会自动刷新旧结论。'})
     if args.kind=="route": response["stage_instances"]=[{"stage_id":s["stage_id"],"instances":[{k:g.get(k) for k in ("instance_id","skill_id","level")} for group in s.get("skill_groups",[]) for g in group.get("gems",[])]} for s in result.get("stages",[])]
     if adoption: response["adopted_proposal"]=adoption
+    if review_context: response["reviewed_calculation"]=review_context
     response["facts_summary"]=f"已保存草案；实际修改 {len(response['actual_changes'])} 处，阶段 {response['counts']['stages']} 个、技能组 {response['counts']['skill_groups']} 组、宝石 {response['counts']['gems']} 颗、判断 {response['counts']['claims']} 条。待重新评审判断 {len(invalidated)} 条。持久状态凭证保留在 {receipt}；程序临时文件已自动处理。此操作没有计算或证明配装达标。"
     if response.get('prior_review',{}).get('status')=='requires_recalculation': response['facts_summary']+=' 输入或判断绑定已变化，旧整份复核需重算并按当前证据重新提交；没有自动刷新旧结论。'
     json_text(response)  # Check both encoded documents before committing either.
@@ -401,13 +444,20 @@ def edit_document(args):
 
 
 def view_json(args):
-    """Read ordinary task JSON by the existing pointer contract; never recalculate."""
+    """Read task JSON nodes or exact UTF-8 source text; never recalculate."""
     path=Path(args.file).resolve()
-    bx.require(path.suffix.lower()==".json","view 读取任务工作区已有 JSON，游戏原文使用 data。")
     bx.require(1<=args.limit<=12000 and args.offset>=0,"limit 为正整数，offset为非负整数。",location="/pagination",expected="limit 1..12000, offset >=0",actual={"limit":args.limit,"offset":args.offset})
-    revision=bx.digest(path.read_bytes())
-    document=read_json(path)
-    selected=facts.pointer(document,args.pointer)
+    is_json=path.suffix.lower()==".json"
+    if not is_json:
+        bx.require(path.stat().st_size<=2_000_000,"资料超过 artifact 读取上限。",location="/file",expected={"maximum_bytes":2_000_000},actual=path.stat().st_size)
+    raw=path.read_bytes();revision=bx.digest(raw)
+    if is_json:
+        document=read_json(path)
+        selected=facts.pointer(document,args.pointer)
+    else:
+        bx.require(not args.pointer,"文本用空 pointer 与 offset/limit 按字符读取。",location="/pointer",expected="",actual=args.pointer)
+        bx.require(len(raw)<=2_000_000,"资料超过 artifact 读取上限。",location="/file",expected={"maximum_bytes":2_000_000},actual=len(raw))
+        document={};selected=raw.decode("utf-8-sig")
     source_selected=selected
     bx.require(bx.digest(path.read_bytes())==revision,"读取期间文件变化；重读当前字段与 revision。",location="/file",actual=str(path))
     fields=args.fields.split(",") if args.fields else []
@@ -431,6 +481,15 @@ def view_json(args):
             file=artifact.get('file')
             if not isinstance(base,str) or not base.startswith('/') or file is not None and (not isinstance(file,str) or Path(file).resolve()!=path): continue
             if pointer==base or pointer.startswith(base+'/'): matches.append((len(base),entry['prefix']+pointer[len(base):]))
+            projected='/review_packet/facts/'+name
+            if pointer==projected or pointer.startswith(projected+'/'):
+                canonical=base+pointer[len(projected):]
+                try:
+                    actual=facts.pointer(document,canonical)
+                    observed=facts.pointer(document,pointer)
+                except bx.ContractError: continue
+                if json.dumps(actual,ensure_ascii=False,sort_keys=True,allow_nan=False)==json.dumps(observed,ensure_ascii=False,sort_keys=True,allow_nan=False):
+                    matches.append((len(projected),entry['prefix']+pointer[len(projected):]))
         return max(matches)[1] if matches else None
     def references(value):
         located={}
@@ -454,7 +513,7 @@ def view_json(args):
         return {key:value[key] for key in fields if key in value}
     result={"file":str(path),"revision":revision,"pointer":args.pointer,"fields":fields,"keys":args.keys,"query":args.query,"offset":args.offset,
             "missing_fields":missing,"read_only":True,"next_actions":[],"native_references":{},
-            "scope":"当前JSON分页；缺字段保持缺失。offset 对应 page_unit。deferred_values 按子 pointer 继续读取；next_offset 继续同一字段。未重算。"}
+            "scope":"当前文件分页；缺字段保持缺失。offset 对应 page_unit。deferred_values 按子 pointer 继续读取；next_offset 继续同一字段。未重算。"}
     if isinstance(document.get('report'),str) and 'report_sha256' in document:
         report=Path(document['report'])
         if not report.is_absolute(): report=path.parent/report
@@ -477,18 +536,24 @@ def view_json(args):
         if not integrity['valid']:
             result['next_actions'].append({'action':'regenerate_report','file':str(path),'report':str(report),
                                           'instruction':'沿原 inspect/probe 请求重新生成报告与完整凭证；不能仅改摘要继承旧结果。'})
-    if not contract and path.stat().st_size<=2_000_000:
+    if is_json and (not contract or args.pointer and not native_reference(args.pointer)):
         result['evidence_template']={'kind':'artifact','path':str(path),'pointer':args.pointer}
-        result['scope']+=' evidence_template 指向分页/投影前的完整源节点，补 evidence_id/subject 后由声明所在目录校验读取范围；可追溯不证明语义。'
+        result['scope']+=' evidence_template 以准确绝对路径指向分页/投影前的完整源节点，补 evidence_id/subject 后只读核原文件；可追溯不证明语义或扩展授权。'
     fits=lambda value: len(json.dumps(value,ensure_ascii=False,allow_nan=False))<=9500
     bx.require(len(json.dumps(result,ensure_ascii=False))<=6000,"读取参数过长，请缩小 fields/query。",location="/pagination",expected="bounded reader parameters",actual={"fields_count":len(fields),"query_characters":len(args.query or "")})
     if isinstance(selected,str):
         bx.require(not fields,"字符串用 pointer/offset/limit 分页。",location="/fields")
         total=len(selected);end=min(total,args.offset+args.limit)
-        result.update(total=total,page_unit="characters",value=selected[args.offset:end],next_offset=end if end<total else None,native_references=references(None))
+        def string_page(stop):
+            value=selected[args.offset:stop]
+            result.update(total=total,page_unit="characters",value=value,next_offset=stop if stop<total else None,native_references=references(None))
+            if not is_json:
+                result.pop('evidence_template',None)
+                if value.strip(): result['evidence_template']={'kind':'artifact','path':str(path),'excerpt':value}
+        string_page(end)
         while not fits(result) and end>args.offset:
             end=args.offset+(end-args.offset)//2
-            result.update(value=selected[args.offset:end],next_offset=end if end<total else None)
+            string_page(end)
     elif isinstance(selected,(list,dict)):
         bx.require(args.limit<=100,"数组/对象 limit 为1–100；长字符串可用更大 limit。",location="/limit",expected="1..100",actual=args.limit)
         is_array=isinstance(selected,list)
@@ -550,11 +615,14 @@ def diagnosis_summary(result):
     rows.append(f"本机统计已分配：普通天赋 {result['points']} 点，升华 {result['ascendancy_points']} 点（包含连接小点）。这不是剩余点数；可用上限仍须结合本次确认的等级与任务进度。")
     if result.get("secondary_ascendancy_points"):
         rows.append(f"另有次级升华已分配 {result['secondary_ascendancy_points']} 点，不能混入普通天赋或主升华点数。")
-    rows.extend(row['text'] for row in skill_statements(result,'当前角色'))
+    observations=resource_observations(result)
+    if observations:
+        rows.append('当前原生资源相关字段：'+json.dumps(observations,ensure_ascii=False,sort_keys=True)+'。这些字段不是统一的每秒回复；按实际资源、触发和已分配来源核对含义，不据某列为零排除其他来源。')
     rows += [f"{METRICS[key]}：{stats[key]:g}" for key in (damage, hit, "Life", "EnergyShield", "ChaosResist", "ManaUnreserved") if key in stats]
     rows.append("DPS 已包含引擎的命中计算，不再乘命中率。其他技能是否计入总输出以 damage_sources 的实际分项为准，不能根据装备着召唤宝石推断。")
     rows.append(scenario_summary(result))
     rows.append(effect_statement(result,'当前角色',compact=True)['text'])
+    rows.extend(row['text'] for row in skill_statements(result,'当前角色',compact=True))
     rows.extend(row['text'] for row in flask_statements(result,'当前角色'))
     if stats.get("ManaUnreserved", 0) < 0:
         rows.append("原文件的保留配置超出可用魔力，需要调整同时开启的保留技能。各技能可能支付魔力、生命或能盾，不能据此断言所有技能都不能使用。")
@@ -584,7 +652,9 @@ def begin(args):
     if (run / "run.json").exists():
         _, state = read_run(run)
         bx.require(state["input_sha256"] == bx.digest(source.read_bytes()), "此会话已有其他角色，请使用新目录。")
-        return {**workflow_status(argparse.Namespace(run=str(run),pob=str(root))),"already_exists":True,"input_contract":input_contract('intent')}
+        return {"run":str(run),"phase":state["phase"],"already_exists":True,
+                "next_actions":[{"action":"status","command":"status","arguments":{"run":str(run)},"reference":"references/commands.md"}],
+                "next":"会话已存在；沿 status 核对当前候选和恢复动作，不重复创建或原生计算。"}
     bx.require(not run.exists() or not any(run.iterdir()), "请选择空的会话目录，以免覆盖已有文件。")
     info=engine.health(root)
     run.mkdir(parents=True, exist_ok=True)
@@ -604,7 +674,7 @@ def begin(args):
              "input_contract":input_contract('intent'),
              "next_actions":[{"action":"write_intent","command":"intent","arguments":{"run":str(run)},"required_arguments":["file"],
                               "instruction":"先将真实用户目标按 input_contract 保存为工作区 JSON，再以 --file 引用该已有文件。"}],
-            "next": "先按用户这次任务选择 intent.task_kind：即用配装使用 build；交付局部或有明确执行条件的方案使用 build_plan；不改角色的解释或作者复核使用 read_only_review。记录实际用户要求和 objectives，未来条件不冒充已落实。其余装备原文在 inspection，宝石字段是 skillId/nameSpec。"}
+            "next": "先按 SKILL.md#入口和范围及 references/build.md 选择本次交付的 intent.task_kind；XML有无改动不单独决定任务类型。记录实际用户要求和 objectives，未来条件不冒充已落实。其余装备原文在 inspection，宝石字段是 skillId/nameSpec。"}
     inspection['response']=response
     write_json(run / "inspection.json", inspection)
     return response
@@ -622,7 +692,8 @@ def validate_intent(value, original, native=None, folder=None):
         bx.require(value.get("league") is None or isinstance(value["league"],str) and value["league"].strip(),"未知 league 保留 null。",location="/league")
         bx.require(value.get("league") is not None or not value.get("version_source") and not value.get("game_version"),"未知赛季不能声明目标游戏版本或公告；本机数据范围另由原生事实说明。",location="/game_version")
     if task_kind=="read_only_review":
-        bx.require(not value.get("scenario") and value.get("baseline_main_group") is None,"只读评审不能写入共同场景或改选主技能组；条件实验使用 probe。",location="/scenario")
+        bx.require(not value.get("scenario") and value.get("baseline_main_group") is None,"只读评审不能写入共同场景或改选主技能组；条件实验使用 probe。",location="/scenario",
+                   details={'intent_fields':{'/task_kind':input_contract('intent')['nested_fields']['task_kind']}})
     if value.get("game_version"):
         engine.validate_game_version(value["game_version"], value["league"])
     if value.get("version_checked_at"): engine.validate_checked_at(value["version_checked_at"])
@@ -630,7 +701,7 @@ def validate_intent(value, original, native=None, folder=None):
     bx.require(delivery_scope in {"execution_plan","snapshot_comparison"},"delivery_scope 使用 execution_plan/snapshot_comparison。",location="/delivery_scope")
     bx.require(delivery_scope=="execution_plan" or task_kind=="build_plan","snapshot_comparison 只用于用户要求的规划比较，不代替当前就绪或只读任务。",location="/delivery_scope")
     defaults = {"delivery_scope":"execution_plan", "task_kind":"build", "league":None,"allow_class_change": None, "allow_ascendancy_change": None, "allow_main_skill_change": None,
-                "keep_slots": [], "keep_skill_ids": [], "scenario": {}, "minimum_stats": {}, "notes": "", "budget": None,
+                "keep_slots": [], "keep_skill_ids": [], "keep_skill_groups": [], "scenario": {}, "minimum_stats": {}, "notes": "", "budget": None,
                 "mode": None, "target_level": None, "quest_passive_points": None, "normal_points_available": None,
                 "ascendancy_points": None, "secondary_ascendancy_points": None}
     result = {**defaults, **value}
@@ -647,6 +718,9 @@ def validate_intent(value, original, native=None, folder=None):
         bx.require(isinstance(entry, dict) and set(entry) == {"slot", "preserve"} and entry["preserve"] in {"item_identity", "exact_spec"}, "keep_slots 每项为 {slot,preserve}；preserve=item_identity 或 exact_spec。")
         bx.require(entry["slot"] in known_slots, "当前已读数据未识别保留槽位：" + entry["slot"])
     bx.require(isinstance(result["keep_skill_ids"], list) and all(isinstance(v, str) and v for v in result["keep_skill_ids"]), "keep_skill_ids 应为 ID 数组。")
+    preserved=result["keep_skill_groups"]
+    bx.require(isinstance(preserved,list) and all(type(index) is int for index in preserved) and len(preserved)==len(set(preserved)),"keep_skill_groups 应为不重复的原技能组序号数组。",location="/keep_skill_groups")
+    for index in preserved:bx.index_one(bx.groups(original),index,"保留技能组",location="/keep_skill_groups")
     bx.require(isinstance(result["minimum_stats"], dict), "minimum_stats 应为对象。")
     for key, val in result["minimum_stats"].items():
         bx.require(isinstance(key, str) and key and bx.finite_number(val), "约定最低指标必须是本机指标名和有限数值。",location="/minimum_stats/"+str(key),expected="finite representable number",actual=val)
@@ -662,7 +736,7 @@ def validate_intent(value, original, native=None, folder=None):
     bx.require(isinstance(sources, dict), "constraint_sources 是约束字段到用户声明 evidence_id 的映射。")
     required = ["goal"] + [key for key in ("mode", "budget", "target_level", "quest_passive_points", "normal_points_available", "ascendancy_points", "secondary_ascendancy_points", "max_changed_equipment", "allow_class_change", "allow_ascendancy_change", "allow_main_skill_change", "baseline_main_group") if result.get(key) is not None]
     if delivery_scope=="snapshot_comparison": required.append("delivery_scope")
-    required += [key for key in ("keep_slots", "keep_skill_ids", "scenario", "minimum_stats") if result[key]]
+    required += [key for key in ("keep_slots", "keep_skill_ids", "keep_skill_groups", "scenario", "minimum_stats") if result[key]]
     for key in required:
         ref = sources.get("/" + key)
         bx.require(ref in records and records[ref]["kind"] == "user_statement" and records[ref]["status"] == "user_declared", "明确限制 /" + key + " 需要 constraint_sources 中对应的用户表达；模型假设请放 plan。")
@@ -743,7 +817,11 @@ def socket_layout_issues(document, result, unsupported=None):
     for index, group in enumerate(bx.groups(document), 1):
         slot = group.get("slot", "")
         gems = [gem for gem in result["gems"] if gem["group"] == index]
-        if group.get("source") or not slot or not gems:
+        if group.get("source") or not gems:
+            continue
+        if not slot:
+            if group.get('enabled','true')!='false' and any(gem.get('enabled') for gem in gems):
+                errors.append(f"第 {index} 组启用的宝石需要关联实际装备插槽；未指定槽位不能作为可用技能。")
             continue
         offset = offsets.get(slot, 0)
         offsets[slot] = offset + len(gems)
@@ -880,7 +958,8 @@ def material_requirements(original, document, before, after):
         skill, level, quality = key
         prior = sorted({(g[1], g[2]) for g in stock if g[0] == skill})
         requirements.append({"kind": "gem", "skill_id": skill, "level": level, "quality": quality, "quantity": count,
-                             "description": f"{names[key]} {level} 级 / {quality} 品质 × {count}" + (f"（原 XML 记录等级/品质：{prior}，需练级、调品质或采购）" if prior else "（原 XML 未记录足量同规格宝石）")})
+                             "original_quantity":stock[key],"final_quantity":needed[key],
+                             "description": f"{names[key]} {level} 级 / {quality} 品质：原 XML 同规格 {stock[key]} 颗，候选实际 {needed[key]} 颗，差额 {count} 颗需另备。原位保留的实例不作为额外库存。"+(f" 原 XML 各规格：{prior}；取得或训练方式另核。" if prior else "")})
     old_texts = bx.item_texts(original)
     old_items = Counter(old_texts[item["id"]] for item in before["equipped"] if item["id"] in old_texts)
     item_texts = bx.item_texts(document)
@@ -919,7 +998,7 @@ def equipment_changes(original, document, before, after):
     return {"changed_slots":changed,"replaced_items":replaced,"changes":rows}
 
 
-def check_constraints(original, document, before, after, intent, plan, equipment=None):
+def check_constraints(original, document, before, after, intent, plan, equipment=None, *, original_native=None):
     errors, pending = [], []
     if intent.get("mode") not in (None,"both",plan["mode"]): errors.append("候选超出用户确认的改装模式。")
     if intent.get("target_level") is not None and after["level"] != intent["target_level"]: errors.append("候选等级与用户确认的目标等级不一致。")
@@ -947,6 +1026,25 @@ def check_constraints(original, document, before, after, intent, plan, equipment
     enabled_ids={gem.get("id") for gem in active_gems(after)}
     for skill in intent.get("keep_skill_ids",[]):
         if skill not in enabled_ids: errors.append("必须保留的技能未启用："+skill)
+    if intent.get("keep_skill_groups"):
+        # An unchanged declaration may already be a native normalized save.
+        # Keep the requested declaration check as well: an ignored requested
+        # change cannot pass merely because native output stayed unchanged.
+        native_xml=(original_native or {}).get('xml')
+        canonical=bool(native_xml and after.get('xml'))
+        original_groups,current_groups=bx.groups(original),bx.groups(document)
+        saved_original=bx.groups(bx.parse(native_xml)) if canonical else []
+        saved_current=bx.groups(bx.parse(after['xml'])) if canonical else []
+        signature=lambda group:ET.canonicalize(bx.serialise(group),strip_text=True) if group is not None else None
+        for index in intent["keep_skill_groups"]:
+            source=bx.index_one(original_groups,index,"保留技能组")
+            current=current_groups[index-1] if index<=len(current_groups) else None
+            allowed={signature(source)}
+            observed_unchanged=not canonical or (index<=len(saved_original) and index<=len(saved_current) and signature(saved_original[index-1])==signature(saved_current[index-1]))
+            if canonical and observed_unchanged:
+                allowed.add(signature(saved_original[index-1]))
+            if current is None or not observed_unchanged or signature(current) not in allowed:
+                errors.append(f"必须原样保留的技能组 {index} 已改动或移除；核对原组声明与实际操作。")
     for key,threshold in intent.get("minimum_stats",{}).items():
         value=after["stats"].get(key)
         if type(value) not in (float,int): pending.append("metric:"+key)
@@ -1075,6 +1173,7 @@ def roundtrip(root, result, document, plan=None):
     # Subsequent evidence describes the saved file's native representation.
     for key in ("config_values", "config_placeholders", "config_loader_source", "config_defaults", "config_saved_values", "config_labels", "config_controls", "config_input_origin", "effect_state"):
         if key in reloaded: result[key] = reloaded[key]
+    result["xml"] = xml  # Evidence binds the saved candidate, not a worker reserialization.
     return xml
 
 
@@ -1157,8 +1256,10 @@ def effect_statement(calculation, name, *, compact=False):
              f"（组 {row['group']}、宝石 {row['index']}）" for row in state['global_effects']]
     counts=Counter('unknown' if value is None else 'on' if value else 'off' for value in state['config_switches'].values())
     controls=(f"开启 {counts['on']}、关闭 {counts['off']}、未知 {counts['unknown']}；具体值见 config_controls" if compact else "、".join(sorted(switches)) or "见 config_controls")
-    text=(name+" · 当前效果开关：护卫="+json.dumps(state['guard_active'])+"；药剂="+json.dumps(state['flasks'],ensure_ascii=False)+
-          "；全局效果="+("、".join(effects) or "无原生条目")+"；当前 check 控件集合="+controls+
+    effect_text=f"{len(effects)} 项，明细见 effect_state.global_effects" if compact else "、".join(effects) or "无原生条目"
+    text=(name+" · 当前原生对象纳入="+json.dumps(state['equipment_inclusion'],ensure_ascii=False)+
+          "；药剂槽输入开关="+json.dumps(state['flasks'],ensure_ascii=False)+"；守护技能快照（GuardSkillActive）="+json.dumps(state['guard_active'])+
+          "；技能全局开关/存在="+effect_text+"；当前 check 控件集合="+controls+
           f"。另有 {len(state['config_values_not_in_controls'])} 项输入仅见 config_values_not_in_controls；省略不等于关闭。null 未知；输入、启用或可见不证明效果适用或持续。")
     return {"kind":"effect_state","subject":name,"status":"observed" if state['config_controls_available'] else "unknown","values":state,"text":text}
 
@@ -1172,34 +1273,51 @@ def flask_statements(calculation, name):
     for item in calculation.get('equipped',[]):
         local=item.get('flask_local')
         if not isinstance(local,dict):continue
-        values={key:item.get(key) for key in ('slot','id','name','name_cn','display_name','name_source','title','title_cn','title_name_source','base','base_cn','display_base','base_name_source','flask_base','flask_local','flask_local_source','flask_scope')}
+        values={key:item.get(key) for key in ('slot','id','name','name_cn','display_name','name_source','title','title_cn','title_name_source','base','base_cn','display_base','base_name_source','active','effective_in_calculation','activity_source','flask_base','flask_local','flask_local_source','flask_scope')}
         base=item.get('flask_base',{})
         base_labels={'life':('生命总量',''),'mana':('魔力总量',''),'duration':('持续','秒'),'chargesMax':('最大充能',''),'chargesUsed':('单次充能','')}
         base_parts=[f'基底{label} {base[key]:g}'+unit for key,(label,unit) in base_labels.items() if isinstance(base,dict) and bx.finite_number(base.get(key))]
         parts=[label+f' {local[key]:g}'+unit for key,(label,unit) in labels.items() if bx.finite_number(local.get(key))]
         text=(f"{name} · {item.get('slot')} {item.get('display_name') or item.get('name') or item.get('id')} [ID {item.get('id')}]："
               +('；'.join(base_parts)+'；' if base_parts else '')+'单件处理后：'+'；'.join(parts)
+              +'；本次原生对象纳入='+json.dumps(item.get('effective_in_calculation'))
               +'。已由原生处理本地词缀与品质；角色修正、当前充能及覆盖另核。')
         rows.append({'kind':'native_flask_parameters','subject':name,'status':'observed','values':values,'text':text})
     return rows
 
 
-def skill_statements(calculation, name):
-    """Share current native names, flags and main usage across factual outputs."""
+def skill_statements(calculation, name, *, compact=False):
+    """Keep each native skill's identity and observations together across outputs."""
     rows=[]
-    main=next((skill for skill in calculation.get('active_skills',[]) if skill.get('is_main')),None)
-    if main:
-        rate=main.get('usage_rate',{})
+    for index,skill in enumerate(calculation.get('active_skills',[])):
+        if compact and not skill.get('is_main'):
+            continue
+        rate=skill.get('usage_rate') or {}
         rate_text=f"{rate['value']:.10g} 次/秒" if bx.finite_number(rate.get('value')) else '未测得'
-        label=main.get('display_name') or main.get('name_cn') or main.get('name') or main.get('id') or '未知技能'
-        values={key:main.get(key) for key in ('usage_rate','costs','cost_scope','disabled')}
-        rows.append({'kind':'damage_subject','subject':name,'skill_ref':main.get('skill_ref'),'actor':main.get('actor'),'status':'observed','values':values,
-            'text':name+' · 当前主技能 '+str(label)+'；主体 '+str(main.get('actor','未知'))+'；原生频率 '+rate_text+
-                   '（'+str(rate.get('metric') or '来源未测得')+'）。费用原值 '+json.dumps(main.get('costs',{}),ensure_ascii=False,sort_keys=True)+
-                   '。'+str(rate.get('scope') or '频率适用范围未测得。')+' 伤害、吸取与回复按主体和资源分别读取；频率不认证动作互斥、支付可行或效果持续。'})
+        label=skill.get('display_name') or skill.get('name_cn') or skill.get('name') or skill.get('id') or '未知技能'
+        supports=skill.get('supports')
+        support_text='未观测' if supports is None else ('、'.join(str(row.get('display_name') or row.get('name') or row.get('id'))+
+            ' ['+str(row.get('id'))+'] 保存等级/品质 '+('/'.join(str(row[key]) if row.get(key) is not None else '未知' for key in ('level','quality')))+
+            '；有效等级/品质 '+('/'.join(str(row[key]) if row.get(key) is not None else '未知' for key in ('effective_level','effective_quality')))
+            for row in supports) or '无已计入辅助')
+        values={key:skill.get(key) for key in ('id','group','index','slot','description','usage_rate','costs','cost_scope','disabled','trigger','no_cost','benefit_excluded','supports','supports_source')}
+        rows.append({'kind':'damage_subject' if skill.get('is_main') else 'native_skill_observation','subject':name,
+            'reference':f'native:{name}#/active_skills/{index}','skill_ref':skill.get('skill_ref'),'actor':skill.get('actor'),'status':'observed','values':values,
+            'text':name+(' · 当前主技能 ' if skill.get('is_main') else ' · 当前技能 ')+str(label)+' ['+str(skill.get('skill_ref') or '引用未测得')+
+                   ']'+('；条件审计观察，原快照未计此技能收益' if skill.get('benefit_excluded') is True else '')+
+                   '；伤害主体 '+str(skill.get('actor') or '未知')+'；停用='+json.dumps(skill.get('disabled'))+'；触发='+str(skill.get('trigger') or '未提供')+
+                   '；原生定义 '+str(skill.get('description') or '未提供')+'；原生频率 '+rate_text+
+                   '（'+str(rate.get('metric') or '来源未测得')+'）。费用原值 '+json.dumps(skill.get('costs',{}),ensure_ascii=False,sort_keys=True)+
+                   '；费用来源 '+str(skill.get('cost_scope') or '未测得')+'；所列原生计算的已应用辅助 '+support_text+
+                   '（来源 '+str(skill.get('supports_source') or '未测得')+'）。'+str(rate.get('scope') or '频率适用范围未测得。')+
+                   ' 伤害、吸取与回复按主体和资源分别读取；频率不认证动作互斥、支付可行或效果持续。'})
+    if compact:
+        rows.append({'kind':'native_skill_index','subject':name,'status':'observed',
+            'text':f"{name} · 已保存 {len(calculation.get('active_skills',[]))} 个原生技能及 {len(calculation.get('gems',[]))} 个宝石条目；逐技能名称、定义、触发、费用、频率、主体、时长及完整原生辅助链 supports 见 /calculation/active_skills，实体宝石规格与授予效果见 /calculation/gems。使用 --report 时，publication 与正式事实页另列完整技能观察。"})
+        return rows
     groups={}
     fields=('group','index','id','name','name_cn','display_name','name_source','slot','level','quality','effective_level','effective_quality',
-            'effective_specification_source','effective_specification_status','group_enabled','slot_enabled','enabled','support','support_applied','supports_skills')
+            'effective_specification_source','effective_specification_status','group_enabled','slot_enabled','enabled','support','support_applied','supports_skills','granted_effects')
     for index,gem in enumerate(calculation.get('gems',[])):
         groups.setdefault(gem.get('group'),[]).append({**{key:gem[key] for key in fields if key in gem},'reference':f'native:{name}#/gems/{index}'})
     def activation(value,label): return label+('已启用' if value is True else '未启用' if value is False else '状态未知')
@@ -1209,33 +1327,54 @@ def skill_statements(calculation, name):
               ' — '.join(str(g.get('display_name') or g.get('name_cn') or g.get('name') or g.get('id') or '未知技能')+
                   ' ['+str(g.get('id') or 'ID未测得')+'] 保存等级/品质 '+('/'.join(str(g[key]) if g.get(key) is not None else '未知' for key in ('level','quality')))+
                   '；当前有效等级/品质 '+('/'.join(str(g[key]) if g.get(key) is not None else '未知' for key in ('effective_level','effective_quality')))+
-                  '（'+activation(g.get('enabled'),'宝石')+'）' for g in gems)+
-              '。本机当次名称；缺译名保留原标识。启用标记不证明具体效果适用，辅助对象与实际应用见同一 gems 条目。')
+                  '（'+activation(g.get('enabled'),'宝石')+'）；授予效果 '+
+                  ('、'.join(str(e.get('id') or 'ID未知')+'（全局开关='+json.dumps(e.get('global_enabled'))+
+                            '，当前技能存在='+json.dumps(e.get('active_skill_present'))+'）' for e in g.get('granted_effects') or []) or '未测得') for g in gems)+
+              '。本机当次名称；缺译名保留原标识。启用标记不证明具体效果适用；实体辅助对象见 gems，完整原生辅助链见 active_skills[].supports。')
         rows.append({'kind':'native_skill_group','subject':name,'status':'observed','values':{'group':group,'gems':gems},'text':text})
+    for skill in calculation.get('active_skills',[]):
+        timing=skill.get('native_timing',{})
+        if any(bx.finite_number(timing.get(key)) for key in ('duration_seconds','cooldown_seconds','action_time_seconds')):
+            rows.append({'kind':'native_skill_timing','subject':name,'status':'observed','skill_ref':skill.get('skill_ref'),'actor':skill.get('actor'),'values':timing,
+                'text':name+' · '+str(skill.get('display_name') or skill.get('name') or skill.get('id'))+' ['+str(skill.get('skill_ref') or '引用未测得')+
+                       '] 原生时长/冷却：'+json.dumps(timing,ensure_ascii=False)+'。此为所列source的观测；召唤物自身动作另按主体读取，按实际使用时点核对覆盖。'})
     return rows
 
 
+def resource_observations(result):
+    """Expose available resource fields without assigning event units or causality."""
+    return {key:value for key,value in result.get('stats',{}).items()
+            if re.search(r'^(?:Life|Mana|EnergyShield|ES).*(?:Gain|Recovery|Regen|Leech|Recharge|Degen|On[A-Z])',key)
+            and bx.finite_number(value) and value!=0}
+
+
 def calculation_facts(result, claims=()):
+    controls=result.get('config_controls',{})
+    scopes=[row.get('scope') if isinstance(row,dict) else None for row in controls.values()] if isinstance(controls,dict) else []
+    common_scope=scopes[0] if scopes and isinstance(scopes[0],str) and all(value==scopes[0] for value in scopes) else ''
+    if common_scope:
+        controls={key:{field:value for field,value in row.items() if field!='scope'} for key,row in controls.items()}
     referenced = set()
     for claim in claims:
         for ref in claim.get("evidence_refs", []):
             if "#/stats/" in ref: referenced.add(ref.split("#/stats/", 1)[1])
+    selected=set(METRICS)|referenced|set(resource_observations(result))
     return {"xml_sha256": result.get("xml_sha256") or result.get("input_xml_sha256"), "engine_fingerprint": result.get("engine_fingerprint"),
             "character_identity":result.get("character_identity"),
             "measurement_audit":result.get("measurement_audit",{}),
             "level": result.get("level"), "class": result.get("class"),"class_cn":result.get("class_cn"), "class_id":result.get("class_id"), "ascendancy": result.get("ascendancy"),"ascendancy_cn":result.get("ascendancy_cn"),"ascendancy_id":result.get("ascendancy_id"),
-            "points":result.get("points"),"nodes":result.get("nodes"),"ascendancy_points":result.get("ascendancy_points"),"secondary_ascendancy_points":result.get("secondary_ascendancy_points"),
+            "points":result.get("points"),"nodes":result.get("nodes"),"ascendancy_points":result.get("ascendancy_points"),"secondary_ascendancy_points":result.get("secondary_ascendancy_points"),"progress_limits":result.get('progress_limits'),
             "main_skill": result.get("main_skill"), "main_skill_name": result.get("main_skill_name"),"main_skill_name_cn":result.get("main_skill_name_cn"),
             "config_values": result.get("config_values", {}), "config_labels": result.get("config_labels", {}),
             "config_placeholders":result.get("config_placeholders",{}),"config_loader_source":result.get("config_loader_source"),
             "config_input_origin":result.get("config_input_origin"),
-            "config_controls":result.get("config_controls",{}),"effect_state":engine.effect_state(result),
-            "stats": {k: v for k, v in result.get("stats", {}).items() if k in set(METRICS) | referenced},
+            "config_controls":controls,"effect_state":engine.effect_state(result),
+            "stats": {k: v for k, v in result.get("stats", {}).items() if k in selected},
             "available_stat_keys":sorted(result.get("stats",{})),
-            "stat_metadata":{k:v for k,v in result.get("stat_metadata",{}).items() if k in set(METRICS)|referenced},
+            "stat_metadata":{k:v for k,v in result.get("stat_metadata",{}).items() if k in selected},
             "active_skills": result.get("active_skills", []), "damage_sources": result.get("damage_sources", []),
-            "gems":result.get("gems",[]),"equipped":result.get("equipped",[]),"resource_rules":result.get("resource_rules",{}),
-            "scope": "当前配置与所列主体的原生快照；参考技能必须用其 skill_ref，主技能面板不能代替副技能或阶段。"}
+            "gems":result.get("gems",[]),"equipped":result.get("equipped",[]),"resource_rules":result.get("resource_rules",{}),"rules":result.get("rules",[]),
+            "scope": "当前配置与所列主体的原生快照；参考技能必须用其 skill_ref，主技能面板不能代替副技能或阶段。"+(' 配置控件共同范围：'+common_scope if common_scope else '')}
 
 
 def publication(status, errors, pending, budget, calculations, *, readiness=None, resource_audits=None, keys=None, claims=None, review=None,
@@ -1245,9 +1384,9 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
     if delivery_label is not None: brief['label']=delivery_label
     if delivery_message is not None: brief['message']=delivery_message
     measurements=[]
-    selected=list(METRICS) if keys is None else keys
     registry={}
     for name,calculation in calculations.items():
+        selected=list(dict.fromkeys([*resource_observations(calculation),*METRICS])) if keys is None else keys
         for key in selected:
             if key not in calculation.get("stats",{}): continue
             ref="native:"+name+"#/stats/"+key
@@ -1255,16 +1394,32 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
             measurements.append({"reference":ref,"subject":name,"metric":key,"value":row["value"],"meaning":row["meaning"],"context":row["context"],"text":row["formatted_fact"],"text_templates":row["text_templates"]})
     within=budget.get("within_limit")
     budget_text=("已有对应来源的成本下界超过预算。" if within is False else "在所列报价或已声明库存条件下，已核对成本区间在预算内；购买前仍需复核。" if within is True else "预算是否满足尚未证实；现有估算或缺失报价不能作为预算内买齐的承诺。" if budget.get("limit") is not None else "尚未约定预算；物资与价格核验状态："+budget["status"]+"。")
+    if budget.get('materials'):
+        budget_text+=f" 已列出 {len(budget['materials'])} 条物资需求；各项需求数量、库存抵扣量与未覆盖数量见 budget.materials，取得条件仍按各项来源核对。"
     statements=[{"kind":"delivery","status":status,"text":brief["message"]},
                 {"kind":"budget","status":"supported" if within is True else "refuted" if within is False else "unknown","text":budget_text}]
     for index,variant in enumerate(experiments or []):
-        measurement={key:variant.get('measurement',{}).get(key) for key in ('requested_operations','request_selections_verified','actual_changes','changed_state_fields','observation_scope','observed_subject','common_conditions','damage_observation','individual_contributions_measured','scope')}
+        measurement={key:variant.get('measurement',{}).get(key) for key in ('requested_operations','requested_config_controls','request_selections_verified','actual_changes','changed_state_fields','observation_scope','observed_subject','common_conditions','metric_observation','individual_contributions_measured','scope')}
         comparison=variant.get('comparison',{})
         notes=variant.get('errors',[])+variant.get('pending',[])
-        text='变体 '+str(variant.get('id'))+' ['+variant['status']+'] · /alternatives/'+str(index)+'：'+(measurement['scope'] or '未取得完整测量范围；失败或未测状态不能作为实验结果。')
-        text+=' 请求 '+json.dumps(measurement['requested_operations'],ensure_ascii=False)+'；实际变化 '+json.dumps(measurement['actual_changes'],ensure_ascii=False)
-        text+='；作用主体 '+json.dumps({'subject':measurement['observed_subject'],'damage':measurement['damage_observation']},ensure_ascii=False)+'；共同条件 '+json.dumps(measurement['common_conditions'],ensure_ascii=False)
+        pointer='/alternatives/'+str(index)
+        has_measurement=isinstance(variant.get('measurement'),dict)
+        observation=measurement['metric_observation'] or {}
+        context=observation.get('context',{});meaning=observation.get('meaning',{})
+        text='变体 '+str(variant.get('id'))+' ['+variant['status']+'] · '+pointer+'；测量 '+str(observation.get('formatted_fact') or '指标未测得')
+        text+='；指标面板归属 '+str(meaning.get('actor') or '未知')+'，选定技能引用 '+str(context.get('main_skill_ref') or '未知')
+        text+='；请求 '+json.dumps(measurement['requested_operations'],ensure_ascii=False)+'；实际差异字段 '+(str(measurement['changed_state_fields']) if measurement['changed_state_fields'] is not None else '未测得')
+        if measurement['requested_config_controls']:
+            labels=[]
+            for key,sides in measurement['requested_config_controls'].items():
+                control=sides['after'] or sides['before'] or {}
+                labels.append(key+'：'+(control.get('display_label') or control.get('label') or '原生含义未观测'))
+            text+='；请求配置控件 '+'、'.join(labels)
+        text+=('，完整对象/共同条件见 '+pointer+'/measurement') if has_measurement else ('；未取得测量，诊断见 '+pointer)
         text+='；原生算术比较 '+json.dumps(comparison,ensure_ascii=False)+'；错误/未测 '+json.dumps(notes,ensure_ascii=False)
+        audit=variant.get('readiness',{})
+        text+='；资源检查 '+json.dumps({key:audit[key].get('status','unknown') for key in ('execution_coverage','sustained_use','timeline') if isinstance(audit.get(key),dict)},ensure_ascii=False)
+        text+='。'+(measurement['scope'] or '未取得完整测量范围；失败或未测状态不能作为实验结果。')
         statements.append({'kind':'experiment','subject':variant.get('id'),'status':variant['status'],'pointer':'/alternatives/'+str(index),
                            'measurement':measurement,'comparison':comparison,'errors':variant.get('errors',[]),'pending':variant.get('pending',[]),'text':text})
     for row in (review or {}).get("objectives",[]):
@@ -1294,7 +1449,8 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
         statements.extend(skill_statements(calculation,name))
         statements.append(effect_statement(calculation,name))
         statements.extend(flask_statements(calculation,name))
-    audits=resource_audits if resource_audits is not None else {"candidate":readiness} if readiness else {}
+    audits=dict(resource_audits if resource_audits is not None else {"candidate":readiness} if readiness else {})
+    audits.update({'variant:'+row['id']:row['readiness'] for row in experiments or [] if 'readiness' in row})
     for name,audit in audits.items():
         snapshot_scopes=list(dict.fromkeys(row["scope"] for row in audit.get("resources",[]) if row.get("scope")))
         if snapshot_scopes:
@@ -1302,16 +1458,27 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                                "text":name+" · 资源快照范围："+" ".join(snapshot_scopes)})
         if audit.get("timeline"):
             statements.append({"kind":"timeline_scope","subject":name,"status":"observed",
-                               "text":name+" · 时间线测量范围："+audit["timeline"]["scope"]})
+                               "values":{"native_snapshot":audit["timeline"].get('native_snapshot')},
+                               "text":name+" · 时间线测量范围："+audit["timeline"]["scope"]+" 准备和战斗使用同一个 native_snapshot；文字中的保留、药剂或其他开关变化不会改变这些支付与回复。换状态须分别实算并核对衔接余额及储量上限。"})
         execution=audit.get("execution_coverage")
         if execution:
             statements.append({"kind":"execution_coverage","subject":name,**execution,
-                               "text":name+" · 整套动作执行覆盖："+execution["scope"]})
+                               "text":name+" · 整套动作执行覆盖 "+execution.get('status','unknown')+"；逐次支付安排 "+execution.get('payment_schedule_status','unknown')+"："+execution["scope"]})
         payments=audit.get("single_payments",[])
         if payments:
             counts=Counter(row["status"] for row in payments)
             statements.append({"kind":"single_payment","subject":name,"status":"refuted" if counts["refuted"] else "unknown" if counts["unknown"] else "supported",
                                "text":f"{name} · 独立单次支付：可支付 {counts['supported']} 项、不可支付 {counts['refuted']} 项、未测得 {counts['unknown']} 项。每项独立从满可用储量开始，不证明任意时点或连续动作可支付。"})
+        for payment in payments:
+            mean=payment.get('mean_use')
+            if not mean or payment.get('payment')==0 and mean.get('cost_per_second')==0: continue
+            def value(key): return f'{mean[key]:.10g}' if bx.finite_number(mean.get(key)) else '未知'
+            statements.append({'kind':'single_skill_mean','subject':name,'skill_ref':payment['skill_ref'],'actor':payment.get('actor'),
+                'resource_id':payment['resource_id'],'status':mean['status'],'values':mean,
+                'text':name+' · '+str(payment['skill_ref'])+' / '+str(payment.get('actor') or '主体未知')+' / '+payment['resource_id']+
+                       '：单技能原生费用 '+value('cost_per_second')+'/秒 − 当前固定净回复 '+value('fixed_net_regeneration_per_second')+
+                       '/秒 = 平均净消耗 '+value('net_drain_per_second')+'/秒（正值为消耗，负值为余量）；原生频率 '+value('native_action_rate')+
+                       ' 次/秒。未计回复 '+json.dumps(mean.get('excluded_recovery',[]),ensure_ascii=False)+'。'+mean['scope']})
         sustained=audit.get("sustained_use")
         if sustained:
             state=sustained["status"]
@@ -1320,6 +1487,25 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                            "refuted":"时间线中有无法支付或耗尽的时点。","unknown":"所列窗口支付尚未证实，具体费用/窗口缺口见时间线。"}
         timeline=audit.get("timeline") or {}
         phases=[("preparation",timeline.get("preparation") or {}),("combat",timeline)]
+        manual=audit.get('manual_actions') or {}
+        for phase,actions in (manual.get('windows') or {'usage':manual}).items():
+            if not actions or actions.get('status')=='not_requested': continue
+            details=({key:actions.get(key) for key in ('known_occupied_seconds','conflict_count','first_conflict','unknown_skill_refs')}
+                     if actions.get('basis')=='fixed_native_manual_intervals' else
+                     {key:actions.get(key) for key in ('known_manual_seconds_per_second','common_window','unknown_skill_refs')})
+            statements.append({'kind':'native_manual_actions','subject':name,'phase':phase,'status':actions['status'],'values':actions,
+                'text':name+' · '+phase+' · 原生手动动作检查 '+actions['status']+'：'+json.dumps(details,ensure_ascii=False)+
+                       '。支付与动作占用分别判断；只核本次固定原生动作模型，均频容量不证明逐次排程，未模拟完整实战或据此重算DPS。'})
+        for condition in audit.get('timing_conditions',[]):
+            mean=condition['interval_basis']=='declared_mean_rate'
+            interval_label='声明均频折算的平均间隔' if mean else '所列事件最短间隔'
+            termination=('平均间隔不证明实际最短间隔或单次结束时点；提前结束、已有次数或重置未测。' if mean else
+                f"若没有已储存次数或其他重置，上次增益须在施放后 {condition['required_early_end_within_seconds']:g} 秒内提前结束才可能衔接。")
+            statements.append({'kind':'native_timing_condition','subject':name,'phase':condition['phase'],'status':'unknown','values':condition,
+                'text':name+' · '+condition['phase']+' · '+condition['skill_ref']+'：原生标志为增益期间不恢复冷却；完整增益后的一次重新充能需 '+
+                    f"{condition['full_duration_recast_seconds']:g} 秒（完整持续分支最多 {condition['full_duration_recast_rate']:.10g} 次/秒），{interval_label} {condition['interval_seconds']:g} 秒。"+
+                    f"单次完整持续 {condition['native_timing']['duration_seconds']:g} 秒后仍有 {condition['native_timing']['cooldown_seconds']:g} 秒冷却空窗；完整周期内名义覆盖 {100*condition['native_timing']['duration_seconds']/condition['full_duration_recast_seconds']:.10g}%，可再次施放不表示无缝覆盖。"+
+                    termination+'先落实已核分支并重算；条件复核记录实际可用退路，未完成操作保留缺口。支付通过不认证动作或持续覆盖。'})
         for phase,phase_timeline in phases:
             skills={skill.get("skill_ref"):skill for skill in calculations.get(name,{}).get("active_skills",[])}
             for ref,schedule in phase_timeline.get("skill_schedules",{}).items():
@@ -1331,24 +1517,43 @@ def publication(status, errors, pending, budget, calculations, *, readiness=None
                 totals=schedule.get('scheduled_payments',{})
                 fees='；按声明动作的费用合计 '+ '、'.join(resource+' '+(f'{total:g}' if bx.finite_number(total) else '未测得') for resource,total in totals.items()) if totals else ''
                 times='；首次 '+(f"{schedule['first_at']:g} 秒" if bx.finite_number(schedule.get('first_at')) else '未安排')+'，末次 '+(f"{schedule['last_at']:g} 秒" if bx.finite_number(schedule.get('last_at')) else '未安排')
+                position=schedule.get('native_duration_at_window_end')
+                if position:
+                    times+=f"；窗口终点距末次声明事件 {position['elapsed_seconds']:g} 秒，以该事件为原生时长起点的名义剩余 {position['nominal_remaining_seconds']:g} 秒（仅时点算术，不证明效果实际启动或覆盖）"
                 relation='；关联判断 '+str(schedule['claim_id']) if schedule.get('claim_id') else ''
                 statements.append({"kind":"skill_schedule","calculation":name,"phase":phase,"skill_ref":ref,"status":"observed","values":values,
-                                   "text":f"{name} · {phase} · {label} [{ref}]：{duration:g} 秒内安排 {count} 次，窗口平均 {count/duration:.10g} 次/秒；当前原生频率 "+(f"{native_rate:.10g} 次/秒" if bx.finite_number(native_rate) else "未知")+times+fees+relation+"。每次事件只是一笔所列支付，不能代替持续施放、实际执行或效果持续证明。"})
+                                   "text":f"{name} · {phase} · {label} [{ref}]：{duration:g} 秒内安排 {count} 次，窗口平均 {count/duration:.10g} 次/秒；当前原生计费频率 "+(f"{native_rate:.10g} 次/秒" if bx.finite_number(native_rate) else "未知")+times+fees+relation+'；本次动作定义 '+str(skill.get('description') or '未提供')+"。每次事件只是一笔所列支付，不能代替持续施放、实际执行或效果持续证明。"})
             for resource in phase_timeline.get("resources",[]):
                 state=resource["status"]
-                window={"at":resource["duration_seconds"],"initial":resource["initial"],"final":resource.get("final"),"last_event_at":resource["trace"][-1]["at"] if resource["trace"] else None,"gaps":resource["gaps"],
+                window={"at":resource["duration_seconds"],"initial":resource["initial"],"minimum_balance":resource.get("minimum_balance"),"final":resource.get("final"),"last_event_at":resource["trace"][-1]["at"] if resource["trace"] else None,"gaps":resource["gaps"],
                         "repeat":phase_timeline.get("repeat"),"event_count":len(phase_timeline["events"]) if isinstance(phase_timeline.get("events"),list) else None,
                         "scheduled_payment_total":resource.get('scheduled_payment_total')}
                 values=f" 窗口起点 {window['initial']:g}，{window['at']:g} 秒终点 {window['final']:g}；终点包含最后动作后的固定净回复。" if bx.finite_number(window["initial"]) and bx.finite_number(window["final"]) else " 未测得完整窗口终点；不能用最后一次动作储量替代。"
+                values+=f" 最低余额 {window['minimum_balance']:g}。" if bx.finite_number(window['minimum_balance']) else " 最低余额未测得。"
                 if window["event_count"] is not None: values+=f" 本阶段记录 {window['event_count']} 次动作。"
                 if bx.finite_number(window["last_event_at"]): values+=f" 最后动作在 {window['last_event_at']:g} 秒。"
                 values+=f" 按声明动作的费用合计 {window['scheduled_payment_total']:g}。" if bx.finite_number(window['scheduled_payment_total']) else " 动作费用合计未测得。"
                 statements.append({"kind":"resource","calculation":name,"phase":phase,"subject":resource["resource_id"],"status":state,
                                    "window":window,"text":name+" · "+{"preparation":"战前准备","combat":"战斗"}[phase]+" · "+resource["resource_id"]+"："+resource_messages[state]+values})
     primary={'delivery','budget','objective_review','declared_checks','native_identity','native_build','damage_subject','experiment'}
+    headline={'delivery','budget','execution_coverage','sustained_use','timeline_scope','native_timing_condition','native_manual_actions'}
+    current=[row['text'] for row in statements if row['kind'] in {'delivery','budget'}]
+    current += [effect_statement(calculation,name,compact=True)['text'] for name,calculation in calculations.items()]
+    variant_subjects={'variant:'+row['id'] for row in experiments or []}
+    current += [row['text'] for row in statements if row['kind'] in headline-{'delivery','budget'} and row.get('subject') not in variant_subjects]
+    current += [row['text'] for row in measurements] if keys is not None else []
+    phase_facts=[row for row in statements if row.get('calculation') not in variant_subjects and
+                 (row['kind']=='resource' or row['kind']=='skill_schedule' and row['values'].get('native_duration_at_window_end'))]
+    phase_facts.sort(key=lambda row:row['kind']!='resource')
+    current += [row['text'] for row in phase_facts]
+    phase_ids={id(row) for row in phase_facts}
     return {"delivery_brief":brief,"statements":statements,"measurements":measurements,"declared_checks":verified,"resource_audits":audits,"capabilities":resources.capabilities(),
-            "facts_summary":"\n\n".join([s['text'] for s in statements if s['kind'] in primary]+[m['text'] for m in measurements]+[s['text'] for s in statements if s['kind'] not in primary]),
+            "facts_summary":"\n\n".join(current+[s['text'] for s in statements if s['kind'] in primary-headline]+([m['text'] for m in measurements] if keys is None else [])+[s['text'] for s in statements if s['kind'] in headline and s.get('subject') in variant_subjects]+[s['text'] for s in statements if s['kind'] not in primary|headline and id(s) not in phase_ids]),
             "scope":scope if scope is not None else "仅由本次实际状态和原生值生成；主观取舍由模型另作说明，计算与回读不等于可取得或实战保证。"}
+
+
+def task_deliverable(completion):
+    return completion.get("status")=="scoped_result" and completion.get("errors")==[] and completion.get("pending")==[]
 
 
 def delivery_actions(outcome,input_file,details_file,review_file,details_pointer="",*,report_exported=False,calculation=None):
@@ -1356,6 +1561,8 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
     shared={"input_file":str(input_file),"details_file":str(details_file)}
     if Path(input_file).is_file(): shared["input_revision"]=bx.digest(Path(input_file).read_bytes())
     if calculation: shared["calculation"]=calculation
+    edit_arguments={"kind":"route" if details_pointer else "plan","file":str(input_file),
+                    **({"if_sha256":shared["input_revision"]} if "input_revision" in shared else {})}
     read_only=outcome.get("task_completion",{}).get("kind")=="read_only_review"
     scoped=outcome.get("task_completion",{}).get("kind") in {"read_only_review","build_plan","leveling_plan"}
     completion_pointer=details_pointer+"/task_completion" if scoped else details_pointer
@@ -1381,10 +1588,11 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
              and not (row.get("code")=="goal_claim_unresolved" and isinstance(row.get("actual"),dict) and row["actual"].get("claim_id") in ids)]
     if outcome["errors"] or repairs:
         actions.append({**shared,"action":"repair_input","pointer":completion_pointer+("/diagnostics" if repairs else "/errors"),
+                        "edit_arguments":edit_arguments,
                         "total":len(outcome.get("diagnostics",[])) if repairs else len(outcome["errors"]),
                         "repair_count":len(repairs),"error_count":len(outcome["errors"]),
                         **({"errors_pointer":completion_pointer+"/errors"} if outcome["errors"] else {}),
-                        "instruction":"用 view 分页读取 pointer 的原诊断和 source_diagnostic，按实际字段、对象及来源修订原方案；errors_pointer 单列对象错误，不能代替引用返修。保留用户目标所需功能，不能靠删除有效组件消除错误。"})
+                        "instruction":"view 读取 pointer 原诊断及 source_diagnostic；核实际源字段，编写 changes，沿 edit_arguments 调 edit 保存，再按 calculation 重算。errors_pointer 单列对象错误。保留目标所需功能，真实引用和判断缺口逐项修复。"})
     if outcome.get("reference_contract"):
         actions.append({**shared,"action":"view","file":str(details_file),"pointer":details_pointer+"/reference_contract",
                         "instruction":"读取本次原生证据根和字段前缀；view 的输出文件路径与 native 引用根分别使用。"})
@@ -1402,28 +1610,28 @@ def delivery_actions(outcome,input_file,details_file,review_file,details_pointer
         actions.append({**shared,'action':'review_evidence_scope','claims':declarations,'reference_contract_pointer':details_pointer+'/reference_contract',
                         'instruction':'这些判断目前仅引用用户声明。模型先区分意图记录与计算/机制解释；需要观测的内容沿当前原生或已读资料引用，数值和名称用返回的 text_templates。这是来源范围反馈，不自动否定偏好或裁定文字含义。'})
     if claim_reviews:
-        actions.append({**shared,"action":"review_claims","claim_ids":ids,"changes":{"review_claims":ids},"diagnostics":claim_reviews,
+        actions.append({**shared,"action":"review_claims","claim_ids":ids,"edit_arguments":edit_arguments,"changes":{"review_claims":ids},"diagnostics":claim_reviews,
                         "instruction":"先逐条核对这些判断与当前事实，修正源文字，再用 edit 提交 changes 并重算。绑定由程序生成；完整结果的最终复核在此后单独提交。"})
     unsupported=[value for value in outcome["pending"] if value.startswith(("capability:","native:"))]
     dependencies=[value for value in outcome["pending"] if not value.startswith(("final_review:","capability:","native:"))]
     if dependencies:
         brief=facts.delivery_brief(outcome["status"],[],dependencies)
         actions.append({**shared,"action":"assess_dependencies","pointer":completion_pointer+"/pending","total":len(dependencies),"categories":brief["unresolved_categories"],
-                        "instruction":("只处理 task_completion 中本次评审的输入、引用、绑定与覆盖缺口；原对象的完整错误和未知状态继续在 character_readiness 保留。反驳或证据不足可以完成评审，不要求修改原角色。" if read_only else "按 task_completion 读取本次未完成工作，保留 character_readiness 全部执行缺口。修复真实矛盾与缺失输入；未来条件逐项关联当前复核的 condition_reviews，记录真实取得/执行条件及退路，不能删 pending、改小用户目标或用条件盖过已知错误。" if scoped else "按类别读取完整缺口，核对最终对象与每项用户目标，补具体来源、物资和使用条件。目标未达到就继续设计；确无法验证的写明未解决，不生成肯定结论。")})
+                        **({"input_pointer":"/assessment/unresolved"} if any(value.startswith("assessment:") for value in dependencies) else {}),
+                        "instruction":("只处理 task_completion 中本次评审的输入、引用、绑定与覆盖缺口；原对象的完整错误和未知状态继续在 character_readiness 保留。反驳或证据不足可以完成评审，不要求修改原角色。" if read_only else "按 task_completion 读取本次未完成工作，保留 character_readiness 全部执行缺口。修复真实矛盾与缺失输入；未来条件逐项关联当前复核的 condition_reviews，记录真实取得/执行条件及退路，不能删 pending、改小用户目标或用条件盖过已知错误。" if scoped else "按类别读取完整缺口，核对最终对象与每项用户目标，补具体来源、物资和使用条件。目标未达到就继续设计；确无法验证的写明未解决，不生成肯定结论。")+
+                        (" assessment:来自 input_file 的 input_pointer；逐项复核该源数组，已完成设计的未来条件迁入 conditions/condition_reviews，未完成工作保留。修源后重算，结果 pending 不可直接编辑。" if any(value.startswith("assessment:") for value in dependencies) else "")})
     if unsupported:
         actions.append({**shared,"action":"inspect_capability","subjects":unsupported,"capabilities":resources.capabilities(),
                         "instruction":"先按当前接口能力核对缺口。未支持的机制不能靠补输入变成已测量；模型决定调整方案、取得其他可核实证据或保留明确条件。"})
     if any(value.startswith("final_review:") for value in outcome["pending"]) or scoped and outcome["pending"]:
         actions.append({**shared,"action":"review_current_result","review_file":str(review_file),
                         "user_basis_pointer":"/facts/user_goal_sources","objective_pointer":"/facts/objective_coverage","dependencies_pointer":"/facts/pending","method_pointer":"/check","template_pointer":"/review_template",
-                        "instruction":"将会改变当前对象、数值或判断的修订落实并重算；读取当次包的原话声明、目标拆分、全部依赖及 check 复核方法，先审方法再逐项目标判断，填写源 assessment.review。保存复核后必须按 calculation 再次 evaluate/route，再 export 配装；不能直接沿用旧候选。诊断所保留的原对象错误和未测项仍明确记录。判断列表完整不代表用户目标完成；不得自动回填 token。"})
-    if outcome.get('status')=='blocked' and isinstance(outcome.get('publication'),dict) and not details_pointer and not report_exported:
-        actions.append({**shared,'action':'export','purpose':'diagnostic_report','delivery_status':'blocked','file_exported':False,
-                        'instruction':'保留当前错误和未测状态，先沿当次 claims/review 核对解释，再用现有 export 生成正式诊断 HTML。无需为了诊断修改用户要求保留的角色；blocked 不导出交付 XML，因果及目标结论仍按当前证据审查。'})
-    if read_only and not report_exported and outcome["status"]!="blocked":
+                        "edit_arguments":{"kind":"route" if details_pointer else "plan","file":str(input_file),"review_from":str(details_file)},
+                        "instruction":"修订落实并重算后，读原话、实际对象及 check，按 review_template 写完整逐项判断与依据，用 edit --changes 配合 edit_arguments 提交；程序只绑定本次计算标识，不代写判断。unresolved 留本轮未完成复核，unimplemented 留必要设计缺口，未来取得/训练/执行写 conditions 及 condition_reviews。随后按 calculation 重算，再 export 配装。完整字段不证明目标已实现。"})
+    if read_only and not report_exported and task_deliverable(outcome.get("task_completion",{})):
         actions.append({**shared,"action":"export","purpose":"read_only_report","delivery_status":outcome["status"],"xml_exported":False,
-                        "instruction":"沿当前 export 最终复算，交付只读 HTML 和证据；draft 明确评审尚未闭合，scoped_result 仅表示所列评审完成，原角色状态继续保留。"})
-    if outcome.get("task_completion",{}).get("kind")=="build_plan" and not report_exported and outcome["status"]!="blocked":
+                        "instruction":"沿当前 export 最终复算，交付只读 HTML 和证据；scoped_result 仅表示所列评审完成，原角色状态继续保留。"})
+    if outcome.get("task_completion",{}).get("kind")=="build_plan" and not report_exported and task_deliverable(outcome["task_completion"]):
         actions.append({**shared,"action":"export","purpose":"conditional_plan","delivery_status":outcome["status"],
                         "instruction":"沿当前 export 最终复算并交付 XML、HTML 与核验文件。task_completion 表示具体方案交付范围；character_readiness 的条件和未知状态仍保留，不能承诺已经取得或实战达标。"})
     return actions
@@ -1589,10 +1797,11 @@ def record_command_failure(args, exc):
 def require_read_only_plan(intent, plan):
     """A review can analyse experiments, but its assessed role cannot be edited."""
     if intent.get("task_kind")!="read_only_review": return
+    details={'intent_fields':{'/task_kind':input_contract('intent')['nested_fields']['task_kind']}}
     for key in ("operations","template_xml","scenario","measurement"):
-        bx.require(not plan.get(key),"只读评审不能改动角色；实验使用 probe，评审保留原对象。",code="read_only_mutation",location="/"+key,actual=plan.get(key))
+        bx.require(not plan.get(key),"只读评审不能改动角色；实验使用 probe，评审保留原对象。",code="read_only_mutation",location="/"+key,actual=plan.get(key),details=details)
     bx.require(plan.get("mode")=="refine","只读评审使用 refine 空操作计划。",location="/mode")
-    bx.require(not intent.get("scenario") and intent.get("baseline_main_group") is None,"只读评审不能写入共同条件或改选主技能。",code="read_only_mutation",location="/scenario")
+    bx.require(not intent.get("scenario") and intent.get("baseline_main_group") is None,"只读评审不能写入共同条件或改选主技能。",code="read_only_mutation",location="/scenario",details=details)
 
 
 def read_only_completion(original, document, materialization, coverage, claims, review):
@@ -1629,13 +1838,28 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
     conclusions={row["claim_id"]:row for row in review["conclusions"]}
     objectives={row["objective_id"]:row for row in review["objectives"]}
     def assessed(row):
-        return (row is not None and row.get("reference_status")=="resolved" and row["verdict"] in {"supported","partial"}
-                and (row["verdict"]!="partial" or bool(row["conditions"] or row["unimplemented"])))
+        return (row is not None and row.get("reference_status")=="resolved" and not row["unimplemented"]
+                and row["verdict"] in {"supported","partial"} and (row["verdict"]!="partial" or bool(row["conditions"])))
     handled=set()
+    goal_diagnostics=[]
+    if kind=="leveling_plan" and not any(stage.get("calculation",{}).get("native_calculated") is True
+                                        and stage["calculation"].get("errors")==[]
+                                        for stage in review.get("facts",{}).get("stages",[])):
+        task_pending.append("native:snapshot:missing")
+        goal_diagnostics.append({"code":"route_snapshot_missing","action":"edit_input","location":"/stages",
+            "expected":"至少一个实际原生计算通过的完整阶段",
+            "message":"选择承担最低终点或关键推进的阶段，完成其 snapshot 装备、技能、天赋与场景并重算；key_transition=false 不代替实际对象。"})
     if not coverage: task_pending.append("plan_objective:missing")
     for row in coverage:
         key=row["objective_id"]
-        valid=(row["basis_status"]=="user_declared" and row["claim_ids"] and assessed(objectives.get(key))
+        objective=objectives.get(key)
+        user_only=bool(objective and objective.get("evidence_scope",{}).get("user_declarations_only"))
+        if assessed(objective) and user_only:
+            goal_diagnostics.append({"code":"objective_observation_missing","action":"revise_conclusion",
+                "location":"/assessment/review/objectives","required_subject":"objective:"+key,
+                "actual":{"objective_id":key,"evidence_refs":objective.get("evidence_refs",[])},
+                "message":"原话只证明目标或偏好；用本次具体对象、观测或适用规则评审目标是否达成，缺少必要设计则继续完成。来源类型不认证因果。"})
+        valid=(row["basis_status"]=="user_declared" and row["claim_ids"] and assessed(objective) and not user_only
                and any(assessed(conclusions.get(identifier)) for identifier in row["claim_ids"]))
         if valid:
             handled.add("objective:"+key)
@@ -1644,26 +1868,37 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
     for claim in claims:
         if claim["missing_evidence"] or not claim["evidence_refs"] or claim["check_status"] in {"refuted","unknown"}:
             task_pending.append("plan_claim:"+claim["claim_id"]+":binding_or_check")
+        if conclusions.get(claim["claim_id"],{}).get("unimplemented"):
+            task_pending.append("plan_claim:"+claim["claim_id"]+":unimplemented")
     # These describe missing current work, rather than future execution facts.
-    hard=("permission:","metric:","claim_check:","claim_revision:","final_review:","entry_check:",
+    hard=("permission:","metric:","claim_check:","claim_revision:","final_review:","entry_check:","entry_condition:",
           "snapshot:","snapshot_assumptions:","native:snapshot:","native:equipment:","native:socket_capacity:",
-          "native:gem_level:","native:links:","native:item_generation:","level_requirement:","level:","usage:","condition:measurement:")
+          "native:gem_level:","native:links:","native:item_generation:","level_requirement:","level:","usage:","condition:measurement","config:scenario","goal_assessment")
     blockers=set()
     stage_prefixes=sorted(("stage:"+row["stage_id"]+":" for row in review.get("facts",{}).get("stages",[])),key=len,reverse=True)
     for subject in pending:
         prefix=next((value for value in stage_prefixes if subject.startswith(value)),None)
         local=subject[len(prefix):] if prefix is not None else subject
         if local.startswith(hard): blockers.add(subject)
-    # Only native-met local dependencies can be reviewed as future conditions.
-    # Keep entry_checks/has_claim and the original character pending unchanged.
+    # Real current claim references may retain reviewed future conditions.
+    # Numeric checks and snapshot assumptions still require native-met stages.
     conditional_candidates={}
-    def current_claim(identifier,subject):
+    def current_claim(identifier,subject=None):
         claim=indexed.get(identifier)
-        return (claim is not None and subject in claim["subjects"] and assessed(conclusions.get(identifier))
+        return (claim is not None and (subject is None or subject in claim["subjects"]) and assessed(conclusions.get(identifier))
                 and claim["evidence_refs"] and not claim["missing_evidence"]
                 and claim["check_status"] not in {"refuted","unknown"})
+    def current_condition(row):
+        return (row.get("reference_status")=="resolved" and row["conditions"] and row["fallback"] and row["evidence_refs"]
+                and all(identifier in indexed and assessed(conclusions.get(identifier))
+                        and not indexed[identifier]["missing_evidence"] and indexed[identifier]["check_status"] not in {"refuted","unknown"}
+                        for identifier in row["claim_ids"]))
     for stage in review.get("facts",{}).get("stages",[]):
         sid=stage["stage_id"];calculation=stage.get("calculation",{})
+        for identifier in stage.get("entry_conditions",[]):
+            subject="entry_condition:"+sid+":"+identifier
+            if subject in blockers and current_claim(identifier,"stage:"+sid):
+                conditional_candidates[subject]={identifier}
         if calculation.get("native_calculated") is not True or calculation.get("errors")!=[]: continue
         for check in calculation.get("entry_checks",[]):
             subject="stage:"+sid+":entry_check:stage:"+sid+":"+check["check_id"]
@@ -1672,10 +1907,11 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
                 conditional_candidates[subject]={identifier}
         assumptions=stage.get("snapshot_assumptions",[])
         subject="snapshot_assumptions:"+sid
-        if subject in blockers and assumptions and all(current_claim(identifier,"snapshot:"+sid) for identifier in assumptions):
+        if subject in blockers and assumptions and all(current_claim(identifier) for identifier in assumptions):
             conditional_candidates[subject]=set(assumptions)
     scope=review.get("facts",{}).get("delivery_scope",{})
     exclusions=[]
+    excluded_errors=[]
     scope_diagnostics=[]
     if scope.get("kind")=="snapshot_comparison":
         scope_claims=[claim for claim in claims if current_claim(claim["claim_id"],"delivery_scope")
@@ -1691,24 +1927,52 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
             exclusions=[subject for subject in scope["unchanged_group_usage"] if subject in pending]
             blockers.difference_update(exclusions)
             handled.update(exclusions)
-    task_diagnostics=list(scope_diagnostics)
+            scope_ids={claim['claim_id'] for claim in scope_claims}
+            for issue in scope.get('inherited_usage_errors',[]):
+                sources=[row for row in diagnostics if row.get('message')==issue['error']]
+                reviewed=next((row for row in review.get('condition_reviews',[]) if current_condition(row)
+                               and issue['subject'] in row['subjects'] and scope_ids.intersection(row['claim_ids'])
+                               and set(issue['evidence_refs'])<=set(row['evidence_refs'])),None)
+                if reviewed and sources and all(row.get('category')=='usage' for row in sources):
+                    excluded_errors.append({**issue,'condition_review':reviewed})
+                    exclusions.append(issue['subject']);handled.add(issue['subject'])
+                else:
+                    scope_diagnostics.append({'code':'comparison_scope_review_missing','action':'revise_conclusion',
+                        'location':'/assessment/review/condition_reviews','required_subject':issue['subject'],
+                        'expected':{'subjects':[issue['subject']],'claim_ids':sorted(scope_ids),'evidence_refs':issue['evidence_refs']},
+                        'actual':issue,
+                        'message':'本次未改非主组的支付事实与原角色相同。模型按原要求判断它是否影响局部目标，当前 condition_reviews 关联范围判断、原始及当前支付依据；有关、改变或未复核的问题仍阻止交付。完整角色错误不会消失。'})
+    task_diagnostics=goal_diagnostics+scope_diagnostics
+    resolved_inputs=set()
+    unresolved_inputs=set()
     for row in diagnostics:
         if row.get("action") in {"edit_input","review_claims","repair_evidence","record_user_basis","link_claim","revise_conclusion","review_configuration"}:
             # A source uncertainty can be reviewed as a condition; missing goal structure cannot.
             actual=row.get("actual")
             claim_id=actual.get("claim_id") if isinstance(actual,dict) else actual if isinstance(actual,str) else None
-            if row.get("code") in {"goal_claim_unresolved","usage_claim_unresolved"} and assessed(conclusions.get(claim_id)): continue
             subject=row.get("required_subject") or row.get("subject")
-            if row.get("action")=="review_configuration" and any(subject in claim["subjects"] and assessed(conclusions.get(claim["claim_id"])) for claim in claims): continue
+            dependency=subject
+            resolved=row.get("code") in {"goal_claim_unresolved","usage_claim_unresolved"} and current_claim(claim_id,None if row.get("code")=="goal_claim_unresolved" else subject)
+            if row.get("action")=="review_configuration":
+                reviewed_ids={claim["claim_id"] for claim in claims if current_claim(claim["claim_id"],subject)}
+                if subject and subject.startswith("configuration:"):
+                    name=subject.removeprefix("configuration:")
+                    dependency="config:scenario" if name=="candidate" else "config:scenario:"+name.removeprefix("stage:")
+                    resolved=facts.configuration_reviewed(claims,name,reviewed_ids=reviewed_ids)
+                elif subject=="measurement":
+                    dependency="condition:measurement"
+                    resolved=bool(reviewed_ids)
+            if resolved:
+                resolved_inputs.add(dependency)
+                continue
+            unresolved_inputs.add(dependency)
             task_diagnostics.append(row)
             task_pending.append("plan_input:"+row.get("code","unresolved"))
+    handled.update(resolved_inputs-unresolved_inputs)
+    blockers.difference_update(handled)
     conditions=[]
     for row in review.get("condition_reviews",[]):
-        valid=(row.get("reference_status")=="resolved" and row["conditions"] and row["fallback"] and row["evidence_refs"]
-               and all(identifier in indexed and assessed(conclusions.get(identifier))
-                       and not indexed[identifier]["missing_evidence"] and indexed[identifier]["check_status"] not in {"refuted","unknown"}
-                       for identifier in row["claim_ids"]))
-        if valid:
+        if current_condition(row):
             accepted=[]
             for subject in row["subjects"]:
                 if subject in conditional_candidates and conditional_candidates[subject]<=set(row["claim_ids"]):
@@ -1718,9 +1982,10 @@ def plan_completion(kind, errors, pending, diagnostics, coverage, claims, review
             if accepted: conditions.append({**row,"subjects":accepted})
     task_pending.extend(subject for subject in pending if subject not in handled or subject in blockers)
     task_pending=list(dict.fromkeys(task_pending))
-    return {"kind":kind,"status":"blocked" if errors else "draft" if task_pending else "scoped_result",
-            "errors":list(errors),"pending":task_pending,"diagnostics":task_diagnostics+review["diagnostics"],"conditions":conditions,"scope_exclusions":exclusions,
-            "scope":("本次原生快照比较；实际未改技能组的整套使用安排不属于本次交付，仍保留在角色未就绪项。不认证连续操作或实战表现。" if scope.get("kind")=="snapshot_comparison" else "本次具体条件方案及逐项目标的规划交付；完整角色/阶段未就绪项保留。取得、成长与实际执行条件尚未发生，不表示角色已就绪或游戏效果已验证。")}
+    task_errors=[error for error in errors if error not in {row['error'] for row in excluded_errors}]
+    return {"kind":kind,"status":"blocked" if task_errors else "draft" if task_pending else "scoped_result",
+            "errors":task_errors,"pending":task_pending,"diagnostics":task_diagnostics+review["diagnostics"],"conditions":conditions,"scope_exclusions":exclusions,"scope_excluded_errors":excluded_errors,
+            "scope":("本次原生快照比较；已复核的未改非主组操作及相同支付错误另保留在角色未就绪项。不认证支付、连续操作或实战表现。" if scope.get("kind")=="snapshot_comparison" else "本次具体条件方案及逐项目标的规划交付；完整角色/阶段未就绪项保留。取得、成长与实际执行条件尚未发生，不表示角色已就绪或游戏效果已验证。")}
 
 
 def assess_candidate(original, document, baseline, result, intent, plan, evidence_folder, intent_evidence_folder=None, *, root=None, crafted_items=()):
@@ -1747,13 +2012,40 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     errors, warnings, native_gaps = mechanical_issues(document, result, intent)
     mechanical_errors = list(errors)
     equipment=equipment_changes(original,document,baseline,result)
-    constraint_errors, constraint_pending = check_constraints(original, document, baseline, result, intent, plan,equipment)
+    constraint_errors, constraint_pending = check_constraints(original, document, baseline, result, intent, plan,equipment,original_native=unmeasured)
     # Permission and absent native measurements cannot be supplied by a model conclusion.
     constraint_pending = [p for p in constraint_pending if p.startswith(("permission:", "metric:")) or not facts.has_claim(claims,p)]
     errors += constraint_errors
     audit = resources.assess(result, intent, plan, claims)
     errors += audit["errors"]
     warnings += audit["warnings"]
+    delivery_scope={"kind":intent.get("delivery_scope","execution_plan"),"unchanged_group_usage":[],"inherited_usage_errors":[],
+                    "user_basis":intent.get("constraint_sources",{}).get("/delivery_scope")}
+    if delivery_scope["kind"]=="snapshot_comparison" and unmeasured is not None:
+        before=engine.character_state(unmeasured)["gems"]
+        after=engine.character_state(result)["gems"]
+        original_refs={skill.get("skill_ref") for skill in unmeasured.get("active_skills",[])}
+        for skill in result.get("active_skills",[]):
+            ref=skill.get("skill_ref")
+            if not ref or ref not in original_refs or skill.get("is_main"): continue
+            group=skill.get("group")
+            if type(group) is not int: continue
+            old=[gem for gem in before if gem["group"]==group]
+            new=[gem for gem in after if gem["group"]==group]
+            if old and old==new: delivery_scope["unchanged_group_usage"].append("usage:"+ref)
+        original_payments={(row['skill_ref'],row['resource_id']):row for row in resources.single_payments(unmeasured)}
+        for index,diagnostic in enumerate(audit.get('diagnostics',[])):
+            payments=diagnostic.get('payment_facts',[])
+            if not payments or diagnostic.get('category')!='usage': continue
+            previous=[{key:original_payments.get((row['skill_ref'],row['resource_id']),{}).get(key) for key in row} for row in payments]
+            unchanged=(previous==payments and unmeasured.get('resource_rules')==result.get('resource_rules')
+                       and all('usage:'+str(row['skill_ref']) in delivery_scope['unchanged_group_usage'] for row in payments))
+            diagnostic.update(original_payment_facts=previous,inherited_from_original=unchanged)
+            if unchanged:
+                delivery_scope['inherited_usage_errors'].append({'subject':'delivery_scope:inherited_usage_error:'+str(index),
+                    'error':diagnostic['message'],'affected_skills':[row['skill_ref'] for row in payments],
+                    'evidence_refs':[f'native:resources#/diagnostics/{index}','native:original#/stats'],
+                    'scope':'原生单次支付及储量与原角色相同、技能组未改且不是当前主攻；仍须模型按真实目标复核是否无关，不证明支付或整套角色可执行。'})
     context=comparison_context(baseline,result)
     labels={'level':'角色等级','class':'职业','main_skill':'主技能口径','config_values':'战斗配置','effects':'当前原生技能效果或药剂开关','config_switches':'两侧已观察的配置开关'}
     comparison_notes=[labels[key]+'不同。' for key in context['changes']]
@@ -1779,6 +2071,7 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     if budget["over_budget"]: errors.append("已知采购成本下界超过用户预算。")
     warnings += budget["warnings"]
     pending = native_gaps + constraint_pending + audit["pending"] + coverage_pending + generation['pending']
+    pending += [row['subject'] for row in delivery_scope['inherited_usage_errors']]
     scene_diagnostics=facts.configuration_diagnostics(claims,{"candidate":result})
     if scene_diagnostics: pending.append("config:scenario")
     measurement=plan.get("measurement",{})
@@ -1795,32 +2088,16 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
     pending += ["claim_revision:"+claim["claim_id"] for claim in claims if any(d["code"] in {"claim_binding_stale","claim_binding_missing"} for d in claim["diagnostics"])]
     pending += ["claim_check:"+claim["claim_id"] for claim in claims if claim["check_status"] in {"refuted","unknown"}]
     pending += ["material:"+value for value in budget["unresolved"]]
-    if budget["status"] in {"unknown", "uncertain_range"}: pending.append("budget")
+    if intent.get("budget") is not None and budget["status"] in {"unknown", "uncertain_range"}: pending.append("budget")
     if intent.get("budget") and budget["high"] > intent["budget"]["amount"]: pending.append("budget:upper_bound")
     for item in plan.get("operations", {}).get("items", []):
         if not facts.has_claim(claims, "legality:item:"+str(item["id"])): pending.append("legality:item:"+str(item["id"]))
-    for key in plan.get("scenario", {}):
-        if key not in intent.get("scenario", {}) and not facts.has_claim(claims,"config:"+key): pending.append("config:"+key)
     assessment = plan.get("assessment", {})
     goal_diagnostics=facts.goal_review_diagnostics(assessment,claims)
     if goal_diagnostics: pending.append("goal_assessment")
     pending += ["assessment:"+v for v in assessment.get("unresolved", [])]
     version = facts.version_fact(intent.get("version_source"), intent.get("game_version"), intent["league"], evidence_folder / ".poe-evidence", result["engine_fingerprint"])
     if version["status"] != "source_observed": pending.append("version:target")
-    delivery_scope={"kind":intent.get("delivery_scope","execution_plan"),"unchanged_group_usage":[],
-                    "user_basis":intent.get("constraint_sources",{}).get("/delivery_scope")}
-    if delivery_scope["kind"]=="snapshot_comparison" and unmeasured is not None:
-        before=engine.character_state(unmeasured)["gems"]
-        after=engine.character_state(result)["gems"]
-        original_refs={skill.get("skill_ref") for skill in unmeasured.get("active_skills",[])}
-        for skill in result.get("active_skills",[]):
-            ref=skill.get("skill_ref")
-            if not ref or ref not in original_refs or skill.get("is_main"): continue
-            group=skill.get("group")
-            if type(group) is not int: continue
-            old=[gem for gem in before if gem["group"]==group]
-            new=[gem for gem in after if gem["group"]==group]
-            if old and old==new: delivery_scope["unchanged_group_usage"].append("usage:"+ref)
     review, review_pending = facts.final_review({"intent": intent, "plan": plan}, evidence, claims,
         {"baseline": calculation_facts(baseline, claims), "candidate": calculation_facts(result, claims),
          "resources": audit, "reference_contract":references, 'materialization':materialization, "materials": requirements, "budget": budget, "objective_coverage":coverage, "equipment_changes":equipment,"comparison":comparison,"comparison_notes": comparison_notes,"comparison_context":context,
@@ -1873,6 +2150,11 @@ def assess_candidate(original, document, baseline, result, intent, plan, evidenc
         text="执行条件 · "+"、".join(row["subjects"])+"："+"；".join(row["conditions"])+"；退路或执行时点："+row["fallback"]
         published["statements"].append({"kind":"plan_condition",**row,"text":text})
         published["facts_summary"]+='\n\n'+text
+    for row in completion.get('scope_excluded_errors',[]):
+        current_review=row['condition_review']
+        text='仅本次比较范围另保留角色问题：'+row['error']+' 本次模型范围判断及条件：'+'；'.join(current_review['conditions'])+'；退路：'+current_review['fallback']+'。当前复核不以此认证支付、动作或整套就绪。'
+        published['statements'].append({'kind':'comparison_scope_exclusion',**row,'text':text})
+        published['facts_summary']+='\n'+text
     published['facts_summary']+='\n'+change_text
     return {"status":status,"task_completion":completion,"character_readiness":character_readiness,"delivery_brief":published["delivery_brief"],"publication":published, "errors":errors,"pending":pending,"warnings":list(dict.fromkeys(warnings)),
             "validation":{"mechanical":"failed" if mechanical_errors else "unknown" if native_gaps else "passed",
@@ -1953,7 +2235,7 @@ def evaluate(args):
     delivery=run/"output"/args.name/"delivery.json"
     if delivery.is_file():
         write_json(delivery,{"file_exported":False,"status":outcome["status"],"candidate":args.name,"reason":"superseded_by_evaluation"})
-    response={"candidate":str(destination),"evaluation_file":str(destination/"evaluation.json"),"status":outcome["status"],"task_completion":outcome["task_completion"],"character_readiness":outcome["character_readiness"],"errors":outcome["errors"],"pending":outcome["pending"],"warnings":outcome["warnings"],
+    response={"candidate":str(destination),"evaluation_file":str(destination/"evaluation.json"),"status":outcome["status"],"task_completion":outcome["task_completion"],"character_readiness":outcome["character_readiness"],"errors":outcome["task_completion"]["errors"],"pending":outcome["task_completion"]["pending"],"warnings":outcome["warnings"],
               "judgments":[facts.claim_display(c,review=outcome["review_packet"] if intent.get("task_kind") in {"read_only_review","build_plan"} else None) for c in outcome["claims"]],
             "budget":outcome["budget"],"readiness":outcome["readiness"],"roundtrip_verified":True,"delivery_brief":outcome["delivery_brief"],
             "comparison":{k:v for k,v in outcome["comparison"].items() if k in METRICS},"baseline_warnings":baseline.get("warnings",[]),
@@ -2010,14 +2292,14 @@ def report_html(state, outcome):
     result=outcome['result']
     def bullets(values): return "<ul>"+"".join("<li>"+esc(v)+"</li>" for v in values)+"</ul>"
     links=bullets([s['text'] for s in outcome['publication']['statements'] if s['kind']=='native_skill_group'])
-    current_facts=bullets([s['text'] for s in outcome['publication']['statements'] if s['kind'] not in {'native_skill_group','experiment'}]+[m['text'] for m in outcome['publication']['measurements']])
+    current_facts=bullets([s['text'] for s in outcome['publication']['statements'] if s['kind'] not in {'native_skill_group','experiment','materialization_change'}]+[m['text'] for m in outcome['publication']['measurements']])
     if outcome.get('kind')=='inspection':
         comparisons=[]
         for variant in (s for s in outcome['publication']['statements'] if s['kind']=='experiment'):
             rows=''.join('<tr>'+''.join('<td>'+esc(value)+'</td>' for value in (
                 key,show(row.get('before')),show(row.get('after')),show(row.get('delta')),show(row.get('percent'))))+'</tr>'
                 for key,row in variant.get('comparison',{}).items())
-            comparisons.append('<section><h2>变体 '+esc(variant.get('subject'))+' · '+esc(variant['status'])+'</h2><p>'+esc(variant['measurement']['scope'] or '实验范围未知')+'</p>'+bullets(variant.get('errors',[])+variant.get('pending',[]))+
+            comparisons.append('<section><h2>变体 '+esc(variant.get('subject'))+' · '+esc(variant['status'])+'</h2><p>'+esc(variant['text'])+'</p>'+bullets(variant.get('errors',[])+variant.get('pending',[]))+
                 '<table><tr><th>原生指标 ID</th><th>本次起点</th><th>变体</th><th>差值</th><th>相对变化 %</th></tr>'+rows+'</table>'+
                 '<details><summary>实际输入、对象与实验范围 · '+esc(variant['pointer'])+'</summary><pre>'+esc(json.dumps(variant['measurement'],ensure_ascii=False,indent=2))+'</pre></details></section>')
         controls=''.join('<tr>'+''.join('<td>'+esc(value)+'</td>' for value in (
@@ -2032,7 +2314,7 @@ def report_html(state, outcome):
 <style>body{{font:16px/1.7 system-ui;max-width:1050px;margin:auto;padding:28px}}table{{border-collapse:collapse;width:100%}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left;overflow-wrap:anywhere}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}</style>
 <h1>{esc(outcome['name'])}</h1><p>只读 · 本机 PoECharm {esc(result.get('engine_version','未知'))} · {esc(outcome.get('input_digest_basis','原始文件字节'))} SHA256 {esc(outcome['input_sha256'])}</p>
 <section><h2>当前原生事实</h2>{current_facts}<p>{esc(scenario_summary(result))}</p><p>{esc(outcome['publication']['scope'])}</p><p>只读快照不证明配装目标、动作或效果持续；负资源等缺口按当前 JSON 保留。</p></section>
-<section><h2>当前技能与本机名称</h2>{links}<p>启用标记不证明具体效果适用；辅助作用对象见完整 JSON 的 gems/granted_effects/active_skills。</p></section>
+<section><h2>当前技能与本机名称</h2>{links}<p>启用标记不证明具体效果适用；完整原生辅助链见 JSON 的 active_skills[].supports，实体宝石见 gems/granted_effects。</p></section>
 {''.join(comparisons)}
 <section><h2>当前配置控件</h2><p>未知读数保持未知；默认值与合法选项单独展示。这里只列 config_controls，集合外输入在下方 config_values 中；XML 标签来源、原生输入、运行时占位表分别核对。config_loader_source 给出当前加载函数位置；占位值是否被使用须结合该字段的本机处理与测量判断，标签存在不证明生效，当前输入缺省也不证明占位无效。输入、可见性及默认值不证明效果适用或覆盖。</p><details><summary>查看当前控件、枚举与原文</summary><table><tr><th>ID</th><th>原生标签</th><th>控件读数</th><th>默认值</th><th>当次合法选项</th><th>读数来源</th><th>运行时占位值</th><th>可见性与关联条件</th><th>XML 输入来源</th><th>原生描述</th></tr>{controls}</table></details></section>
 <section><h2>证据与范围</h2><p>完整只读计算凭证：{esc(outcome['inspection_file'])}。此页直接来自当前事实；正式机制与取舍说明沿现有角色流程的判断、证据和复核呈现，原角色到报告状态的实际变化须单独核对。</p><details><summary>查看身份、版本与配置原值</summary><pre>{esc(json.dumps(sources,ensure_ascii=False,indent=2))}</pre></details></section></html>'''
@@ -2062,10 +2344,11 @@ def report_html(state, outcome):
     detail+="\n"+esc(json.dumps({"single_payments":outcome["readiness"].get("single_payments",[]),"sustained_use":outcome["readiness"].get("sustained_use")},ensure_ascii=False,indent=2))
     timeline=outcome["readiness"].get("timeline")
     if timeline: detail+="\n"+esc(json.dumps(timeline,ensure_ascii=False,indent=2))
-    usage_note=('本次仅生成诊断说明，未导出交付 XML。先处理已知错误，再重新核验与导出。' if outcome['status']=='blocked' else
-                '在 PoECharm 中打开同目录 XML。草案需先处理上方缺口；按准备条件逐项落实后再在游戏内切换。文件不会修改服务器角色。')
-    if read_only: usage_note='本次交付只读评审 HTML 与完整证据 JSON，不导出改进 XML。评审完成不表示作者方案通过或原对象可执行；未知与反驳按逐项结论保留。'
-    elif scoped and outcome['status']!='blocked': usage_note='同目录 XML 是本次所列条件下的原生方案。规划交付完成不表示已取得物资、角色已就绪或实战达标；先落实上方执行条件和退路再切换。'
+    usage_note='本次自检未通过，仅保存内部诊断，未导出交付文件。先处理当前待办，再重新核验与导出。'
+    if task_deliverable(outcome.get('task_completion',{})):
+        usage_note='在 PoECharm 中打开同目录 XML；按准备条件逐项落实后再在游戏内切换。文件不会修改服务器角色。'
+        if read_only: usage_note='本次交付只读评审 HTML 与完整证据 JSON，不导出改进 XML。评审完成不表示作者方案通过或原对象可执行；未知与反驳按逐项结论保留。'
+        elif scoped: usage_note='同目录 XML 是本次所列条件下的原生方案。规划交付完成不表示已取得物资、角色已就绪或实战达标；先落实上方执行条件和退路再切换。'
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{esc(outcome['name'])}</title>
 <style>body{{font:16px/1.7 system-ui;background:#f5f6f8;color:#202a38;max-width:1050px;margin:auto;padding:28px}}section{{background:white;padding:24px;margin:18px 0;border-radius:12px}}table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}small{{color:#526174}}h1{{margin-bottom:6px}}</style>
 <h1>{esc(outcome['name'])}</h1><p>{esc(status)} · PoECharm {esc(outcome['engine_version'])}</p>
@@ -2105,25 +2388,33 @@ def read_candidate(args):
     bx.require(engine.check(root)["engine_fingerprint"]==outcome["engine_fingerprint"],"引擎、数据或适配器变化，请重新 evaluate。")
     return run,state,outcome,xml,root
 
-def damage_observation(calculation, name):
-    metric="MinionCombinedDPS" if any(s.get("is_main") and not s.get("disabled") and s.get("minion") for s in calculation.get("active_skills",[])) else "CombinedDPS"
+def metric_observation(calculation, name, metric=None):
+    if metric is None:
+        metric="MinionCombinedDPS" if any(s.get("is_main") and not s.get("disabled") and s.get("minion") for s in calculation.get("active_skills",[])) else "CombinedDPS"
     observed={**calculation,"stats":{**calculation.get("stats",{}),metric:calculation.get("stats",{}).get(metric)}}
     record=facts.resolve_reference("native:"+name+"#/stats/"+metric,{}, {name:observed})
     if record["value"] is None: record["status"]="unknown"
-    record["scope"]="当前选定主技能/主体、XML 与实际场景的伤害快照；其他组变化下此值不变，不证明被改技能无收益、增益未触发或机制无效。"
+    record["scope"]="当前所选指标、主体、XML 与实际场景的快照；其他对象变化下此值不变，不证明该对象无收益、增益未触发或机制无效。"
     return record
 
 
-def measurement_facts(before, after, operations):
+def measurement_facts(before, after, operations, metric=None):
     """Report the verified intervention and observed actor, not causal attribution."""
     old,new=engine.character_state(before),engine.character_state(after)
     changed=engine.character_changes(before,after)
-    return {"requested_operations":operations,"request_selections_verified":True,"before_state":old,"after_state":new,"actual_changes":changed,
+    control_fields=('id','type','label','display_label','label_source','value','default','value_basis','shown','if_cond','if_enemy_cond','if_flag','if_skill','if_option','apply_source','input_origin')
+    controls={}
+    for key in operations.get('config',{}):
+        controls[key]={}
+        for side,calculation in (('before',before),('after',after)):
+            row=calculation.get('config_controls',{}).get(key)
+            controls[key][side]={field:row[field] for field in control_fields if field in row} if isinstance(row,dict) else None
+    return {"requested_operations":operations,"requested_config_controls":controls,"request_selections_verified":True,"before_state":old,"after_state":new,"actual_changes":changed,
             "common_conditions":{"config_values":{key:value for key,value in before.get("config_values",{}).items() if key in after.get("config_values",{}) and bx.same_scalar(value,after["config_values"][key])},
                                  "engine_fingerprint":after.get("engine_fingerprint")},
             "observed_subject":{key:after.get(key) for key in ("main_skill","main_skill_name","main_group")},
-            "verification_scope":"本次请求经过现有原生选择核对；actual_changes 单列实际输入，效果是否实现及因果由模型另审。",
-            "damage_observation":damage_observation(after,"variant"),"individual_contributions_measured":False,
+            "verification_scope":"本次请求经过原生输入选择核对；requested_config_controls并列所选控件的原生含义与读数，null为未观测。actual_changes单列实际输入；效果适用与因果由模型另审。",
+            "metric_observation":metric_observation(after,"variant",metric),"individual_contributions_measured":False,
             "observation_scope":"native_state_difference","changed_state_fields":len(changed),
             "scope":"actual_changes 的 locator 相对 before_state/after_state，保留全部实际状态变化；changed_state_fields 仅计差异字段，含派生状态，不代表独立变量数。由模型结合请求、实际变化、作用主体和共同条件判断实验能区分哪些假设。联合变化只支持联合观察，没有独立测量的单项贡献未证明；零差分不能推出普遍规则。"}
 
@@ -2175,7 +2466,11 @@ def probe(args):
         seen.add(variant["id"])
     metrics=getattr(args,"metrics",None)
     metrics=metrics.split(",") if metrics else list(METRICS)
+    primary_metric=metrics[0] if getattr(args,"metrics",None) else None
     bx.require(all(k and isinstance(k,str) for k in metrics),"metrics 使用本次数值输出中的指标名。")
+    original_native=engine.calculate(root,bx.serialise(original)) if state['intent'].get('keep_skill_groups') else None
+    if original_native is not None:
+        bx.require(original_native['engine_fingerprint']==outcome['engine_fingerprint'],'保留组核对期间引擎变化，请重算。')
     rows=[]
     for offset in range(0,len(variants),12):
         prepared_variants=[]
@@ -2208,21 +2503,22 @@ def probe(args):
                 continue
             bx.require(result["engine_fingerprint"]==outcome["engine_fingerprint"],"比较期间引擎变化，请重算。")
             errors,warnings,pending=mechanical_issues(document,result,state["intent"])
-            ce,cp=check_constraints(original,document,outcome["baseline"],result,state["intent"],plan)
+            ce,cp=check_constraints(original,document,outcome["baseline"],result,state["intent"],plan,original_native=original_native)
             audit=resources.assess(result,state["intent"],plan,[])
             context=comparison_context(baseline,result)
             context_changes=context['changes']
             comparison=compare(baseline,result,not context_changes)
-            damage=damage_observation(result,"variant")
-            dps_metric=damage["locator"].rsplit("/",1)[-1]
+            measurement=measurement_facts(baseline,result,variant["operations"],primary_metric)
+            observation=measurement["metric_observation"]
+            observed_metric=observation["locator"].rsplit("/",1)[-1]
             equipment=equipment_changes(source,document,baseline,result)
             rows.append({"id":variant["id"],**({"skill_id":variant["id"]} if not getattr(args,"variants",None) else {}),"status":"blocked" if errors+ce+audit["errors"] else "screened",
                          "engine_fingerprint":result["engine_fingerprint"],"xml_sha256":result["input_xml_sha256"],"operations":variant["operations"],"crafted_items":crafts,
                          "stats":{k:result["stats"].get(k) for k in metrics},"comparison":{k:v for k,v in comparison.items() if k in metrics},"context_changes":context_changes,"comparison_context":context,
                          "actual_changes":actual_changes(baseline,result,equipment),"equipment_changes":equipment,
                          "configuration_changes":{key:{"before":baseline.get("config_values",{}).get(key),"after":result.get("config_values",{}).get(key)} for key in sorted(baseline.get("config_values",{}).keys()|result.get("config_values",{}).keys()) if not bx.same_scalar(baseline.get("config_values",{}).get(key),result.get("config_values",{}).get(key))},
-                         "effect_state":engine.effect_state(result),"measurement":measurement_facts(baseline,result,variant["operations"]),
-                         "dps_metric":dps_metric,"dps_delta":comparison.get(dps_metric,{}).get("delta"),"damage_observation":damage,"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
+                         "effect_state":engine.effect_state(result),"measurement":measurement,
+                         "observed_metric":observed_metric,"observed_delta":comparison.get(observed_metric,{}).get("delta"),"metric_observation":observation,"allocated_points":{k:result[k] for k in ("points","ascendancy_points","secondary_ascendancy_points")},
                          "errors":errors+ce+audit["errors"],"pending":pending+cp+audit["pending"],"warnings":warnings+audit["warnings"],"readiness":audit})
     computed=sum('stats' in row for row in rows)
     status='screened' if computed==len(variants) else 'partial' if computed else 'failed' if any(row['status']=='failed' for row in rows) else 'blocked'
@@ -2232,12 +2528,13 @@ def probe(args):
             **({'input_sha256':input_sha256} if input_file else {}),
             "comparison_basis":{"source_xml_sha256":bx.digest(xml),"source_character":baseline.get('character_identity'),
                                 "scope":"所有 delta 均是相对本次传入 XML 的局部或组合差分；不是自动相对玩家原角色的整套收益。整体代价另比较原角色与最终角色的实际条件。因果归属须在其余输入一致时观测对应组件。"},
-            "requested_variants":len(variants),"calculated_variants":computed,"baseline_effect_state":engine.effect_state(baseline),"baseline_damage_observation":damage_observation(baseline,"baseline"),"alternatives":rows,"next":"逐变体列出结果或明确失败；有 stats 的变体才通过本次原生实算及请求选择核对。比较前核对实际效果开关、damage_observation 的技能/主体、XML、场景与目标。组合必须单列变体，不能相加单项收益。--input 仅观察已有角色，不建立交付认证。未继承旧操作/证据判断，不改输入或候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
+            "requested_variants":len(variants),"calculated_variants":computed,"baseline_effect_state":engine.effect_state(baseline),"baseline_metric_observation":metric_observation(baseline,"baseline",primary_metric),"alternatives":rows,"next":"逐变体列出结果或明确失败；有 stats 的变体才通过本次原生实算及请求选择核对。比较前核对实际效果开关、metric_observation 的指标/主体、XML、场景与目标。组合必须单列变体，不能相加单项收益。--input 仅观察已有角色，不建立交付认证。未继承旧操作/证据判断，不改输入或候选，不证明预算、路径可得或全局最优；选定后更新完整 plan 再 evaluate。"}
     if getattr(args,'out',None):
         response['baseline_calculation']={key:value for key,value in baseline.items() if key not in ('xml','config_keys','config_lists')}
         response['publication']=publication('scoped_result',[],[],{'status':'not_requested'},{'current':baseline},keys=metrics,
             delivery_label='只读原生变体比较',delivery_message='已读取本次原生快照及变体；未执行配装目标认证。',
-            scope='只读原生变体比较；各变体的错误、未测范围、实际输入与共同条件分别保留。数值差不证明因果、动作执行、效果持续或用户目标达成。',experiments=rows)
+            scope='只读原生变体比较；各变体的错误、未测范围、实际输入与共同条件分别保留。数值差不证明因果、动作执行、效果持续或用户目标达成。',experiments=rows,
+            resource_audits={'current':resources.assess(baseline,state['intent'],{},[])})
         response['reference_contract']=facts.reference_contract({'current':response['baseline_calculation']},{'current':{'file':str(Path(args.out).resolve()),'pointer':'/baseline_calculation'}})
         response['reply_policy']=READONLY_REPLY_POLICY
         response['next_actions']=[{'action':'view','file':str(Path(args.out).resolve()),'pointer':pointer,'limit':10} for pointer in ('/publication','/alternatives','/comparison_basis')]
@@ -2255,7 +2552,7 @@ def export(args):
     write_json(run/"run.json",state)
     write_json(output/"delivery.json",{"file_exported":False,"status":"preparing","candidate":args.name})
     verification=engine.calculate(root,xml,cache=False)
-    verification["xml_sha256"]=bx.digest(xml)
+    verification.update(xml=xml,xml_sha256=bx.digest(xml))
     bx.require(verification["engine_fingerprint"]==outcome["engine_fingerprint"],"最终复算期间引擎变化。")
     bx.require(engine.character_state(verification)==engine.character_state(outcome["result"]),"最终复算角色状态与候选记录不同，请重算。")
     if "measurement_audit" in outcome["result"]: verification["measurement_audit"]=outcome["result"]["measurement_audit"]
@@ -2268,43 +2565,39 @@ def export(args):
     outcome.update(assessment)
     outcome["result"]={k:v for k,v in verification.items() if k!="xml"}
     outcome["next_actions"]=delivery_actions(outcome,outcome["source_plan"],output/"final-assessment.json",output/"review.json",report_exported=True,calculation={"command":"evaluate","arguments":{"run":str(run),"name":args.name,"plan":outcome["source_plan"]}})
-    filename="配装草案.xml" if outcome["status"]=="draft" else "改进配装.xml"
-    blocked=outcome['status']=='blocked'
+    filename="改进配装.xml"
+    deliverable=task_deliverable(outcome["task_completion"])
     read_only=outcome["task_completion"]["kind"]=="read_only_review"
     summary=outcome["publication"]["facts_summary"]+"\n\n"+scenario_summary(verification)
-    summary+=('\n只读评审交付 HTML 与完整证据，不导出改进 XML；原对象的配装状态继续保留。' if read_only else '\n未导出交付 XML；内部候选仅供诊断，当前状态及缺口见正式说明。' if blocked else "\n已导出 XML，通过本机计算、保存回读与最终复算；以上是所列配置下的快照。")
+    summary+=('\n自检未通过，未导出交付文件；内部诊断和复核包保留，按当前待办返修。' if not deliverable else '\n只读评审交付 HTML 与完整证据，不导出改进 XML；原对象的配装状态继续保留。' if read_only else "\n已导出 XML，通过本机计算、保存回读与最终复算；以上是所列配置下的快照。")
     if outcome["comparison_notes"]: summary+="前后口径差异："+"；".join(outcome["comparison_notes"])
-    response={"status":outcome["status"],"file_exported":not blocked,"xml_exported":not blocked and not read_only,"task_completion":outcome["task_completion"],"character_readiness":outcome["character_readiness"],"delivery_brief":outcome["delivery_brief"],
-              "files":[str(output/"配装说明.html"),str(output/"final-assessment.json")] if read_only else [str(output/"配装说明.html")] if blocked else [str(output/filename),str(output/"配装说明.html")],
+    response={"status":outcome["status"],"file_exported":deliverable,"xml_exported":deliverable and not read_only,"task_completion":outcome["task_completion"],"character_readiness":outcome["character_readiness"],"delivery_brief":outcome["delivery_brief"],
+              "files":[] if not deliverable else [str(output/"配装说明.html"),str(output/"final-assessment.json")] if read_only else [str(output/filename),str(output/"配装说明.html")],
+              "details_file":str(output/"final-assessment.json"),
               "facts_summary":summary,"publication":outcome["publication"],"facts":outcome["review_packet"]["facts"],
-              "objective_coverage":outcome["objective_coverage"],"pending":outcome["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
+              "objective_coverage":outcome["objective_coverage"],"errors":outcome["task_completion"]["errors"],"pending":outcome["task_completion"]["pending"],"budget_status":outcome["budget"]["status"],"warnings":outcome["warnings"],
               "judgments":[facts.claim_display(c,review=outcome["review_packet"] if outcome["task_completion"]["kind"] in {"read_only_review","build_plan"} else None) for c in outcome["claims"]],"next_actions":outcome["next_actions"],
-              "reply_policy":"直接交付返回的 files，保留草案文件名；blocked 仅交诊断说明，内部候选不能代替已导出交付。最终答复沿用 delivery_brief 的状态与范围，数值、当前名称和比较明细引用同一 HTML，简述已证明收益、代价、全部缺口类别及进入条件。机制和取舍按当前 judgments 的状态、text、条件与诊断核对；revision_pending 的文字尚待重审。平均收支只支持该投影，不能证明动作执行或效果持续；复核token或回读不证明机制、预算或目标达成。"}
+              "reply_policy":"交付 files；按 task_completion/delivery_brief 说明当前状态、范围、全部缺口类别及进入条件。数值和名称取本次 facts_summary/HTML事实表；持久文字用当前 text_templates（见 details_file 的 /publication/measurements）。解释所选收益、代价、主体条件与退路；revision_pending 先重审。引用、token、回读或平均收支不证明机制、执行、效果覆盖、预算或目标达成。"}
     if read_only:
-        response["reply_policy"]="交付 files 中的只读报告和证据，沿 task_completion 与 delivery_brief 说明本次评审完成情况；character_readiness 的完整原角色错误与未测项继续保留。反驳或证据不足可以完成评审，但不表示作者方案通过、原角色可执行或实战保证。没有改进 XML。"
+        response["reply_policy"]+=" 只读评审不导出改进 XML；反驳或证据不足可完成原问题，character_readiness 的原角色错误与未测项继续保留，不表示作者方案通过或原角色可执行。"
     elif outcome["task_completion"]["kind"]=="build_plan":
-        response["reply_policy"]="交付 files 中的 XML、HTML 与当前核验文件；按 task_completion 与 delivery_brief 说明具体方案交付是否完成，按 character_readiness 保留全部未就绪项。逐项说明执行条件、取得/训练及退路；合法条件快照不表示现实物资已取得、效果持续或实战目标已经达到。"
-    if outcome["status"]=="blocked":
-        response.update(errors=outcome["task_completion"]["errors"] if read_only else outcome["errors"],next="已生成只读诊断报告；处理 task_completion 的原对象保留问题后重新 evaluate，不能为收尾修改原角色。" if read_only else "已生成诊断说明；先解决已知矛盾并重新 evaluate。")
+        response["reply_policy"]+=" 按 character_readiness 保留全部未就绪项，逐项说明执行、取得与训练条件及退路；规划交付不表示现实物资已取得或实战效果成立。"
+    if not deliverable:
+        response.update(next="内部诊断已保存；按 task_completion 和 next_actions 修源、登记当前判断、复核并重算。",reply_policy="自检未通过，files 为空，不提供最终附件或声称交付完成。读取 details_file 的 task_completion 与 next_actions 继续返修；确实无法完成时如实说明失败原因与缺口，内部诊断不作为最终交付。")
     outcome["response"]=response
     write_json(output/"final-assessment.json",outcome)
     write_json(output/"review.json",outcome["review_packet"])
-    write_text(output/"配装说明.html",report_html(state,outcome))
-    if read_only:
+    if deliverable: write_text(output/"配装说明.html",report_html(state,outcome))
+    else: (output/"配装说明.html").unlink(missing_ok=True)
+    if read_only or not deliverable:
         for old_name in ("配装草案.xml","改进配装.xml"):
             (output/old_name).unlink(missing_ok=True)
-        write_json(output/"delivery.json",{"file_exported":not blocked,"xml_exported":False,"status":outcome["status"],"candidate":args.name,
-                   "files":{name:bx.digest((output/name).read_bytes()) for name in ("配装说明.html","final-assessment.json")},"review_token":outcome["review_packet"]["token"]})
-        state.update(phase="evaluated" if blocked else "exported",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":not blocked,"xml_exported":False,"status":outcome["status"]});write_json(run/"run.json",state)
-        return response
-    if outcome["status"]=="blocked":
-        for old_name in ("配装草案.xml","改进配装.xml"):
-            (output/old_name).unlink(missing_ok=True)
-        write_json(output/"delivery.json",{"file_exported":False,"status":"blocked","candidate":args.name})
-        state.update(phase="evaluated",updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":False,"status":"blocked"}); write_json(run/"run.json",state)
+        write_json(output/"delivery.json",{"file_exported":deliverable,"xml_exported":False,"status":outcome["status"],"candidate":args.name,
+                   "files":{name:bx.digest((output/name).read_bytes()) for name in (["配装说明.html"] if deliverable else [])+["final-assessment.json","review.json"]},"review_token":outcome["review_packet"]["token"]})
+        state.update(phase="exported" if deliverable else "evaluated",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":deliverable,"xml_exported":False,"status":outcome["status"]});write_json(run/"run.json",state)
         return response
     write_text(output/filename,xml)
-    (output/("改进配装.xml" if filename=="配装草案.xml" else "配装草案.xml")).unlink(missing_ok=True)
+    (output/"配装草案.xml").unlink(missing_ok=True)
     write_json(output/"delivery.json",{"file_exported":True,"status":outcome["status"],"candidate":args.name,
                "files":{name:bx.digest((output/name).read_bytes()) for name in (filename,"配装说明.html","final-assessment.json","review.json")},"review_token":outcome["review_packet"]["token"]})
     state.update(phase="exported",selected_candidate=args.name,updated_at=now(),last_operation={"command":"export","candidate":args.name,"file_exported":True,"status":outcome["status"]})
@@ -2483,7 +2776,7 @@ def route_snapshots(route,native,root,folder,output,*,gems=None):
                 write_text(directory/"snapshot.xml",saved)
                 write_json(cache_path,{"request_sha256":bx.digest(requested),"result":calculated,
                                       "result_sha256":bx.digest(json.dumps(calculated,sort_keys=True,ensure_ascii=False,allow_nan=False))})
-            limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points") if stage.get(key) is not None}
+            limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points","act","completed_act") if stage.get(key) is not None}
             tree_details,tree_repairs=native_tree_diagnostics(root,document,calculated,op_path+"/tree",tree_operations=snap.get("operations",{}).get("tree"),limits=limits,usage_plan=snap)
             gem_repairs=native_gem_diagnostics(root,document,calculated,stage_index=stage_index,gems=gems,limits=limits,usage_plan=snap)
             bx.require(all(Path(path).is_file() and bx.digest(Path(path).read_bytes())==digest for path,digest in record.get("input_artifacts",{}).items()),"计算期间阶段模板变化，请重算。",location=f"/stages/{stage_index}/snapshot/template_xml")
@@ -2565,7 +2858,8 @@ def calculate_route(args):
     for stage in checked["stages"]:
         value=snapshots.get(stage["stage_id"],{}).get("result")
         if value:
-            checks={item["slot"]:{"base":item["base"],"valid_for_slot":item.get("valid_for_slot")} for item in value["equipped"]}
+            checks={item["slot"]:{"base":item["base"],"valid_for_slot":item.get("valid_for_slot"),
+                                  "socket_capacity":len(item['sockets']) if isinstance(item.get('sockets'),list) else None} for item in value["equipped"]}
             for slot,base in stage.get("bases",{}).items():
                 if base is None: checks[slot]={"base":None,"valid_for_slot":slot not in checks,"status":"observed_empty" if slot not in checks else "occupied"}
             equipment[stage["stage_id"]]={"bases":stage.get("bases",{}),"checks":checks,
@@ -2578,7 +2872,7 @@ def calculate_route(args):
     validation_pending=set(checked["pending"])
     route_errors=[]
     stage_materials={}
-    for stage in checked["stages"]:
+    for stage_index,stage in enumerate(checked["stages"]):
         sid=stage["stage_id"]
         for item in stage.get("required_items",[]): facts.add_material(stage_materials,item)
         if sid not in snapshots: continue
@@ -2595,8 +2889,9 @@ def calculate_route(args):
         actual_bases={r["slot"]:r["base"] for r in value["equipped"]}
         for slot,base in stage.get("bases",{}).items():
             if actual_bases.get(slot)!=base: errors.append("快照装备与阶段声明的基底不一致："+slot)
-        relevant=[c for c in claims if {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
-        limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points") if stage.get(key) is not None}
+        linked=facts.stage_claim_ids(stage)
+        relevant=[c for c in claims if c["claim_id"] in linked or {"stage:"+sid,"snapshot:"+sid}&set(c["subjects"])]
+        limits={key:stage[key] for key in ("normal_points_available","ascendancy_points","secondary_ascendancy_points","act","completed_act") if stage.get(key) is not None}
         audit=resources.assess(value,limits,{k:stage["snapshot"][k] for k in ("usage","timeline") if k in stage["snapshot"]},relevant,reference_name="resources:stage:"+sid)
         stage_native["resources:stage:"+sid]={**audit,"engine_fingerprint":value["engine_fingerprint"],"xml_sha256":value.get("xml_sha256"),"origin":"program_assessment"}
         errors+=audit["errors"]; notes+=audit["warnings"]; gaps+=audit["pending"]
@@ -2616,7 +2911,12 @@ def calculate_route(args):
         metrics=stage["snapshot"].get("metrics",list(METRICS))
         bx.require(isinstance(metrics,list) and all(isinstance(k,str) and k for k in metrics),"snapshot.metrics 应为指标名数组。")
         missing=[k for k in metrics if k not in value["stats"]]
-        gaps += ["metric:"+k for k in missing]
+        if "metrics" in stage["snapshot"] and missing:
+            gaps += ["metric:"+k for k in missing]
+            record.setdefault("diagnostics",[]).append({"code":"snapshot_metric_unobserved","action":"edit_input",
+                "location":f"/stages/{stage_index}/snapshot/metrics","actual":missing,
+                "expected":{"observed_stats":sorted(value["stats"])},"reference":"native:stage:"+sid+"#/stats",
+                "message":"本次未观测这些指标；按实际 stats 和原目标核对字段，确无所需观测时保留缺口。"})
         record.update(status="blocked" if errors else "draft" if gaps else "calculated",native_calculated=True,stats={k:value["stats"].get(k) for k in metrics},errors=errors,pending=gaps,
                       config_values=value["config_values"],readiness=audit,main_skill=value["main_skill"],active_skills=value["active_skills"],roundtrip_verified=True,
                       material_specs=material_specs,entry_checks=condition_checks,facts=calculation_facts(value,relevant))
@@ -2735,19 +3035,24 @@ def calculate_route(args):
     bx.require(input_artifacts_current(checked),"核对期间阶段模板变化，请重跑 route。",location="/stages")
     evidence_file=output.with_suffix(".evidence.json")
     review_file=output.with_suffix(".review.json")
-    delivered_xmls=[Path(row['xml_path']) for row in stage_summary if row.get('xml_path') and row['status']!='blocked']
+    snapshot_xmls=[Path(row['xml_path']) for row in stage_summary if row.get('xml_path')]
+    deliverable=task_deliverable(completion)
+    delivered_xmls=[Path(row['xml_path']) for row in stage_summary if row.get('xml_path') and row['status']!='blocked'] if deliverable else []
     actions=delivery_actions({k:checked[k] for k in ("errors","pending","diagnostics","reference_contract","claims","task_completion","character_readiness")}|{"status":checked["delivery_status"]},path,evidence_file,review_file,"/checked_route",report_exported=True,calculation={"command":"route","arguments":{"file":str(path),"out":str(output)}})
-    response={"status":checked["delivery_status"],"file_exported":True,"task_completion":completion,"character_readiness":checked["character_readiness"],"delivery_brief":checked["delivery_brief"],"facts_summary":checked["publication"]["facts_summary"],"errors":checked["errors"],"stage_summary":stage_summary,"files":[str(output),str(evidence_file)]+[str(p) for p in delivered_xmls],"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":checked["pending"],"warnings":warnings,
+    response={"status":checked["delivery_status"],"file_exported":deliverable,"task_completion":completion,"character_readiness":checked["character_readiness"],"delivery_brief":checked["delivery_brief"],"facts_summary":checked["publication"]["facts_summary"],"errors":completion["errors"],"stage_summary":stage_summary,"files":[str(output),str(evidence_file)]+[str(p) for p in delivered_xmls] if deliverable else [],"details_file":str(evidence_file),"review_file":str(review_file),"review_token":review["token"],"stages":len(checked["stages"]),"pending":completion["pending"],"warnings":warnings,
              "judgments":[facts.claim_display(c,review=review) for c in claims],
              "reply_policy":"先沿用 task_completion 与 delivery_brief/facts_summary 的规划交付状态，再按当前 judgments 的评审、条件与退路解释路线。character_readiness 保留全部阶段未就绪项，取得与训练未发生；规划完成不等于实际可执行或游戏效果已验证。revision_pending 表示说明待重新评审。聊天与HTML保持同一结论。",
              "next_actions":actions,"scope":"目录核对与实际阶段快照分别列出；仅 calculation 中的数值经过所声明完整输入实算，未物化阶段不宣称精确 DPS/生存/续航。获取位置不证明当前已完成任务。", "next":"按 task_completion 和 next_actions 完成本次规划交付；character_readiness 继续保留阶段执行条件。需要修订时重跑同一route；诊断XML不能作为可执行配装交付，计算或规划完成不代表实际阶段已就绪。"}
+    if not deliverable:
+        response['reply_policy']='自检未通过，files 为空，不提供最终附件或声称交付完成。按 details_file 的 checked_route/task_completion 和 next_actions 修源、复核并重跑 route；保留JSON诊断和已算阶段用于恢复，不生成最终HTML。'
     write_json(review_file,review)
     write_json(evidence_file,{"schema_version":SCHEMA_VERSION,"skill_version":VERSION,"engine_fingerprint":calculation["engine_fingerprint"],"checked_route":checked,"warnings":warnings,"next_actions":actions,"response":response})
-    write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))
+    if deliverable: write_text(output,routes.render(checked,warnings,calculation["engine_version"],calculation["tree_version"],evidence_file=evidence_file.name))
+    else: output.unlink(missing_ok=True)
     progress=read_json(output.with_suffix(".state.json"))
-    write_json(output.with_suffix(".state.json"),{**progress,"phase":"exported","file_exported":True,"status":checked["delivery_status"],"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":calculation["engine_fingerprint"],
+    write_json(output.with_suffix(".state.json"),{**progress,"phase":"exported" if deliverable else "evaluated","file_exported":deliverable,"status":checked["delivery_status"],"input":str(path),"input_sha256":input_sha256,"output":str(output),"engine_fingerprint":calculation["engine_fingerprint"],
                "input_artifacts":{filename:digest for stage in checked["stages"] for filename,digest in stage.get("calculation",{}).get("input_artifacts",{}).items()},
-               "files":{str(p):bx.digest(p.read_bytes()) for p in [output,evidence_file,review_file]+delivered_xmls},"review_token":review["token"],
+               "files":{str(p):bx.digest(p.read_bytes()) for p in ([output] if deliverable else [])+[evidence_file,review_file]+snapshot_xmls},"review_token":review["token"],
                "stages":{row["stage_id"]:{k:v for k,v in row.items() if k not in {"stage_id","name"}} for row in stage_summary if row["status"]!="not_calculated"},
                "delivery_brief":checked["delivery_brief"],"task_completion":completion,"character_readiness":checked["character_readiness"],"next_actions":actions})
     return response
@@ -2817,7 +3122,7 @@ def workflow_status(args):
         return {"entrypoint":execution_entrypoint(),**scopes,"phase":state["phase"],"status":state.get("status"),"failure":state.get("failure"),"delivery_brief":state.get("delivery_brief"),"file_exported":ready,"input_unchanged":unchanged,"files_intact":intact,"engine_unchanged":current,"input_artifacts_unchanged":dependencies_current,
                 "state_file":str(location),"completed_stages":[sid for sid,row in state.get("stages",{}).items() if unchanged and current and dependencies_current and (row.get("native_calculated") or row.get("status")=="calculated")],
                 "stage_summary":state.get("stages",{}),"invalid_artifacts":invalid,"pob_path":str(root),
-                "next_actions":state.get("next_actions",[]) if state.get("next_actions") and (ready or state["phase"]=="failed") else [{"action":"resume_route" if not ready else "resolve_route" if state.get("status") in {"blocked","draft"} else "review_delivery","input":str(source),"output":state.get("output"),"pob_path":str(root),"invalid_artifacts":invalid,"reference":"references/leveling.md"}],
+                "next_actions":state.get("next_actions",[]) if state.get("next_actions") and ((unchanged and intact and current and dependencies_current) or state["phase"]=="failed") else [{"action":"resume_route" if not ready else "review_delivery","input":str(source),"output":state.get("output"),"pob_path":str(root),"invalid_artifacts":invalid,"reference":"references/leveling.md"}],
                 "scope":"文件完成需要输入、输出与当前引擎一致；completed_stages仅指原生计算已完成，阶段合法性与依赖看stage_summary。恢复时重新核对来源与判断。"}
     run,state=read_run(args.run)
     records=[]
@@ -2877,6 +3182,7 @@ def parser():
             context=cmd.add_mutually_exclusive_group(required=True)
             context.add_argument("--run")
             context.add_argument("--route-state",help="route 输出的 .state.json；只读核对交付和可恢复阶段")
+            cmd.add_argument("--out",help="可选完整状态 JSON，使用工作区新文件，再用 view 分页")
         if name == "start": cmd.add_argument("--invoked", action="store_true")
         if name == "intent": cmd.add_argument("--file", required=True)
         if name=="edit":
@@ -2887,10 +3193,11 @@ def parser():
             change.add_argument("--changes",help="set 增量记录、replace 精确字段/数组、remove 路径、review_claims 重新评审标识")
             change.add_argument("--proposal-file",help="evaluate/route 返回的完整计算凭证；程序读取其中的提案修改")
             cmd.add_argument("--proposal-id",help="本次 next_actions 返回的原生候选标识；无需抄写修改内容")
+            cmd.add_argument("--review-from",help="配合 changes 中已编写的 assessment.review，核对本次计算 details_file 并由程序关联标识；仍须重算")
             cmd.add_argument("--if-sha256",help="已有文件需使用上次返回的 revision；同一请求重试自动去重")
         if name=="view":
-            cmd.add_argument("--file",required=True,help="获准任务工作区中已保存的JSON")
-            cmd.add_argument("--pointer",default="",help="JSON pointer，默认顶层对象")
+            cmd.add_argument("--file",required=True,help="获准任务文件的 JSON 或 UTF-8 原文；只读")
+            cmd.add_argument("--pointer",default="",help="JSON pointer，默认顶层对象；文本留空")
             cmd.add_argument("--fields",default="",help="所选对象的直接字段，逗号分隔；不写表达式")
             cmd.add_argument("--keys",action="store_true",help="列出当前对象字段名，支持分页")
             cmd.add_argument("--query",default="",help="筛选 keys 字段名或文本数组，忽略大小写")
@@ -2907,7 +3214,7 @@ def parser():
             variant.add_argument("--node-ids", help="逗号分隔 ID，仅快速比较未分配节点词缀")
             cmd.add_argument("--level", type=int)
             cmd.add_argument("--quality", type=int)
-            cmd.add_argument("--metrics", help="按需返回的原生数值指标，以逗号分隔")
+            cmd.add_argument("--metrics", help="原生数值指标，以逗号分隔；首项为观察摘要，未指定则随主体用默认综合DPS")
             cmd.add_argument("--out", help="完整比较矩阵保存到工作区 JSON")
             cmd.add_argument("--report",help="可选只读变体HTML；需要 --out，复用当前publication与report_html，不用于 --node-ids 词缀筛选")
         if name == "decode": cmd.add_argument("--out", required=True)
@@ -2952,11 +3259,13 @@ def parser():
 
 def bound_reply(value, args):
     """Bound the complete envelope; every omitted field remains on disk."""
+    if 'reply_policy' in value: value={'reply_policy':value['reply_policy'],**value}
     size=lambda row:len(json.dumps({"ok":True,**row},ensure_ascii=False,allow_nan=False))+1
     if size(value)<=12000: return value
     prefix="/response"
     if args.command=="edit": details=Path(value["receipt_file"]);prefix=""
     elif args.command=="start": details=Path(value['inspection'])
+    elif args.command=="status" and getattr(args,"out",None): details=Path(args.out).resolve();prefix=""
     elif args.command in {'inspect','probe'} and args.out: details=Path(args.out).resolve();prefix=''
     elif args.command=="route": details=Path(args.out).resolve().with_suffix(".evidence.json")
     elif args.command in {"evaluate","export"}:
@@ -2966,17 +3275,21 @@ def bound_reply(value, args):
     bx.require(details.is_file(),"完整返回凭证不存在，不能截断后交付。",code="response_artifact_missing",location="/out",expected="saved full response",actual=str(details))
     saved=read_json(details)
     result=dict(value)
-    result.update(details_file=str(details),output_scope="终端摘要；continuations 指向完整字段，按 view 分页，无须重算。",continuations=[])
+    result.update(details_file=str(details),output_scope="终端摘要；存在 *_total 时为全量数量，*_is_preview 标识预览。continuations 用 view 读完整字段，无须重算。",continuations=[])
+    parent_reply={'action':'view','file':str(details),'pointer':prefix,'keys':True,'offset':0,'limit':20}
     if args.command=="edit":
         result["next_actions"]=[row for row in value.get('next_actions',[]) if row['action']=='calculate_current_input']+[{"action":"view","file":str(details),"pointer":"/handles","keys":True}]+([{"action":"view","file":str(details),"pointer":"/stage_instances","limit":10}] if result["kind"]=="route" else [])+[{"action":"view","file":str(details),"pointer":"/input_contract"}]
-    protected={"entrypoint","runtime","status","file_exported","xml_exported","kind","file","revision","receipt_file","details_file","output_scope","continuations","inspection","probe_file","report","report_sha256","reply_policy"}
+    protected={"entrypoint","runtime","status","file_exported","xml_exported","files","files_total","files_is_preview","kind","file","revision","receipt_file","details_file","output_scope","continuations","inspection","probe_file","report","report_sha256","reply_policy"}
     if args.command in {'edit','start'}: protected.add('next_actions')
     if value.get("task_completion"):
         for key in ("task_completion","character_readiness"):
             current=value[key]
             result[key]={field:current[field] for field in ("kind","status","scope") if field in current}
+            preview=key!="task_completion" or len(json.dumps({field:current[field] for field in ("errors","pending")},ensure_ascii=False))>4000
             for field in ("errors","pending"):
-                result[key][field]=current[field][:6];result[key][field+"_total"]=len(current[field])
+                result[key][field]=current[field][:6] if preview else current[field]
+                result[key][field+"_total"]=len(current[field])
+                result[key][field+"_is_preview"]=len(result[key][field])<len(current[field])
             result["continuations"].append({"action":"view","file":str(details),"pointer":prefix+"/"+key,"offset":0,"limit":20})
         protected.update({"task_completion","character_readiness","delivery_brief"})
     text_fields=[(result,key,prefix+'/'+key) for key in ('facts_summary','diagnosis_summary') if isinstance(result.get(key),str)]
@@ -2998,6 +3311,11 @@ def bound_reply(value, args):
     while size(result)>11200:
         options=[key for key in result if key not in protected and key not in trimmed]
         if not options:
+            direct={prefix+'/'+key for key in protected|{'next_actions'}}|{row[2] for row in text_fields}
+            index=[row for row in result['continuations'] if not row.get('purpose') and row['pointer'] not in direct and isinstance(facts.pointer(saved,row['pointer']),dict)]
+            if len(index)>1:
+                result['continuations']=[row for row in result['continuations'] if row not in index]+[dict(parent_reply)]
+                continue
             texts=[row for row in text_fields if len(row[0][row[1]])>160]
             if texts:
                 owner,key,pointer=max(texts,key=lambda row:len(row[0][row[1]]))
@@ -3007,14 +3325,49 @@ def bound_reply(value, args):
                 if continuation:continuation['offset']=len(owner[key])
                 else:result['continuations'].append({'action':'view','file':str(details),'pointer':pointer,'offset':len(owner[key]),'limit':5000})
                 continue
+            if isinstance(result.get('files'),list) and result['files'] and not result.get('files_is_preview'):
+                target=facts.pointer(saved,prefix+'/files')
+                result.update(files=[],files_total=len(target),files_is_preview=True)
+                result['continuations'].append({'action':'view','file':str(details),'pointer':prefix+'/files','offset':0,'limit':20})
+                for filename in target:
+                    result['files'].append(filename)
+                    if size(result)>10400:
+                        result['files'].pop()
+                        break
+                continue
+            previews=[(result[key],field) for key in ('character_readiness','task_completion')
+                      for field in ('errors','pending') if result.get(key,{}).get(field)]
+            if previews:
+                owner,field=previews[0]
+                owner[field]=owner[field][:len(owner[field])//2]
+                owner[field+'_is_preview']=True
+                continue
+            if len(result['continuations'])>1:
+                # The complete saved parent also recovers every omitted child;
+                # enumerating all child pointers/counts can exceed the envelope.
+                result['continuations']=[{**parent_reply,'purpose':'read_complete_saved_reply'}]
+                for key in trimmed-{'errors','pending','next_actions'}:
+                    result.pop(key,None);result.pop(key+'_total',None)
+                continue
         bx.require(options,"返回元数据过大。",code="response_too_large",location="/",expected="bounded response metadata",actual={"characters":size(result)})
         key=max(options,key=lambda k:len(json.dumps(result[k],ensure_ascii=False)))
         pointer=prefix+"/"+key.replace("~","~0").replace("/","~1")
         target=facts.pointer(saved,pointer)
         if isinstance(target,(list,dict,str)): result[key+"_total"]=len(target)
-        kept=target[:1] if key=='next_actions' and isinstance(target,list) and len(json.dumps(target[:1],ensure_ascii=False))<=3000 else []
+        kept=[];consumed=0;action_reads=[]
+        if key=='next_actions' and isinstance(target,list):
+            if target and len(json.dumps(target[:1],ensure_ascii=False))<=3000:
+                kept=target[:1];consumed=1
+            for index,row in enumerate(target[consumed:],consumed):
+                action={"action":"view","file":str(details),"pointer":pointer+'/'+str(index),"purpose":row['action']}
+                arguments={key:row[key] for key in ('edit_arguments','changes','review_file','template_pointer') if key in row}
+                direct={**action,**arguments}
+                if len(json.dumps(kept+action_reads+[direct],ensure_ascii=False))<=4000: action=direct
+                if len(json.dumps(kept+action_reads+[action],ensure_ascii=False))>4000: break
+                action_reads.append(action)
         result[key]=target[:160] if isinstance(target,str) else kept if isinstance(target,list) else {} if isinstance(target,dict) else target
-        result["continuations"].append({"action":"view","file":str(details),"pointer":pointer,"offset":len(kept),"limit":20})
+        result["continuations"].append({"action":"view","file":str(details),"pointer":pointer,"offset":consumed,"limit":20})
+        result['continuations'].extend(action_reads)
         trimmed.add(key);protected.add(key+"_total")
     return result
 
@@ -3051,13 +3404,17 @@ def main(argv=None):
                 computed = engine.calculate(engine.resolve_root(args.pob), bx.serialise(document),breakdowns=breakdowns)
                 result["calculation"] = {key: value for key, value in computed.items() if key not in {"xml", "config_keys", "config_lists"}}
                 result["diagnosis_summary"] = diagnosis_summary(computed)
-                result["reply_policy"] = READONLY_REPLY_POLICY if report else "诊断数值原样使用 diagnosis_summary；随后只问尚未明确的玩家偏好，不重新推导有效 DPS。"
+                result["reply_policy"] = READONLY_REPLY_POLICY
                 bx.require(bx.digest(Path(args.input).read_bytes())==input_sha256,'只读计算期间原始文件发生变化；重新读取当前文件。',location='/input')
                 result['input_sha256']=input_sha256
                 if args.out:
                     result['reference_contract']=facts.reference_contract({'current':result['calculation']},{'current':{'file':str(Path(args.out).resolve()),'pointer':'/calculation'}})
                 if report:
+                    result['readiness']=resources.assess(computed,{}, {})
+                    result['reference_contract'].update(facts.reference_contract({'resources':result['readiness']},
+                        {'resources':{'file':str(Path(args.out).resolve()),'pointer':'/readiness'}}))
                     result['publication']=publication('scoped_result',[],[],{'status':'not_requested'},{'current':result['calculation']},
+                        resource_audits={'current':result['readiness']},
                         delivery_label='只读原生快照',delivery_message='已读取本次原生资料与计算；未执行配装目标评审。',
                         scope='只读原生快照；未执行配装设计或目标评审，未证明动作执行、条件适用或效果持续。')
             if report:result['report']=str(report)
@@ -3065,10 +3422,10 @@ def main(argv=None):
                 breakdown_summary=[]
                 inspection_actions=[{'action':'view','file':str(Path(args.out).resolve()),'pointer':'/reference_contract',
                     'explanation_reference':'references/build.md#只读解释',
-                    'scope':'本次计算事实根；view 定位当前对象、名称、原文和引用。直接事实展示沿publication；加入解释前按explanation_reference进入已有claims/复核流程，短答承接当前报告状态与缺口。'}] if args.calculate else []
+                    'scope':'view 定位当前对象、名称、原文和引用。用数值判定用法或解释机制时，沿 explanation_reference 记录当前判断及反证，再由 publication 呈现。'}] if args.calculate else []
                 for index,row in enumerate(result.get('calculation',{}).get('breakdowns',[])):
                     pointer='/calculation/breakdowns/'+str(index)
-                    breakdown_summary.append({**{key:row[key] for key in ('metric','actor','skill_ref','status','value','main_value','matches_main_value','reason','scope') if key in row},
+                    breakdown_summary.append({**{key:row[key] for key in ('metric','actor','skill_ref','value_status','value','main_value','matches_main_value','detail_status','status','reason','scope') if key in row},
                                               'detail_pointer':pointer+'/detail' if 'detail' in row else None,
                                               'available_metrics_pointer':pointer+'/available_metrics' if 'available_metrics' in row else None,
                                               'omission_count':len(row.get('omissions',[]))})
@@ -3146,12 +3503,19 @@ def main(argv=None):
                 bx.require(len(json.dumps(result, ensure_ascii=False)) <= 12000, "查询结果较大；请加 --out '<工作区>/查询结果.json' 保存完整结果，再按相关字段读取，避免 TeleAgent 截断或转存至额外授权目录。")
         elif args.command == "route": result = route_command(args)
         elif args.command == "view": result=view_json(args)
-        else: result=workflow_status(args)
+        else:
+            result=workflow_status(args)
+            if args.out:
+                output=Path(args.out).resolve()
+                bx.require(output.suffix.lower()==".json" and not output.exists(),
+                           "status --out 使用工作区新的独立 JSON，不能覆盖现有文件。",location="/out")
+                write_json(output,result)
         result["entrypoint"]=execution_entrypoint()
         result["runtime"]={**engine.PERFORMANCE,"elapsed_seconds":round(time.perf_counter()-started,4)}
         result=bound_reply(result,args)
-        print(json.dumps({"ok": True, **result}, ensure_ascii=False, allow_nan=False))
-        return 0
+        completed=args.command!="export" or result.get("file_exported") is True
+        print(json.dumps({"ok": completed, **result}, ensure_ascii=False, allow_nan=False))
+        return 0 if completed else 2
     except (ValueError, OSError, KeyError, TypeError, IndexError, OverflowError) as exc:
         diagnostic=dict(exc.diagnostic) if getattr(exc,"diagnostic",None) else {"code":"io_error" if isinstance(exc,OSError) else "adapter_contract_failure" if isinstance(exc,(KeyError,TypeError,IndexError)) else "invalid_input","message":str(exc),"action":"inspect_error" if isinstance(exc,(KeyError,TypeError,IndexError)) else "check_io" if isinstance(exc,OSError) else "edit_input","retryable":isinstance(exc,OSError) and transient_io(exc),"location":"/","expected":"valid input and available interface","actual":type(exc).__name__}
         if diagnostic["code"]=="input_revision_stale": diagnostic["action"]="read_current_revision"

@@ -284,6 +284,14 @@ local function supportLevelLimit(effect)
     end
   end
 end
+local function gemLocation(instance)
+  if not instance then return nil, nil end
+  for groupIndex, group in ipairs(build.skillsTab.socketGroupList) do
+    for gemIndex, gem in ipairs(group.gemList) do
+      if gem == instance then return groupIndex, gemIndex end
+    end
+  end
+end
 for _, skill in ipairs(mainEnv.player.activeSkillList) do
   local cache = GlobalCache.cachedData and GlobalCache.cachedData[mainEnv.mode]
   local cached = cache and type(cacheSkillUUID) == "function" and cache[cacheSkillUUID(skill, mainEnv)]
@@ -298,10 +306,23 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   for index, group in ipairs(build.skillsTab.socketGroupList) do if skill.socketGroup == group then groupIndex = index; break end end
   local limit = supportLevelLimit(computed.triggeredBy)
   local instance = skill.activeEffect.srcInstance
-  local gemIndex
-  for index, gem in ipairs(skill.socketGroup and skill.socketGroup.gemList or {}) do if gem == instance then gemIndex = index; break end end
+  local _, gemIndex = gemLocation(instance)
+  local supports = type(computed.effectList) == "table" and setmetatable({}, {__jsontype = "array"}) or json.null
+  for _, effect in ipairs(type(computed.effectList) == "table" and computed.effectList or {}) do
+    if effect.grantedEffect.support == true then
+      local sourceGroup, sourceIndex = gemLocation(effect.srcInstance)
+      table.insert(supports, {id = effect.grantedEffect.id, name = effect.grantedEffect.name,
+        description = effect.grantedEffect.description or json.null,
+        level = sourceGroup and effect.srcInstance.level or json.null,
+        quality = sourceGroup and effect.srcInstance.quality or json.null,
+        effective_level = type(effect.level) == "number" and effect.level or json.null,
+        effective_quality = type(effect.quality) == "number" and effect.quality or json.null,
+        source_group = sourceGroup or json.null, source_index = sourceIndex or json.null})
+    end
+  end
   local actor = computed.skillData.triggeredByGeneralsCry and "mirage" or computed.skillFlags.minion and "minion" or "player"
   local nativeOutput = cached and cached.Env.player.output or {}
+  local cooldownPaused = computed.skillModList and not not computed.skillModList:Flag(computed.skillCfg, "NoCooldownRecoveryInDuration")
   local rateKey = computed.skillFlags.trap and "TrapThrowingSpeed" or computed.skillFlags.mine and "MineLayingSpeed" or computed.skillFlags.totem and "TotemPlacementSpeed" or "Speed"
   local rate = nativeOutput.SkillTriggerRate or nativeOutput[rateKey]
   local rateMetric = nativeOutput.SkillTriggerRate and "SkillTriggerRate" or rateKey
@@ -312,12 +333,35 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
   end
   local repeats = nativeOutput.Repeats or 1
   if type(rate) == "number" and type(repeats) == "number" and repeats > 0 then rate = rate / repeats else rate = nil end
+  -- Damage actor and cooldown-limited payment rate are not player action time.
+  local actionMode, actionTime, actionSource = "unknown", nil, nil
+  if computed.skillFlags.trap or computed.skillFlags.mine or computed.skillFlags.totem then
+    -- Placement and the placed entity's own actions require separate attribution.
+  elseif (type(computed.infoTrigger) == "string" and computed.infoTrigger ~= "") or computed.skillData.triggeredByGeneralsCry then
+    actionMode, actionTime = "automatic", 0
+  elseif computed.infoTrigger == "" then
+    -- Native self-cast fallback is not a measured activation mode.
+    actionSource = "native missing-trigger-source fallback (activation unmeasured)"
+  elseif computed.skillFlags.selfCast then
+    if nativeOutput.Time == 0 and computed.activeEffect.grantedEffect.castTime == 0 and not computed.skillData.castTimeOverride and not computed.skillData.triggered then
+      actionMode, actionTime, actionSource = "instant", 0, "native player output.Time"
+    elseif repeats == 1 and not computed.skillTypes[SkillType.Channel] and not computed.skillData.triggered then
+      actionMode = "manual"
+      if (nativeOutput.Cooldown == nil or nativeOutput.Cooldown == 0) and type(nativeOutput.Time) == "number" and nativeOutput.Time > 0 then
+        actionTime, actionSource = nativeOutput.Time, "native player output.Time (no cooldown)"
+      elseif type(nativeOutput.CastRate) == "number" and nativeOutput.CastRate > 0 and type(data.misc.ServerTickRate) == "number" and data.misc.ServerTickRate > 0 then
+        actionTime, actionSource = math.max(1 / nativeOutput.CastRate, 1 / data.misc.ServerTickRate), "native CastRate before cooldown cap, bounded by current ServerTickRate"
+      end
+    end
+  end
   local requiredLevel = limit and instance and instance.gemData and assert(instance.reqLevel, "Native trigger target requirement is unavailable")
   table.insert(result.active_skills, {id = skill.activeEffect.grantedEffect.id, name = skill.activeEffect.grantedEffect.name,
     description = skill.activeEffect.grantedEffect.description or json.null,
     effective_level = type(skill.activeEffect.level) == "number" and skill.activeEffect.level or json.null,
     effective_quality = type(skill.activeEffect.quality) == "number" and skill.activeEffect.quality or json.null,
     effective_specification_source = "mainEnv.player.activeSkillList.activeEffect",
+    supports = supports,
+    supports_source = type(computed.effectList) == "table" and (computed == skill and "mainEnv.player.activeSkillList.effectList" or "cached.Env.player.mainSkill.effectList") or json.null,
     skill_types = skillTypes(skill.activeEffect.grantedEffect),
     base_cast_time_seconds = skill.activeEffect.grantedEffect.castTime or json.null,
     group = groupIndex, index = gemIndex, slot = skill.socketGroup and skill.socketGroup.slot,
@@ -330,7 +374,13 @@ for _, skill in ipairs(mainEnv.player.activeSkillList) do
     trigger_level_limit = limit, trigger_target_required_level = requiredLevel,
     info = computed.infoMessage, info_secondary = computed.infoMessage2,
     generals_cry = computed.skillData.triggeredByGeneralsCry or false,
-    usage_rate = {value = rate, metric = rateMetric, basis = rateBasis, repeats = repeats, scope = "Actions per second from native rate or inverse native cooldown, divided by repeats; cost projection additionally checks the full native per-second cost. Dynamic effects and cross-skill action exclusion are not measured."},
+    native_timing = {duration_seconds = nativeOutput.Duration or json.null, cooldown_seconds = nativeOutput.Cooldown or json.null,
+      action_mode = actionMode, action_time_seconds = actionTime or json.null, action_time_source = actionSource or json.null,
+      cooldown_paused_during_effect = cooldownPaused == nil and json.null or cooldownPaused,
+      duration_uptime_percent = nativeOutput.DurationUptime or json.null,
+      source = "Current skill's native player output and skillModList:Flag(skillCfg, NoCooldownRecoveryInDuration)",
+      scope = "Native timing and known unrepeated self-cast duration; damage actor does not identify the caster. Placement, channels/repeat cancellation, early termination, existing charges, changing states and actual gameplay coverage are unmeasured"},
+    usage_rate = {value = rate, metric = rateMetric, basis = rateBasis, repeats = repeats, scope = "Native action or nominal cooldown-based payment rate, divided by repeats; cost projection checks the native per-second cost. This rate is not a complete recast interval: read native_timing for cooldown recovery during the effect. Dynamic effects and cross-skill action exclusion are not measured."},
     costs = scalarTable(costs)})
 end
 result.use_second_weapon_set = build.itemsTab.activeItemSet.useSecondWeaponSet
@@ -366,6 +416,41 @@ local function nativeFunctionSource(fn)
   return {source = "engine/"..path, line = first, count = math.min(count, 200), total_lines = count}
 end
 result.config_loader_source = nativeFunctionSource(build.configTab.Load)
+-- Read the loaded native progress model; never copy a season reward table.
+result.progress_limits = {status = "unsupported", reason = "Native progress model is unavailable"}
+local progressFunction, chapters, actExtra = build.EstimatePlayerProgress
+if type(progressFunction) == "function" and type(debug) == "table" and type(debug.getupvalue) == "function" then
+  local index = 1
+  while true do
+    local name, value = debug.getupvalue(progressFunction, index)
+    if not name then break end
+    if name == "acts" and type(value) == "table" then chapters = value end
+    if name == "actExtra" and type(value) == "function" then actExtra = value end
+    index = index + 1
+  end
+end
+if chapters and actExtra then
+  local rows, valid = setmetatable({}, {__jsontype = "array"}), true
+  for act, values in pairs(chapters) do
+    local extra = type(act) == "number" and actExtra(act, output.ExtraPoints or 0) or nil
+    if type(act) ~= "number" or type(values) ~= "table" or type(values.questPoints) ~= "number" or type(extra) ~= "number" then
+      valid = false; break
+    end
+    table.insert(rows, {entering_act = act, quest_points = values.questPoints, extra_points = extra})
+  end
+  table.sort(rows, function(a,b) return a.entering_act < b.entering_act end)
+  if valid and #rows > 0 then
+    result.progress_limits = {status = "observed", chapters = rows, source = nativeFunctionSource(progressFunction),
+      scope = "Current native chapter reward model plus this character's native ExtraPoints. Bounds do not prove completed quests or actual available points; recommended levels are not enforced"}
+    for _, rule in ipairs(result.rules) do
+      if rule.id == "quest_passive_points" then
+        rule.status, rule.meaning, rule.value, rule.reason = "observed", "engine_constraint", result.progress_limits, nil
+        rule.source, rule.scope = "build.EstimatePlayerProgress upvalues", result.progress_limits.scope
+      end
+    end
+  end
+end
+result.capabilities.native_progress_bounds = result.progress_limits.status == "observed"
 for _, entry in ipairs(configOptions) do
   if entry.var then
     table.insert(result.config_keys, entry.var)
@@ -440,6 +525,26 @@ for _, skill in ipairs(result.active_skills) do
   table.sort(skill.config_control_ids)
 end
 result.points, result.ascendancy_points, result.secondary_ascendancy_points = build.spec:CountAllocNodes()
+local pointDisplay = build.controls.pointDisplay and build.controls.pointDisplay.str
+result.point_limits = {status = "unsupported", source = "build.controls.pointDisplay.str", display = pointDisplay,
+  reason = "Native allocation display is unavailable or does not match this allocation"}
+if type(pointDisplay) == "string" and type(StripEscapes) == "function" then
+  local normalUsed, normalMaximum, ascUsed, ascMaximum = StripEscapes(pointDisplay):match("^%s*(%d+)%s*/%s*(%d+)%s+(%d+)%s*/%s*(%d+)%s*$")
+  if tonumber(normalUsed) == result.points and tonumber(ascUsed) == result.ascendancy_points then
+    result.point_limits = {status = "observed", source = "build.controls.pointDisplay.str", display = pointDisplay,
+      function_source = nativeFunctionSource(build.EstimatePlayerProgress),
+      pools = {normal = {used = result.points, maximum = tonumber(normalMaximum)},
+        ascendancy = {used = result.ascendancy_points, maximum = tonumber(ascMaximum)}},
+      scope = "Current native global allocation caps, matched to CountAllocNodes; not completed quests/trials, available points or a secondary-ascendancy cap"}
+  end
+end
+result.capabilities.native_point_limits = result.point_limits.status == "observed"
+for _, rule in ipairs(result.rules) do
+  if rule.id == "ascendancy_points" and result.capabilities.native_point_limits then
+    rule.status, rule.meaning, rule.value, rule.reason = "observed", "engine_constraint", result.point_limits.pools.ascendancy, nil
+    rule.source, rule.scope = result.point_limits.source, result.point_limits.scope
+  end
+end
 result.mastery_selections = setmetatable({}, {__jsontype = "object"})
 for id, effect in pairs(build.spec.masterySelections) do result.mastery_selections[tostring(id)] = effect end
 for _, line in ipairs(build.controls.warnings.lines or {}) do table.insert(result.warnings, line) end
@@ -626,22 +731,40 @@ local function queryCatalog(kind, query, limit, offset)
         local requirements = {}
         for level, values in pairs(skill and skill.levels or {}) do
           if type(level) == "number" then
-            local resources = {}
+            local resources, resourceUnits = {}, {}
             for key, value in pairs(values) do
               if type(key) == "string" and (key == "cost" or key == "manaMultiplier" or string.find(key, "Reservation", 1, true)) then
                 resources[key] = value
+                resourceUnits[key] = key == "manaMultiplier" and "native_MORE_percent" or "native_raw"
+                if key == "cost" and type(value) == "table" then
+                  local definitions = {}
+                  for resource in pairs(value) do
+                    local definition = type(resource) == "string" and type(data.costs) == "table" and data.costs[resource]
+                    local fields = type(definition) == "table" and scalarTable(definition) or nil
+                    definitions[resource] = fields and next(fields) and fields or "native_raw"
+                  end
+                  resourceUnits[key] = definitions
+                end
               end
             end
             table.insert(requirements, {gem_level = level, character_level = values.levelRequirement, naturally_trainable = gem.naturalMaxLevel ~= nil and level <= gem.naturalMaxLevel,
               strength = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqStr or 0),
               dexterity = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqDex or 0),
               intelligence = calcLib.getGemStatRequirement(values.levelRequirement, skill.support, gem.reqInt or 0),
-              base_resources = next(resources) and resources or nil})
+              base_resources = next(resources) and resources or nil,
+              base_resource_units = next(resourceUnits) and resourceUnits or nil})
           end
         end
         table.sort(requirements, function(a,b) return a.gem_level < b.gem_level end)
+        local effects = setmetatable({}, {__jsontype = "array"})
+        for index, effect in ipairs(gem.grantedEffectList or {skill}) do
+          table.insert(effects, {index = index, id = effect.id, name = effect.name,
+            description = effect.description or json.null, support = effect.support or false,
+            has_global_effect = effect.hasGlobalEffect or false, skill_types = skillTypes(effect)})
+        end
         table.insert(entries, {id = id, name = gem.name, skill_id = gem.grantedEffectId, tags = gem.tags,
-          description = skill and skill.description,
+          description = skill and skill.description, granted_effects = effects,
+          level_requirements_effect_id = gem.grantedEffectId,
           min_level = requirements[1] and requirements[1].character_level, level_requirements = requirements,
           natural_max_level = gem.naturalMaxLevel, vaal = gem.vaalGem or false,
           special_variant = string.find(gem.grantedEffectId, "Alt[XYZ]") ~= nil or string.find(id, "Awakened", 1, true) ~= nil})
@@ -680,9 +803,14 @@ local function queryCatalog(kind, query, limit, offset)
       end
     end
     local compatible, incompatible = {}, {}
-    for _, support in ipairs(supports) do table.insert(applied[support.input_index] and compatible or incompatible, support.grantedEffect.id) end
+    if #relations > 0 then
+      for _, support in ipairs(supports) do table.insert(applied[support.input_index] and compatible or incompatible, support.grantedEffect.id) end
+    end
     table.insert(entries, {id = query, relations = relations, compatible = compatible, incompatible = incompatible, errors = errors,
-      valid = #errors == 0, scope = "Native skill-type relations by input position; unused supports are diagnostics. Actual sockets, trigger levels, costs and cooldowns require a character calculation."})
+      valid = #errors == 0, provided_ids = ids, checked_pairs = #relations,
+      status = #errors > 0 and "invalid_inputs" or #relations == 0 and "not_tested" or "observed",
+      next = #errors == 0 and #relations == 0 and "links tests only supplied active/support pairs. Discover candidates with catalog gems, then supply at least one current active skill_id and one support skill_id. Zero checked pairs says nothing about available supports." or nil,
+      scope = "Only supplied active/support pairs, by input position; valid reports input IDs, not search coverage. Unused measured supports are diagnostics. Actual sockets, trigger levels, costs and cooldowns require a character calculation."})
   elseif kind == "classes" then
     for _, class in ipairs(result.classes) do
       if matches(class.name) or tostring(class.id) == q then table.insert(entries, class) end
@@ -900,6 +1028,40 @@ end
 if request.breakdowns then
   result.breakdowns = {}
   local environments = {}
+  local detailDefinitions
+  local function relatedDetails(metric, breakdown)
+    detailDefinitions = detailDefinitions or LoadModule("Modules/CalcSections")
+    local seen, aliases, sources = {}, {}, {}
+    local function visit(value, path)
+      if type(value) ~= "table" or seen[value] then return end
+      seen[value] = true
+      if type(value.format) == "string" then
+        local outputs, count = {}, 0
+        for key in value.format:gmatch("output:([%a_][%w_%.]*)") do
+          if not outputs[key] then outputs[key], count = true, count + 1 end
+        end
+        if count == 1 and outputs[metric] then
+          for index, entry in ipairs(value) do
+            local key = type(entry) == "table" and entry.breakdown
+            if type(key) == "string" and type(breakdown[key]) == "table" then
+              aliases[key] = true
+              table.insert(sources, {module="Modules/CalcSections",path=path.."/"..index,
+                output=metric,breakdown=key,format=value.format})
+            end
+          end
+        end
+      end
+      for key, child in pairs(value) do
+        if type(key) == "string" or type(key) == "number" then visit(child,path.."/"..tostring(key)) end
+      end
+    end
+    visit(detailDefinitions, "")
+    local keys = {}
+    for key in pairs(aliases) do table.insert(keys,key) end
+    table.sort(keys)
+    table.sort(sources,function(a,b) return a.path < b.path end)
+    return keys, sources
+  end
   for _, query in ipairs(request.breakdowns) do
     local target, skill
     for index, row in ipairs(result.active_skills) do
@@ -908,7 +1070,8 @@ if request.breakdowns then
       end
     end
     local row = {metric=query.metric,actor=query.actor or target and target.actor or "unknown",skill_ref=target and target.skill_ref,
-      status="unsupported",scope="Native CALCS in EFFECTIVE mode, using the input build's combat configuration and selected skill state"}
+      value_status="unavailable",detail_status="unavailable",status="unsupported",
+      scope="Native CALCS in EFFECTIVE mode, using the input build's combat configuration and selected skill state"}
     if not target or not skill or not target.group then row.reason = "Requested active skill is unavailable in this XML"
     elseif row.actor == "mirage" and target.actor ~= "mirage" then row.reason = "No native mirage actor for this skill"
     else
@@ -940,17 +1103,31 @@ if request.breakdowns then
       else
         row.native_actor = row.actor == "mirage" and "player_output_for_mirage_skill" or row.actor
         row.selected_skill_id = env.player.mainSkill.activeEffect.grantedEffect.id
-        row.value = actor.output[query.metric]
+        local values = scalarTable(actor.output)
+        row.value = values[query.metric]
+        row.value_status = row.value ~= nil and "observed" or "unavailable"
         row.main_value = target.is_main and (row.actor=="minion" and result.minion or result.stats)[query.metric] or row.actor=="player" and target.costs[query.metric] or nil
         if type(row.value)=="number" and type(row.main_value)=="number" then row.matches_main_value = math.abs(row.value-row.main_value) <= math.max(0.00001,math.abs(row.main_value)*0.00000001) end
+        local available = {}
+        for key in pairs(values) do if type(key)=="string" then available[key] = true end end
+        for key,value in pairs(actor.breakdown or {}) do if type(key)=="string" and type(value)=="table" then available[key] = true end end
         row.available_metrics = {}
-        for key,value in pairs(actor.breakdown or {}) do if type(key)=="string" and type(value)=="table" then table.insert(row.available_metrics,key) end end
+        for key in pairs(available) do table.insert(row.available_metrics,key) end
         table.sort(row.available_metrics)
         local detail = actor.breakdown and actor.breakdown[query.metric]
+        if type(detail) ~= "table" then
+          local keys, sources = relatedDetails(query.metric,actor.breakdown or {})
+          if #keys > 0 then row.detail_candidates, row.detail_sources = keys, sources end
+          if #keys == 1 then
+            row.detail_metric = keys[1]
+            detail = actor.breakdown[keys[1]]
+          end
+        end
         if type(detail)=="table" then
           row.detail,row.omissions = evidenceTable(detail)
           row.status = #row.omissions == 0 and "observed" or "partial"
           if row.matches_main_value == false then row.status="different_context"; row.reason="CALCS value differs from MAIN; this breakdown cannot explain the MAIN value without further investigation" end
+          row.detail_status = row.status
         else row.reason = "No native breakdown for this metric; use an isolated input change and full recalculation for a bounded comparison" end
       end
     end

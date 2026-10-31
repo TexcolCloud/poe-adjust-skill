@@ -2,42 +2,35 @@
 
 ## 只读查询与完成
 
-仅问名称、开关、规格、费用、频率或计算值时，直接 inspect/probe，使用 `--out '<授权工作区>/facts.json' --report '<授权工作区>/事实.html'` 生成事实页，不必建立 intent/plan。逐项回答用户所问对象的当前值或明确未知，交实际 HTML 和简短答复；禁用技能不用为了补数字而启用。加入机制、归因、取舍或原目标审查时转[只读解释](build.md#只读解释)。
+摘录本次原生对象、定义和独立算术用inspect/probe，--out保存JSON、--report交事实页，无需intent/plan。支付与平均投影保留其假设和未知。要在此基础上下机制、用法或资源支撑结论，转[只读解释](build.md#只读解释)写入当前claims/review，由同一publication生成说明；新方案按[入口](../SKILL.md#入口和范围)选择任务类型。
 
 ```powershell
 python '<entry>' inspect --input '<原件.xml>' --calculate --out '<工作区>/facts.json' --report '<工作区>/事实.html'
-python '<entry>' inspect --input '<原件.xml>' --metrics 'Life,ManaCost' --skill-ref '<当前完整引用>' --actor player --out '<工作区>/detail.json'
-python '<entry>' catalog --kind gems --query '<相关名称>' --out '<工作区>/gems.json'
+python '<entry>' inspect --input '<原件.xml>' --metrics 'Life,ManaCost' --skill-ref '<当前引用>' --actor player --out '<工作区>/detail.json'
 ```
-
-参数与分页沿 `--help` 和[命令协议](commands.md)。查询不会认证角色合法、取得渠道或整套目标达成。
 
 ## 按需目录
 
-当前 catalog 支持 classes/rules/gems/skills/links/bases/affixes/nodes/config/metrics/uniques/translations。只查本次需要的内容；批量 queries 的每项含 kind/query/limit/offset。职业、升华、技能、基底、节点与配置 ID 从本次结果取，不从记忆硬写。
-
-节点路径用 `--input` 或当前 class_id 给上下文，升华连接点也算点数。links 使用实际有序技能 ID，验证辅助类型，不代替物理孔连/属性/取得。bases 的 valid_slots 属于该次布局上下文，缺上下文保留未知，不能当全局武器规则。
-
-doctor 的 data_version/树版本表示本机资料。旧角色树与当前共享目录不同则说明范围，目标国服/赛季机制版本仍需实际来源。无需为当前查询读取整套历史 Data 或下载无关构筑。
+catalog种类取当前--help。独立查询可--batch提交queries的kind/query/limit/offset，--out保存再view；先小查，沿真实ID分页。节点用--input或class_id取职业起点，升华连接计点。links只测query中实际提供的主动/辅助skill_id配对，checked_pairs为本次实测数；候选从gems查询，空配对不表示没有可用辅助。物理孔连/属性/取得另核。bases.valid_slots属当次布局，缺上下文留未知。
 
 ## 技能、配置与明细
 
-宝石保存的 level/quality 与有效规格分开看；effective_specifications 是当次观察，unknown 不猜。active_skills 的 skill_ref、actor、cost/rate 和选择关联限定对象；player、minion、mirage 的伤害与回复不互借。granted_effects 是实际提供效果，不证明触发/覆盖。
+gems列实体保存level/quality及effective_specifications；完整已应用辅助见active_skills[].supports，未对应实体的保存规格留未知。整颗宝石效果见catalog.gems.granted_effects；level_requirements_effect_id指定逐级对象，角色开关见gems.granted_effects。base_resources为原生编码，base_resource_units.cost给ResourceString/Divisor；native_MORE_percent为百分比、native_raw单位未知，均非完整角色费用。active_skills按skill_ref保留本次名称、description、trigger、费用/频率及source/cost_scope；native_timing含实际冷却恢复标志和完整时长的原生覆盖计算，均不认证实战覆盖。伤害actor不替换费用或时长来源。
 
-config_controls 区分 value/default/value_basis，以及 Input/Placeholder、runtime/applied。null 是未知或未覆盖，false 是实际关闭；清除覆盖可能恢复默认。只读到一个控制未生效，不推断全部开关关闭。按当前控件类型、options[].val、visibility 与原文选择控制；数值范围、默认贡献和条件由本次资料/计算判断。需要追机制时沿 apply_source 的 source/line 读实际原文。
+从config_controls的原生标签、关联条件与apply_source选控制，用options[].val，按value/default/value_basis及Input/Placeholder、runtime/applied核读数。probe的requested_config_controls保留所选控件两侧含义与观测。null留未知，删覆盖可恢复默认；效果适用由模型结合规则与场景判断。
 
-`inspect --metrics` 自动计算，breakdowns 提供实际 value/detail/context、available_metrics 和 MAIN 对照。不同上下文、不同主体、不支持或截断明细明确说明；缺字段不填零或编公式。有限 probe 只证明实际改变的输入在本场景中产生的观察，不直接证明游戏机制不存在。
+`inspect --metrics`自动计算，breakdowns给value/detail/context及MAIN对照。value_status与detail_status分别说明数值、明细是否可用；旧status保留明细状态，缺明细不抹掉已观测值或零值。available_metrics从本次CALCS输出及明细键读取，可包含MAIN没有的合法字段；不从名字猜对应关系。解释因果先核输入、中间因子、上限、输出和已计因子，沿来源读适用原文；需要时用probe检验单一变量。主体、场景或上下文不同就分开，缺字段留未知。有限实验不证明排他规则。
 
-药剂的 flask_base 是基础，flask_local 是单件经本地处理的参数；两者不能重复叠加。它们不含完整角色修正、当前充能、补充事件与持续覆盖，开启快照也不证明无限药剂。
+equipped[].effective_in_calculation与effect_state.equipment_inclusion记录本次原生对象纳入，输入开关另列；纳入不证明每条词缀适用或持续覆盖。flask_base为基础，flask_local为单件处理后参数，不重复叠加；角色修正、当前充能另核。合法性据当前规则，计算接受与旧常识不单独认证。
 
 ## 读原文和引用
 
-`view` 定位已有 JSON，按 pointer/fields/keys/query 和分页读取相关对象；复制返回 native_references 或 evidence_template，核对当次身份。逻辑根由当前 reference_contract 决定，不能把早先查询根/数组索引搬到新评估。
+view分页见[命令](commands.md#按需读取与修复)；引用核身份/source_revision，逻辑根和索引限本次评估。
 
-`data` 提供 list/search/read：先定位当前允许的 source，再以真实相对路径和行号读取上下文。截断片段不直接当完整机制。local_data 使用返回 evidence_template 的 source/line/count/content_sha256，由程序重读；它证明原文可追溯，不证明当季可得或解释成立。不读取平台内部目录、私有过程或无关本机资料。
+data的list/search/read定位公开只读source，沿实际路径/行号读上下文；local_data复制source/line/count/content_sha256模板，程序重读，含义由你核对。平台内部目录、私有过程和无关资料不读。
 
 ## 联网取得与版本
 
-`research --gems '<当前ID列表>'` 返回原生逐级要求、基础类型/资源与页面 choices。核对章节、任务、NPC、职业、实际前提、奖励选择数量和商店费用；早期某职业奖励行不表示其他职业永远拿不到。后续商店、小号/交易等是否适用按真实用户限制判断。来源模板在 choices[].evidence_templates，正文不足则读真实上下文再下结论。
+research --gems给当前ID的逐级要求与网页choices。沿同一行核职业、任务/前提、NPC、奖励选择数量及费用；Quest Reward只是渠道标签，多奖励不等于全能领。前期无奖励不推出后期无商店，小号/交易按用户许可，模板在choices[].evidence_templates。
 
-`research --trials` 的位置/区域等级不证明已通关或实际点数；`research --version` 的真实官方页面不由赛季编号猜机制版。其他公开网站可用可用联网工具，保存 URL、正文片段与实际查阅时间到授权工作区，按[证据](evidence.md)关联。本机数据、网页观测、用户声明和模型解释各自保留范围。
+research --trials位置/区域等级不证明已通关或可用点。doctor的数据/树版本只证明本机资料，research --version读真实官方正文；旧树、目标国服/赛季另核适用。其它网页保存URL、正文与查阅时间到工作区，沿[证据](evidence.md)引用；本机规则、公开规则和未知国服差异分别说明。
