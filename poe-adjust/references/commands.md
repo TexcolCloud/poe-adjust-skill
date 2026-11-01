@@ -1,6 +1,6 @@
 # 命令、保存与恢复
 
-单入口 `scripts/poe.py`；参数取当前 `--help`，字段取 `input_contract`。首次定位用 `doctor`，沿返回的 Python/entrypoint/pob_path。原件与本机安装只读，所有新文件、缓存和临时目录落本任务获准目录。
+单入口 `scripts/poe.py`；参数取当前 `--help`，字段取 `input_contract`。首次定位用 `doctor`，沿返回的 Python/entrypoint/pob_path。原件与本机安装只读。下文`<工作区>`是本任务获准写入目录，`<run>`置于其内；保留方案与恢复凭证。
 
 ## 增量保存方案
 
@@ -15,7 +15,7 @@
 
 新增或改文由edit绑定。依赖变化先计算当前对象，再修正文并重登invalidated_claims；绑定不更新文字。intent字段在intent，plan/route字段沿各自契约。
 
-新方案先写 `{"set":{"mode":"refine","summary":"本次目的","operations":{}}}` 到 plan-changes.json，按需补实际方案字段，由首次 edit 创建 plan.json。沿以下顺序工作；review-changes仅写set.assessment.review，按当前review_template审原目标、对象和条件：
+新方案先写 `{"set":{"mode":"refine","summary":"本次目的","operations":{}}}` 到 plan-changes.json，由首次edit创建plan.json。review-changes只写set.assessment.review，按当次模板核目标、对象和条件；--review-from自动绑定所引事实，不手抄token，仍须重算：
 
 ```powershell
 python '<entry>' start --invoked --input '<原件.xml>' --run '<run>' --pob '<安装>'

@@ -848,6 +848,21 @@ def delivery_brief(status, errors, pending):
             "scope":"仅汇总实际校验状态；计算/回读成功与方案合法、可取得、可执行、满足目标分别判断。"}
 
 
+def review_token(context, review=None):
+    """Bind authored references to an already calculated, immutable fact basis."""
+    refs=set(context['claim_transports'])
+    if review:
+        texts=[review.get('findings','')]
+        for field in ('conclusions','objectives','condition_reviews'):
+            for row in review.get(field,[]):
+                refs.update(row.get('evidence_refs',[])+row.get('counter_evidence_refs',[]))
+                texts.extend(row.get(key,'') for key in ('scope','findings','fallback'))
+                texts.extend(value for key in ('conditions','unimplemented') for value in row.get(key,[]))
+        refs.update(ref for text in texts for ref in claim_references({'text':text}))
+    selected={ref:context['transports'][ref] for ref in sorted(refs) if ref in context['transports']}
+    return bx.digest(json.dumps({'basis':context['basis'],'transports':selected},ensure_ascii=False,sort_keys=True,allow_nan=False))
+
+
 def final_review(specification, evidence, claims, observations, assessment, *, native=None):
     """Bind model review to current inputs, facts and prose, without judging prose in code."""
     user_refs=sorted({ref for row in observations.get("objective_coverage",[]) for ref in row.get("evidence_refs",[])})
@@ -866,19 +881,21 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
         review={**review,**{field:[{**row,**{key:row.get(key,[]) for key in ("counter_evidence_refs","conditions","unimplemented")}}
                                  for row in review.get(field,[])] for field in ("conclusions","objectives")}}
     summary_refs=claim_references({'text':review['findings']}) if review else []
-    explicit_refs=summary_refs+[ref for claim in claims for ref in claim_references(claim)]
-    for row in (review or {}).get("conclusions",[])+(review or {}).get("objectives",[]):
-        explicit_refs+=row["evidence_refs"]+row["counter_evidence_refs"]
-    for row in (review or {}).get("condition_reviews",[]):
-        explicit_refs+=claim_references({'text':'\n'.join(row['conditions']+[row['fallback']]),'evidence_refs':row['evidence_refs']})
-    roots={}
+    roots={};transports={}
     for name,value in (native or {}).items():
         # Native SaveDB can change transport bytes while retaining the actual role.
-        # Explicit byte claims still bind their chosen current field.
-        current={key:entry for key,entry in value.items() if key not in {"xml","input_xml_sha256","request_id"} or any(ref=="native:"+name+"#/"+key for ref in explicit_refs)}
+        # Keep their digests separate so a new review reference can be bound
+        # without another calculation; referenced transport changes still stale it.
+        current={key:entry for key,entry in value.items() if key not in {"xml","input_xml_sha256","request_id"}}
         roots[name]=bx.digest(json.dumps(stable(current),ensure_ascii=False,sort_keys=True,allow_nan=False))
+        for key in ('xml','input_xml_sha256','request_id'):
+            if key in value:
+                transports['native:'+name+'#/'+key]=bx.digest(json.dumps(stable(value[key]),ensure_ascii=False,sort_keys=True,allow_nan=False))
     payload = stable({"specification": specification, "evidence": evidence, "claims": claims, "facts": observations,"reference_root_digests":roots})
-    token = bx.digest(json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False))
+    token_context={'basis':bx.digest(json.dumps(payload,ensure_ascii=False,sort_keys=True,allow_nan=False)),
+                   'transports':transports,
+                   'claim_transports':sorted({ref for claim in claims for ref in claim_references(claim) if ref in transports})}
+    token = review_token(token_context,review)
     matches = review is not None and review["token"] == token
     pending = [] if matches else ["final_review:stale" if review else "final_review:missing"]
     if matches: pending += ["final_review:" + value for value in review.get("unresolved", [])]
@@ -970,7 +987,7 @@ def final_review(specification, evidence, claims, observations, assessment, *, n
             current[key]=expanded if key=="conditions" else expanded[0]
         current["reference_status"]="unresolved" if failed else "resolved"
         rendered_conditions.append(current)
-    packet = {"token": token, "status": "model_reviewed" if matches and not pending else "unresolved",
+    packet = {"token": token, "token_context":token_context, "status": "model_reviewed" if matches and not pending else "unresolved",
               "facts": observations, "claims": claims, "findings": findings,
               "conclusions":rendered[0],"objectives":rendered[1],
               "condition_reviews":rendered_conditions,
