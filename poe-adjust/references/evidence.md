@@ -13,7 +13,7 @@
 
 原生引用核XML/引擎/配置/source_revision及真实指针；阶段根限其evaluation。失效先读实际父对象/合法引用。来源可追溯仍要核内容是否支持本句；取得表不证明装备或机制。
 
-claims按同一理由合并适用对象，含claim_id、text、subjects及实际evidence_refs/conditions/uncertainties/checks。目标用objective:<id>关联，总体由assessment.goal_claim_ids选；其它subject沿当前pending/required_subject。comparison需非空checks，以当次reference及eq/ge/le核所选阈值；普通解释用judgment。未知不填0。
+claims按理由合并subjects，字段取当前模板。目标关联objective:<id>，assessment.goal_claim_ids选总体判断，其余沿pending/required_subject。comparison用非空checks核当前reference及所选eq/ge/le阈值；解释用judgment，未知不填0。
 
 先说明为原目标选了什么及代价；额外收益按本次定义核必要物资、触发、作用主体和起止，未核前提留条件或不计收益。必要、唯一或只能等结论先试可区分的反例，未排除就按选择表述。数值对齐效果分项、条件、指标与计算层级，核已计因子、上限与持续依据；静态纳入不证明在场、启动或常驻。findings写支持与反证如何改变原句，联合变化仅支持联合结果。scope限已证范围，再从原目标反查缺口；自审绑定不补足因果。
 
@@ -25,7 +25,7 @@ claims按同一理由合并适用对象，含claim_id、text、subjects及实际
 
 ## 动作与资源
 
-按原目标选择单次、平均或完整窗口：
+单次支付答单次，平均投影答均值；准备接战斗或混合使用安排用 timeline 核实际端点与共同支付，效果实现另核原生规则：
 
 - single_payments各从满可用储量独立支付；mean_use为单技能满速费用减固定净回复，正值为消耗、负值为余量，mean_pool_depletion_seconds为同口径投影。publication按当前及各实验变体呈现，吸取、充能、药剂补充、额外损失及动态变化未含；平均余量不证明持续，固定回复与事件回复也不能合并成同一个必要条件。
 - 简单同窗usage用{skill_ref,casts_per_second,active_seconds,recovery_seconds,continuous,claim_id}，单位次/秒及秒；未知省略。claim关联skill:<ref>，每技能用自己的窗口。
@@ -57,6 +57,6 @@ requirements/material_specs取实际差异，含停用/备用宝石、加工和�
 
 已审未测范围留scope/conditions；完整否定/未知可完成readonly，规划目标未知或被反驳仍未完成。
 
-condition_reviews沿condition_review_contract，关联supported/partial判断。迁移、验证和退路的各分支、阶段均守原限制；未来恢复不抵消越界。核条件失败时的资源与取得，或保留可用对象待条件满足；缺口先修源。
+condition_reviews沿当次契约关联supported/partial判断，核各分支的资源、取得与原限制，或保留可用对象待条件满足。未来恢复不抵消越界，必要缺口先修源。
 
 用edit --review-from关联当前计算，再重算、正式发布。build/build_plan交XML与HTML，readonly只报告，route交路线和实际关键XML；只取成功files。短答沿当前publication/facts_summary/HTML写给玩家的选择、用法和限制，恢复见[命令](commands.md#恢复与交付完整性)。

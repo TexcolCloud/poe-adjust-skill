@@ -25,7 +25,7 @@ import facts
 import routes
 import resources
 
-VERSION = "2.8.68"
+VERSION = "2.8.69"
 SCHEMA_VERSION = 2
 JSON_LIMITS={"input":8*1024*1024,"artifact":facts.JSON_ARTIFACT_LIMIT}
 READONLY_REPLY_POLICY="直接复述本次原生数值、定义、来源范围和独立算术，保留当前 scope 与未知。机制判断、取舍和反证写入当前 claims/review，由同一 publication 生成说明。任务类型按 SKILL.md#入口和范围，以用户要求的交付选择；新配装或操作设计见 references/build.md#规划交付，评审已有安排见只读解释。HTML 交程序返回的 report/files；短答沿已发布判断、限制、数字内插与本机名称。"
@@ -398,6 +398,9 @@ def edit_document(args):
                            objective_ids=reviewed_packet.get("coverage",{}).get("required_objective_ids",[]) if review_context else None)
         if review_context:
             bx.require(new_review.get("token")==reviewed_packet["token"],"复核标识不能被后续修改覆盖。",code="review_context_stale",location="/assessment/review/token",expected=reviewed_packet["token"],actual=new_review.get("token"))
+            context=reviewed_packet.get('token_context')
+            bx.require(isinstance(context,dict),"计算缺少当前引用绑定上下文，请重算后复核。",code="review_context_stale",location="/review_from",expected="current token_context")
+            new_review['token']=facts.review_token(context,new_review)
     # Validate local structure before touching the only source. Semantic choices
     # and current native legality remain evaluate/route responsibilities.
     bx.require((path.read_bytes() if path.is_file() else None)==existing,"保存前方案已变化，请重新读取 revision。",location="/file",actual=str(path))
@@ -3022,7 +3025,7 @@ def calculate_route(args):
                     "entry_conditions":s.get("entry_conditions",[]),"snapshot_assumptions":s.get("snapshot",{}).get("assumptions",[]),"calculation":s.get("calculation",{"status":"not_calculated"})} for i,s in enumerate(checked["stages"])]},route.get("assessment",{}),native=stage_native)
     checked["diagnostics"]+=review["diagnostics"]
     checked["pending"]+=review_pending
-    checked["final_review"]={k:review[k] for k in ("token","status","findings","conclusions","objectives","coverage","scope")}
+    checked["final_review"]={k:review[k] for k in ("token","token_context","status","findings","conclusions","objectives","coverage","scope")}
     checked["final_review"]["condition_reviews"]=review.get("condition_reviews",[])
     checked["errors"]=list(dict.fromkeys(route_errors))
     role_status="blocked" if route_errors else "draft" if checked["pending"] else "scoped_result"

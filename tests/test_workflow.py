@@ -4253,6 +4253,44 @@ class TimelineTests(unittest.TestCase):
 
 
 class EditAndRecoveryTests(unittest.TestCase):
+    def test_first_review_native_reference_binds_once_and_still_tracks_actual_changes(self):
+        for kind in ('route','plan'):
+            for field in ('input_xml_sha256','xml','request_id'):
+                with self.subTest(kind=kind,field=field):
+                    self.source=self.folder/(kind+'-'+field+'.json')
+                    prior,state_path=self.saved_proposal(kind)
+                    source=poe.read_json(self.source)
+                    native={'candidate':{'stats':{'FutureValue':21},'input_xml_sha256':'input-A','xml':'<A/>','request_id':'request-A'}}
+                    packet,_=facts.final_review(source,{},[],{}, {},native=native)
+                    file=Path(prior.proposal_file);saved=poe.read_json(file);state=poe.read_json(state_path)
+                    (saved['checked_route'] if kind=='route' else saved)['final_review' if kind=='route' else 'review_packet']=packet
+                    poe.write_json(file,saved)
+                    if kind=='route':state['files'][str(file)]=bx.digest(file.read_bytes())
+                    else:state['candidates']['native']['evaluation_sha256']=bx.digest(file.read_bytes())
+                    poe.write_json(state_path,state)
+                    review={'findings':'Current identity {{value:native:candidate#/'+field+'}}',
+                            'unresolved':[],'conclusions':[],'objectives':[]}
+                    poe.write_json(self.request,{'set':{'assessment':{'review':review}}})
+                    request=args(invoked=True,kind=kind,file=str(self.source),changes=str(self.request),review_from=str(file))
+                    with patch.object(engine,'calculate') as calculate:
+                        poe.edit_document(request)
+                        self.assertTrue(poe.edit_document(request)['replayed'])
+                    calculate.assert_not_called()
+                    current=poe.read_json(self.source)
+                    checked,pending=facts.final_review(current,{},[],{},current['assessment'],native=native)
+                    self.assertEqual(checked['status'],'model_reviewed');self.assertFalse(pending)
+                    self.assertEqual(current['assessment']['review']['findings'],review['findings'])
+                    self.assertEqual(poe.read_json(file),saved)
+                    for change in (field,'stats'):
+                        changed=copy.deepcopy(native)
+                        if change=='stats':changed['candidate']['stats']['FutureValue']=22
+                        else:changed['candidate'][field]='changed'
+                        self.assertIn('final_review:stale',facts.final_review(current,{},[],{},current['assessment'],native=changed)[1])
+                    changed=copy.deepcopy(native)
+                    for key in ('input_xml_sha256','xml','request_id'):
+                        if key!=field:changed['candidate'][key]='unreferenced transport change'
+                    self.assertFalse(facts.final_review(current,{},[],{},current['assessment'],native=changed)[1])
+
     def test_review_from_replaces_complete_authored_review_without_container_prerequisite(self):
         for kind in ('route','plan'):
             for previous in (None,{'findings':'Prior incomplete review','unresolved':['Old outstanding work'],
@@ -4265,7 +4303,7 @@ class EditAndRecoveryTests(unittest.TestCase):
                     else:source['assessment']={'review':previous}
                     poe.write_json(self.source,source)
                     file=Path(prior.proposal_file);saved=poe.read_json(file);state=poe.read_json(state_path)
-                    packet={'token':'current-review','coverage':{'required_objective_ids':[]}}
+                    packet,_=facts.final_review({}, {}, [], {}, {})
                     if kind=='route':
                         saved['checked_route']['final_review']=packet
                         state['input_sha256']=bx.digest(self.source.read_bytes())
@@ -4281,7 +4319,7 @@ class EditAndRecoveryTests(unittest.TestCase):
                     before={k:v for k,v in source.items() if k!='assessment'}
                     result=poe.edit_document(request)
                     current=poe.read_json(self.source)
-                    self.assertEqual(current['assessment']['review'],{**review,'token':'current-review'})
+                    self.assertEqual(current['assessment']['review'],{**review,'token':packet['token']})
                     self.assertEqual({k:v for k,v in current.items() if k!='assessment'},before)
                     self.assertEqual(result['status'],'saved_draft')
                     self.assertTrue(poe.edit_document(request)['replayed'])
@@ -4293,8 +4331,8 @@ class EditAndRecoveryTests(unittest.TestCase):
                 self.source=self.folder/(case+'.json');prior,state_path=self.saved_proposal(kind)
                 file=Path(prior.proposal_file);saved=poe.read_json(file)
                 outcome=saved['checked_route'] if kind=='route' else saved
-                outcome['final_review' if kind=='route' else 'review_packet']={'token':'opaque-current-calculation',
-                    'coverage':{'required_objective_ids':[]}}
+                packet,_=facts.final_review({}, {}, [], {}, {})
+                outcome['final_review' if kind=='route' else 'review_packet']=packet
                 poe.write_json(file,saved);state=poe.read_json(state_path)
                 if kind=='route':state['files'][str(file)]=bx.digest(file.read_bytes())
                 else:state['candidates']['native']['evaluation_sha256']=bx.digest(file.read_bytes())
@@ -4311,7 +4349,7 @@ class EditAndRecoveryTests(unittest.TestCase):
                     result=poe.edit_document(request)
                     replay=poe.edit_document(request)
                 native.assert_not_called()
-                self.assertEqual(poe.read_json(self.source)['assessment']['review'],{**review,'token':'opaque-current-calculation'})
+                self.assertEqual(poe.read_json(self.source)['assessment']['review'],{**review,'token':packet['token']})
                 self.assertEqual(result['reviewed_calculation']['file'],str(file))
                 self.assertTrue(replay['replayed'])
                 self.assertEqual(result['status'],'saved_draft')
@@ -4319,7 +4357,7 @@ class EditAndRecoveryTests(unittest.TestCase):
 
     def test_review_from_rejects_stale_calculation_and_mixed_changes_before_writes(self):
         prior,state_path=self.saved_proposal();file=Path(prior.proposal_file)
-        saved=poe.read_json(file);saved['checked_route']['final_review']={'token':'current','coverage':{'required_objective_ids':[]}}
+        saved=poe.read_json(file);saved['checked_route']['final_review']=facts.final_review({}, {}, [], {}, {})[0]
         poe.write_json(file,saved);state=poe.read_json(state_path);state['files'][str(file)]=bx.digest(file.read_bytes());poe.write_json(state_path,state)
         review={'findings':'Authored assessment','unresolved':[],'conclusions':[],'objectives':[]}
         request=args(invoked=True,kind='route',file=str(self.source),changes=str(self.request),review_from=str(file),if_sha256=prior.if_sha256)
